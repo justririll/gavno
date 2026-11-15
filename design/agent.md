@@ -129,7 +129,7 @@ claude mcp add ds-agent -- ds-agent mcp
 ```
 
 `ds-agent mcp` speaks MCP over stdio and connects to the running session's
-socket (`$XDG_RUNTIME_DIR/ds/agent.sock`). The companion
+socket (`$DS_SOCK`, defaulting to `$XDG_RUNTIME_DIR/ds/ipc.sock`). The companion
 `agent/AGENTS.md` (installed globally on the laptop for Claude Code, Codex and
 OpenCode) tells agents how to use the tools economically.
 

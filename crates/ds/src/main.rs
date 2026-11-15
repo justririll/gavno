@@ -12,6 +12,7 @@ mod greeter;
 mod grabs;
 mod handlers;
 mod input;
+mod ipc;
 mod module;
 mod render;
 mod state;
@@ -62,6 +63,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match backend_choice {
         BackendChoice::Winit => backend::winit::init(&mut event_loop, &mut state)?,
         BackendChoice::Tty => backend::udev::init(&mut event_loop, &mut state)?,
+    }
+    // The window IPC lets agents drive the desktop; never on the login screen.
+    if !greeter_mode {
+        if let Err(err) = ipc::init(&mut state) {
+            tracing::warn!(?err, "window IPC disabled");
+        }
     }
 
     if greeter_mode {
