@@ -301,6 +301,7 @@ impl Gavno {
         }
     }
     pub fn workspace_forget(&mut self, window: &Window) {
+        self.overview.forget(window);
         for o in &mut self.workspaces.outputs {
             for ws in &mut o.list.items {
                 ws.windows.retain(|w| &w.window != window);
@@ -331,6 +332,8 @@ impl Gavno {
         {
             return true;
         }
+        self.end_window_grab();
+        let o = self.workspaces.ensure(output);
         o.position.advance(now);
         o.position.set(index as f64);
         o.held = false;
@@ -389,6 +392,11 @@ impl Gavno {
         else {
             return false;
         };
+        if index >= o.list.items.len() || index == from {
+            return index == from;
+        }
+        self.end_window_grab();
+        let o = self.workspaces.ensure(&output);
         if !o.list.move_item(from, i, index) {
             return index == from;
         }

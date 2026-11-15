@@ -21,7 +21,7 @@ use smithay::{
     },
     desktop::{Space, Window},
     output::Output,
-    utils::{Logical, Point, Rectangle, Scale},
+    utils::{IsAlive, Logical, Point, Rectangle, Scale},
 };
 use std::time::Duration;
 
@@ -103,6 +103,14 @@ impl Default for Overview {
     }
 }
 impl Overview {
+    pub fn forget(&mut self, window: &Window) {
+        if self.drag.as_ref().is_some_and(|(w, _, _)| w == window) {
+            self.drag = None;
+        }
+        self.hits.retain(|v| &v.window != window);
+        self.order.retain(|w| w != window);
+    }
+
     pub fn visible(&self) -> bool {
         self.progress.value > 0.0005 || self.progress.target > 0.0
     }
@@ -347,6 +355,7 @@ impl Gavno {
         }
     }
     pub fn clear_desktop_pointer(&mut self) {
+        self.end_window_grab();
         let pointer = self.seat.get_pointer().unwrap();
         pointer.motion(
             self,
@@ -392,6 +401,10 @@ impl Gavno {
                     self.overview.drag = Some((v.window.clone(), pos, pos));
                 }
             } else if let Some((w, start, _)) = self.overview.drag.take() {
+                // A toplevel can disappear between the thumbnail press and release.
+                if !w.alive() || self.workspaces.membership(&w).is_none() {
+                    return true;
+                }
                 if let Some(i) = self
                     .overview
                     .thumbnails
@@ -433,6 +446,38 @@ impl Gavno {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn removed_windows_cannot_be_focused_from_stale_thumbnail_drags() {
+        let mut h = crate::state::tests::Harness::new();
+        let output = Output::new("test".into(), smithay::output::PhysicalProperties {
+            size: (0, 0).into(), subpixel: smithay::output::Subpixel::Unknown,
+            make: "test".into(), model: "test".into(),
+        });
+        output.change_current_state(Some(smithay::output::Mode {
+            size: (1600, 900).into(), refresh: 60000,
+        }), None, None, None);
+        h.gv.space.map_output(&output, (0, 0));
+        let window = h.window();
+        h.gv.map_new_window(window.clone());
+        h.gv.overview.set(output, true, Duration::ZERO);
+        let pos = h.gv.pointer_location();
+        h.gv.overview.drag = Some((window.clone(), pos, pos));
+        h.gv.overview.hits.push(SceneWindow { window: window.clone(), location: (0, 0).into(), rect: Rectangle::new((0.0, 0.0).into(), (100.0, 100.0).into()) });
+        h.gv.overview.order.push(window.clone());
+        h.gv.space.unmap_elem(&window);
+        h.gv.workspace_forget(&window);
+        h.gv.focus_window(None);
+        assert!(h.gv.overview.drag.is_none());
+        assert!(h.gv.overview.hits.is_empty());
+        assert!(h.gv.overview.order.is_empty());
+        // Keep the wl_surface alive, then simulate a stale reference surviving a frame.
+        assert!(window.alive());
+        h.gv.overview.drag = Some((window, pos, pos));
+        assert!(h.gv.overview_button(0x110, false));
+        assert!(h.gv.seat.get_keyboard().unwrap().current_focus().is_none());
+        assert!(h.gv.overview.drag.is_none());
+        assert!(h.gv.overview.open());
+    }
     #[test]
     fn packing_fits_preserves_aspect_and_never_overlaps() {
         for n in 1..80 {

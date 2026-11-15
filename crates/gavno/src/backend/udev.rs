@@ -410,17 +410,13 @@ fn connector_connected(gv: &mut Gavno, connector: connector::Info, crtc: crtc::H
             preferred: m.mode_type().contains(ModeTypeFlags::PREFERRED) }
     }).collect();
     let requested = gv.config.output_mode;
-    let selected = mode::select(&modes, requested).or_else(|| {
-        if requested.is_some() { warn!(name, ?requested, "requested output mode unavailable; using preferred mode"); }
-        mode::select(&modes, None)
-    });
-    let Some(mode) = selected.map(|i| connector.modes()[i]) else {
+    if requested.is_some() && mode::select(&modes, requested).is_none() {
+        warn!(name, ?requested, "requested output mode unavailable; using preferred mode");
+    }
+    if modes.is_empty() {
         warn!(name, "connector has no modes");
         return;
-    };
-    let wl_mode = WlMode::from(mode);
-    info!(name, width = wl_mode.size.w, height = wl_mode.size.h,
-        refresh_hz = f64::from(wl_mode.refresh) / 1000.0, scale, "selected output mode");
+    }
     let hdr_requested = gv.config.output_hdr;
     let white_nits = gv.config.sdr_white_nits;
 
@@ -444,9 +440,8 @@ fn connector_connected(gv: &mut Gavno, connector: connector::Info, crtc: crtc::H
         },
     );
     let global = output.create_global::<Gavno>(&gv.display_handle);
-    output.set_preferred(wl_mode);
     output.change_current_state(
-        Some(wl_mode),
+        None,
         Some(Transform::Normal),
         Some(OutputScale::Fractional(scale)),
         Some((x, 0).into()),
@@ -456,23 +451,36 @@ fn connector_connected(gv: &mut Gavno, connector: connector::Info, crtc: crtc::H
     let Backend::Udev(data) = &mut gv.backend else { return };
     let primary = data.primary_gpu;
     let Some(gpu) = data.gpu.as_mut() else { return };
-    let drm_output = match gpu.manager.initialize_output::<_, GavnoRenderElement>(
-        crtc,
-        mode,
-        &[connector.handle()],
-        &output,
-        None,
-        &mut gpu.renderer,
-        &DrmOutputRenderElements::default(),
-    ) {
-        Ok(o) => o,
-        Err(err) => {
-            error!(?err, name, "failed to initialize output");
-            gv.space.unmap_output(&output);
-            gv.display_handle.remove_global::<Gavno>(global);
-            return;
+    let initialized = mode::try_modes(&modes, requested, |index| {
+        let wl_mode = WlMode::from(connector.modes()[index]);
+        output.change_current_state(Some(wl_mode), None, None, None);
+        match gpu.manager.initialize_output::<_, GavnoRenderElement>(
+            crtc,
+            connector.modes()[index],
+            &[connector.handle()],
+            &output,
+            None,
+            &mut gpu.renderer,
+            &DrmOutputRenderElements::default(),
+        ) {
+            Ok(drm_output) => Some(drm_output),
+            Err(err) => {
+                warn!(?err, name, width = wl_mode.size.w, height = wl_mode.size.h,
+                    refresh = wl_mode.refresh, "output mode rejected; trying fallback");
+                None
+            }
         }
+    });
+    let Some((index, drm_output)) = initialized else {
+        error!(name, "failed to initialize any advertised output mode");
+        gv.space.unmap_output(&output);
+        gv.display_handle.remove_global::<Gavno>(global);
+        return;
     };
+    let wl_mode = WlMode::from(connector.modes()[index]);
+    output.set_preferred(wl_mode);
+    info!(name, width = wl_mode.size.w, height = wl_mode.size.h,
+        refresh_hz = f64::from(wl_mode.refresh) / 1000.0, scale, "selected output mode");
     let feedback = surface_dmabuf_feedback(&drm_output, &gpu.renderer, primary, gpu.render_node);
     let color = if gpu.manager.device().is_atomic() {
         ConnectorColor::probe(gpu.manager.device().device_fd().clone(), connector.handle())
@@ -605,7 +613,12 @@ fn set_scanout_format(surface: &mut Surface, renderer: &GlesRenderer,
 
 fn change_hdr(surface: &mut Surface, renderer: &mut GlesRenderer,
     allocator: &GbmAllocator<DrmDeviceFd>, enabled: bool) -> Result<(), String> {
-    if enabled == surface.hdr.is_some() { return Ok(()); }
+    if enabled == surface.hdr.is_some() {
+        if let Ok(color) = &mut surface.color {
+            if enabled { color.enable() } else { color.restore() }.map_err(|e| e.to_string())?;
+        }
+        return Ok(());
+    }
     if enabled {
         surface.color.as_ref().map_err(Clone::clone)?;
         // Prepare all GL resources before touching connector properties.
@@ -697,6 +710,16 @@ fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
     if let Some(enabled) = surface.hdr_requested.take() {
         if let Err(error) = change_hdr(surface, &mut gpu.renderer, &gpu.allocator, enabled) {
             warn!(output = surface.output.name(), %error, "HDR change failed; retaining SDR or last working mode");
+        }
+    }
+    // Failed acquisition/reactivation commits must not send SDR pixels to an
+    // unknown (possibly PQ) connector. Fall back to explicitly established SDR.
+    if surface.color.as_ref().is_ok_and(|color| !color.is_current(surface.hdr.is_some())) {
+        if let Err(error) = change_hdr(surface, &mut gpu.renderer, &gpu.allocator, false) {
+            warn!(%error, "connector color state unknown; deferring presentation");
+            surface.hdr_requested = Some(false);
+            surface.redraw = RedrawState::Idle;
+            return;
         }
     }
     let output = surface.output.clone();
@@ -885,14 +908,11 @@ fn on_session_activate(gv: &mut Gavno) {
         }
         for surface in gpu.surfaces.values_mut() {
             surface.drm_output.reset_buffers();
-            if surface.hdr.is_some() {
-                let restored = surface.color.as_mut().is_ok_and(|color| match color.restore() {
-                    Ok(()) => true,
-                    Err(error) => { warn!(%error, "failed to restore SDR on session activation"); false }
-                });
-                if restored { surface.hdr = None; }
-                surface.hdr_requested = Some(surface.hdr_requested.unwrap_or(true));
+            if let Ok(color) = &mut surface.color {
+                color.invalidate();
             }
+            // Reconcile SDR as well as HDR before presenting after a VT switch.
+            surface.hdr_requested = Some(surface.hdr_requested.unwrap_or(surface.hdr.is_some()));
         }
         let node = gpu.node;
         // Connectors may have changed while we were away.

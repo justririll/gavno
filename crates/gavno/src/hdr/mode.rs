@@ -83,9 +83,53 @@ pub fn select(modes: &[Candidate], request: Option<ModeRequest>) -> Option<usize
         .map(|(i, _)| i)
 }
 
+/// Try the configured timing first, then preferred timings and progressively
+/// lower pixel rates. Every advertised timing is tried at most once.
+pub fn try_modes<T>(
+    modes: &[Candidate],
+    request: Option<ModeRequest>,
+    mut initialize: impl FnMut(usize) -> Option<T>,
+) -> Option<(usize, T)> {
+    let mut order: Vec<_> = (0..modes.len()).collect();
+    order.sort_by_key(|&i| {
+        let m = modes[i];
+        std::cmp::Reverse((m.preferred, u64::from(m.width) * u64::from(m.height) * m.refresh.max(0) as u64))
+    });
+    if let Some(first) = select(modes, request) {
+        order.retain(|&i| i != first);
+        order.insert(0, first);
+    }
+    order.into_iter().find_map(|i| initialize(i).map(|output| (i, output)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rejected_configured_and_preferred_modes_fall_back() {
+        let modes = [
+            Candidate { width: 2880, height: 1620, refresh: 120000, preferred: false },
+            Candidate { width: 2880, height: 1620, refresh: 60000, preferred: true },
+            Candidate { width: 1920, height: 1080, refresh: 60000, preferred: false },
+        ];
+        let request = Some("2880x1620@120".parse().unwrap());
+        for working in [1, 2, 3] {
+            let mut attempts = Vec::new();
+            let result = try_modes(&modes, request, |i| {
+                attempts.push(i);
+                (i == working).then_some("initialized")
+            });
+            assert_eq!(attempts, (0..=working.min(2)).collect::<Vec<_>>());
+            assert_eq!(result, (working < 3).then_some((working, "initialized")));
+        }
+        assert_eq!(try_modes::<()>(&[], None, |_| panic!("no modes")), None);
+        let mut attempts = Vec::new();
+        assert!(try_modes(&modes, Some("800x600".parse().unwrap()), |i| {
+            attempts.push(i);
+            Some(())
+        }).is_some());
+        assert_eq!(attempts, vec![1]);
+    }
     #[test]
     fn parsing() {
         assert_eq!(

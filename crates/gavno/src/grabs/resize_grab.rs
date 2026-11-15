@@ -153,21 +153,6 @@ impl PointerGrab<Gavno> for ResizeSurfaceGrab {
         if handle.current_pressed().is_empty() {
             // No more buttons are pressed, release the grab.
             handle.unset_grab(self, data, event.serial, event.time, true);
-
-            let xdg = self.window.toplevel().unwrap();
-            xdg.with_pending_state(|state| {
-                state.states.unset(xdg_toplevel::State::Resizing);
-                state.size = Some(self.last_window_size);
-            });
-
-            xdg.send_pending_configure();
-
-            ResizeSurfaceState::with(xdg.wl_surface(), |state| {
-                *state = ResizeSurfaceState::WaitingForLastCommit {
-                    edges: self.edges,
-                    initial_rect: self.initial_rect,
-                };
-            });
         }
     }
 
@@ -260,7 +245,22 @@ impl PointerGrab<Gavno> for ResizeSurfaceGrab {
         &self.start_data
     }
 
-    fn unset(&mut self, _data: &mut Gavno) {}
+    fn unset(&mut self, data: &mut Gavno) {
+        let Some(xdg) = self.window.toplevel() else { return };
+        xdg.with_pending_state(|state| {
+            state.states.unset(xdg_toplevel::State::Resizing);
+            state.size = Some(self.last_window_size);
+        });
+        xdg.send_pending_configure();
+        // The final client commit still keeps the edge opposite the drag anchored.
+        ResizeSurfaceState::with(xdg.wl_surface(), |state| {
+            *state = ResizeSurfaceState::WaitingForLastCommit {
+                edges: self.edges,
+                initial_rect: self.initial_rect,
+            };
+        });
+        data.queue_redraw_all();
+    }
 }
 
 /// State of the resize operation.
