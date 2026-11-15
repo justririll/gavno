@@ -1,4 +1,4 @@
-<title>ds Compositor</title>
+<title>GAVNO Compositor</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -315,7 +315,7 @@ pre.cfg{margin:0;padding:12px;border-radius:10px;background:var(--surface-2);fon
     <div class="brand">
       <div class="mark" aria-hidden="true"><i></i><i></i></div>
       <div>
-        <h1>ds: live compositor mockup</h1>
+        <h1>GAVNO: live compositor mockup</h1>
         <p>Windows-style snapping to edges, GNOME-style workspaces and overview, Hyprland-style dwindle tiling. Keybinds are taken from KooL Hyprland-Dots.</p>
       </div>
     </div>
@@ -325,7 +325,7 @@ pre.cfg{margin:0;padding:12px;border-radius:10px;background:var(--surface-2);fon
   <main>
     <section>
       <div class="lid">
-        <div class="screen" id="screen" tabindex="0" aria-label="ds compositor desktop">
+        <div class="screen" id="screen" tabindex="0" aria-label="GAVNO compositor desktop">
           <div id="stage" class="shadows blur">
             <div class="backdrop" aria-hidden="true"><div class="wall"></div></div>
             <div id="wsLayer"></div>
@@ -482,12 +482,12 @@ const APPS = {
 const BODY = {
   term: () => `<div class="term"><span class="t-acc">~/Projects/ds</span> <span class="t-dim">❯</span> cargo build --release
 <span class="t-dim">   Compiling smithay v0.7.0</span>
-<span class="t-dim">   Compiling ds v0.1.0 (~/Projects/ds)</span>
+<span class="t-dim">   Compiling gavno v0.1.0 (~/Projects/ds)</span>
 <span class="t-ok">    Finished</span> \`release\` profile [optimized] in 41.87s
-<span class="t-acc">~/Projects/ds</span> <span class="t-dim">❯</span> ds --nested
-<span class="t-dim">[ds] backend winit · renderer gles2</span>
-<span class="t-dim">[ds] eDP-1 2880×1800 @ 120 Hz · scale 1.75</span>
-[ds] idle: 0 frames/s
+<span class="t-acc">~/Projects/ds</span> <span class="t-dim">❯</span> gavno --nested
+<span class="t-dim">[gavno] backend winit · renderer gles2</span>
+<span class="t-dim">[gavno] eDP-1 2880×1800 @ 120 Hz · scale 1.75</span>
+[gavno] idle: 0 frames/s
 <span class="t-acc">~/Projects/ds</span> <span class="t-dim">❯</span> <span class="caret"></span></div>`,
   files: () => `<div class="files"><aside><span>Home</span><span>Documents</span><span>Downloads</span><span class="on">Projects</span></aside><ul>
 <li><span class="fi"></span><b>src</b><em>12 files</em></li>
@@ -497,7 +497,7 @@ const BODY = {
 <li><span class="fi doc"></span><b>config.kdl</b><em>0.6 KB</em></li>
 <li><span class="fi doc"></span><b>README.md</b><em>3.4 KB</em></li></ul></div>`,
   editor: () => `<div class="editor"><div class="tabs"><span class="on">spring.rs</span><span>layout.rs</span><span>snap.rs</span></div><div class="code"><div><span class="cm">/// Critically tuned spring, stepped at 240 Hz.</span></div><div><span class="kw">pub struct</span> <span class="ty">Spring</span> { value: <span class="ty">f64</span>, velocity: <span class="ty">f64</span>, target: <span class="ty">f64</span> }</div><div></div><div><span class="kw">impl</span> <span class="ty">Spring</span> {</div><div>    <span class="kw">pub fn</span> <span class="fn">step</span>(&amp;<span class="kw">mut</span> self, dt: <span class="ty">f64</span>, k: <span class="ty">f64</span>, zeta: <span class="ty">f64</span>) -&gt; <span class="ty">bool</span> {</div><div>        <span class="kw">let</span> c = <span class="nu">2.0</span> * zeta * k.<span class="fn">sqrt</span>();</div><div>        <span class="kw">let</span> a = -k * (self.value - self.target) - c * self.velocity;</div><div>        self.velocity += a * dt;</div><div>        self.value += self.velocity * dt;</div><div>        <span class="cm">// settled springs stop asking for frames</span></div><div>        (self.value - self.target).<span class="fn">abs</span>() &gt; <span class="nu">0.01</span></div><div>            || self.velocity.<span class="fn">abs</span>() &gt; <span class="nu">0.01</span></div><div>    }</div><div>}</div></div></div>`,
-  notes: () => `<div class="notes"><h3>ds plan</h3>
+  notes: () => `<div class="notes"><h3>GAVNO plan</h3>
 <label><input type="checkbox" checked><span class="done">Concept: snapping, workspaces, tiling</span></label>
 <label><input type="checkbox" checked><span class="done">KooL keybinds without the extras</span></label>
 <label><input type="checkbox"><span>Look and animation mockup</span></label>
@@ -1272,7 +1272,7 @@ function addDockItem(key, name, icon, color, onClick) {
 addDockItem('apps', 'Apps', APPS_IC, 'var(--ic-apps)', () => openOverview(true));
 Object.entries(APPS).forEach(([k, a]) => addDockItem(k, a.name, ICON[k], a.color, () => dockClick(k)));
 dockRow.insertAdjacentHTML('beforeend', '<span class="dk-sep" aria-hidden="true"></span>');
-addDockItem('trash', 'Trash', TRASH_IC, 'var(--ic-trash)', () => { launch('files'); say('Trash opens in ds-files'); });
+addDockItem('trash', 'Trash', TRASH_IC, 'var(--ic-trash)', () => { launch('files'); say('Trash opens in gavno-files'); });
 
 function measureDock() {
   const sr = stage.getBoundingClientRect();
@@ -1384,7 +1384,7 @@ function hideSwitcher() { if (!sw) return; clearTimeout(sw.timer); sw = null; sw
 /* ---------------- cheat sheet (Super+H) ---------------- */
 function toggleCheat() {
   if (cheat.classList.contains('show')) { cheat.classList.remove('show'); return; }
-  cheat.innerHTML = '<h4>ds keys</h4>' + BINDS.slice(0, 3).flatMap(g => g.items).map(b => `<div><span>${b.label}</span><span>${b.keys.map(k => `<kbd>${k}</kbd>`).join('')}</span></div>`).join('');
+  cheat.innerHTML = '<h4>GAVNO keys</h4>' + BINDS.slice(0, 3).flatMap(g => g.items).map(b => `<div><span>${b.label}</span><span>${b.keys.map(k => `<kbd>${k}</kbd>`).join('')}</span></div>`).join('');
   cheat.classList.add('show');
 }
 cheat.addEventListener('pointerdown', e => { e.stopPropagation(); toggleCheat(); });
@@ -1450,7 +1450,7 @@ function applyCfg() {
   drawCurve();
 }
 function kdl() {
-  return `// ~/.config/ds/config.kdl
+  return `// ~/.config/gavno/config.kdl
 animations {
     spring stiffness=${cfg.k} damping-ratio=${cfg.zeta.toFixed(2)}
 }

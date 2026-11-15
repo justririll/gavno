@@ -2,15 +2,15 @@
 # Dev loop for the laptop target: edit on the PC, build and run natively there.
 #   scripts/laptop.sh sync           copy sources (Cargo.lock included)
 #   scripts/laptop.sh build          sync + cargo build (low priority)
-#   scripts/laptop.sh run [cmd]      build + start ds on tty7 (optionally run cmd inside)
-#   scripts/laptop.sh stop           stop ds (SIGTERM) and go back to tty1
-#   scripts/laptop.sh log            follow the ds journal
-# DS_ARGS adds ds flags, e.g. DS_ARGS=--greeter scripts/laptop.sh run
+#   scripts/laptop.sh run [cmd]      build + start GAVNO on tty7 (optionally run cmd inside)
+#   scripts/laptop.sh stop           stop GAVNO (SIGTERM) and go back to tty1
+#   scripts/laptop.sh log            follow the GAVNO journal
+# GAVNO_ARGS adds GAVNO flags, e.g. GAVNO_ARGS=--greeter scripts/laptop.sh run
 set -eu
-HOST=${DS_HOST:-root@192.168.31.235}
+HOST=${GAVNO_HOST:-root@192.168.31.235}
 DIR=/home/kirill/Projects/ds
-VT=${DS_VT:-7}  # above NAutoVTs, so logind never puts a getty here
-UNIT=ds-dev
+VT=${GAVNO_VT:-7}  # above NAutoVTs, so logind never puts a getty here
+UNIT=gavno-dev
 cd "$(dirname "$0")/.."
 
 sync_src() {
@@ -37,7 +37,7 @@ run)
             -p KillSignal=SIGTERM -p TimeoutStopSec=5 \
             -E XDG_SESSION_TYPE=wayland -E XDG_SESSION_CLASS=user -E XDG_SEAT=seat0 -E XDG_VTNR=$VT \
             -E RUST_LOG=\${RUST_LOG:-info} -E RUST_BACKTRACE=1 \
-            $DIR/target/debug/ds --tty ${DS_ARGS:-} ${1:+-c '$*'}
+            $DIR/target/debug/gavno --tty ${GAVNO_ARGS:-} ${1:+-c '$*'}
         sleep 0.5; chvt $VT"
     ;;
 stop) ssh "$HOST" "systemctl stop $UNIT; chvt 1" ;;

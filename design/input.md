@@ -1,4 +1,4 @@
-# ds input design: touchpad first
+# GAVNO input design: touchpad first
 
 Target: a Snapdragon X Elite laptop, used mostly without a mouse. Every window
 operation must be comfortable with the touchpad alone, and the keyboard is a
@@ -10,9 +10,9 @@ shortcut layer on top, not a requirement.
    workspaces and opening the overview all have a touchpad gesture. No
    operation requires "hold a key + press the pad + drag" (the Hyprland/niri
    `Super+RMB` resize contortion).
-2. **2 fingers belong to apps, 3 and 4 fingers belong to ds.** Plain
+2. **2 fingers belong to apps, 3 and 4 fingers belong to GAVNO.** Plain
    two-finger scroll and pinch always reach the client (browser zoom, maps,
-   image viewers). ds only takes two-finger input while `Super` is held.
+   image viewers). GAVNO only takes two-finger input while `Super` is held.
    - 3 fingers act on the desktop: workspaces, overview, show desktop.
    - 4 fingers act on the window under the pointer: move, throw, resize.
 3. **1:1 and interruptible.** Every gesture tracks the fingers exactly while
@@ -20,7 +20,7 @@ shortcut layer on top, not a requirement.
    velocity. A 3-finger hold catches an animation mid-flight (GNOME behaviour).
 4. **Only the grabbed edge moves.** Any resize keeps the opposite edge
    anchored. In tiling only the splitter being dragged moves. Neighbours never
-   jump. If a client answers with a different size, ds still keeps the anchor.
+   jump. If a client answers with a different size, GAVNO still keeps the anchor.
 5. **Big targets.** The pointer never has to hit a 1-2 px border.
 6. **Content follows fingers.** Direction follows the natural-scroll setting:
    swipe left and the workspace on the right slides in, like GNOME and macOS.
@@ -134,8 +134,8 @@ mockup). Additions and changes made for touchpad and laptop use:
 | `Super+M` | minimize to the dock | new, the dock exists now |
 | `Super+Ctrl+arrows` | move: snap (floating) / move tile (tiling) | KooL `movewindow`, extended with Windows snap |
 | `Super+Shift+arrows` | resize ±50 px | KooL |
-| `Copilot` key | overview | X Elite laptops send `Shift+Super+F23`; ds maps it, configurable |
-| `Fn` brightness / volume / mic / media | system | handled in ds, with an on-screen indicator |
+| `Copilot` key | overview | X Elite laptops send `Shift+Super+F23`; GAVNO maps it, configurable |
+| `Fn` brightness / volume / mic / media | system | handled in GAVNO, with an on-screen indicator |
 | lid close | suspend unless an external display is connected | |
 
 Nothing important requires both hands except chord shortcuts that already
@@ -146,7 +146,7 @@ existed in KooL.
 1. Finger count is decided when the gesture begins. A swipe locks its axis
    after 12 units of motion, and diagonal motion counts only for 4-finger
    drags and throws.
-2. 3- and 4-finger swipes, pinches and holds are always taken by ds. They are
+2. 3- and 4-finger swipes, pinches and holds are always taken by GAVNO. They are
    never forwarded to clients.
 3. Two-finger scroll and pinch are forwarded to the client through
    pointer-gestures-unstable-v1 and `wl_pointer.axis`, unless `Super` is held
@@ -186,7 +186,7 @@ gestures {
 ```
 
 Every row in the gesture tables is a remappable action, and actions can also
-come from extensions (for example `ds-arcade` binding a game to a gesture).
+come from extensions (for example `gavno-arcade` binding a game to a gesture).
 
 ## Implementation notes (Smithay)
 
@@ -195,7 +195,7 @@ come from extensions (for example `ds-arcade` binding a game to a gesture).
   `fingers()`. Use them directly; do not emulate gestures from raw touch
   points.
 - Forward 2-finger gestures to clients with Smithay's `PointerGestures` support
-  (pointer-gestures-unstable-v1) when ds does not claim them.
+  (pointer-gestures-unstable-v1) when GAVNO does not claim them.
 - Gesture handlers drive the same springs as keyboard actions. A gesture sets
   the spring value directly (`jump`) while fingers are down and hands velocity
   to the spring on release.
@@ -214,6 +214,6 @@ come from extensions (for example `ds-arcade` binding a game to a gesture).
 - [ ] 4-finger flick down minimizes into the dock icon of that app.
 - [ ] `Super` + 2-finger scroll in the right half of a window moves only the right edge.
 - [ ] In tiling, dragging a gap moves only that splitter; the other tiles do not move.
-- [ ] Plain 2-finger pinch in a browser zooms the page, ds does nothing.
+- [ ] Plain 2-finger pinch in a browser zooms the page, GAVNO does nothing.
 - [ ] Copilot key opens the overview.
 - [ ] No frames are rendered while fingers rest on the pad without moving.

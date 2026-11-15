@@ -1,0 +1,9 @@
+[package]
+name = "gavno-agent"
+description = "Window management MCP server for GAVNO"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde_json = "1.0"

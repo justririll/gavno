@@ -2,7 +2,7 @@
 # Installs agent/AGENTS.md as the global instructions of every coding agent on
 # the laptop, for kirill and root. One canonical copy; tools point to it.
 set -eu
-HOST=${DS_HOST:-root@192.168.31.235}
+HOST=${GAVNO_HOST:-root@192.168.31.235}
 cd "$(dirname "$0")/.."
 NPU_GUIDE=${NPU_GUIDE:-$HOME/HDD/hexagon-sdk/NPU_GUIDE.md}
 

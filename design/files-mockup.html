@@ -1,4 +1,4 @@
-<title>ds-files</title>
+<title>gavno-files</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -273,8 +273,8 @@ button,input{font:inherit;color:inherit}
     <div class="brand">
       <svg class="mark" viewBox="0 0 42 42" aria-hidden="true"><path d="M3 10a4 4 0 0 1 4-4h10l4 4h14a4 4 0 0 1 4 4v18a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4z" fill="var(--folder-back)"/><path d="M3 16a4 4 0 0 1 4-4h28a4 4 0 0 1 4 4v16a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4z" fill="var(--folder)"/><path d="M12 21l4 3.5-4 3.5M19 28h8" stroke="var(--accent)" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
       <div>
-        <h1>ds-files</h1>
-        <p>A file manager for ds in the spirit of Nautilus. Right-click opens a terminal in any folder, and root mode is one button away.</p>
+        <h1>gavno-files</h1>
+        <p>A file manager for GAVNO in the spirit of Nautilus. Right-click opens a terminal in any folder, and root mode is one button away.</p>
       </div>
     </div>
     <div class="chips"><span class="chip">rust</span><span class="chip">polkit</span><span class="chip">mockup</span></div>
@@ -317,7 +317,7 @@ button,input{font:inherit;color:inherit}
     <div class="card">
       <h2>Try it</h2>
       <ul>
-        <li>Right-click the <code>src</code> folder. "Terminal in this folder" slides the docked terminal up from the bottom, and "Terminal in new window" opens a separate ds window. You can drag it by its title bar.</li>
+        <li>Right-click the <code>src</code> folder. "Terminal in this folder" slides the docked terminal up from the bottom, and "Terminal in new window" opens a separate GAVNO window. You can drag it by its title bar.</li>
         <li>Go to <code>/etc</code> through "System". Everything there is locked. Press <kbd>Ctrl+Shift+R</kbd> or the root button: the header turns red and you can edit.</li>
         <li>Type <code>cd ..</code> in the docked terminal: the window follows the terminal and the other way round. Drag the handle up or down, and drag it all the way down to hide the terminal. The ⧉ button pops it out into a separate window.</li>
         <li><code>sudo -i</code> gives a root shell, <code>exit</code> returns to your user, and <code>sudo !!</code> repeats a command that failed with Permission denied.</li>
@@ -327,7 +327,7 @@ button,input{font:inherit;color:inherit}
     <div class="card">
       <h2>How it will work</h2>
       <ul>
-        <li>The interface always runs as your own user. Root operations are handled by a small helper, <code>ds-files-helper</code>, through polkit: the password is asked once and the session lasts 5 minutes.</li>
+        <li>The interface always runs as your own user. Root operations are handled by a small helper, <code>gavno-files-helper</code>, through polkit: the password is asked once and the session lasts 5 minutes.</li>
         <li>The docked terminal (<kbd>F4</kbd>) uses the same folder as the window: <code>cd</code> in the terminal navigates the window, and clicking a folder runs <code>cd</code> in the terminal.</li>
         <li>A separate terminal (<kbd>Shift+F4</kbd>) is launched as <code>foot --working-directory=…</code> and lives on its own. Which terminal to launch is set in the config.</li>
       </ul>
@@ -344,7 +344,7 @@ const HOME = '/home/user';
 const NOW = Date.now(), DAY = 864e5;
 
 /* ---------------- fake filesystem ---------------- */
-const KDL = `// ~/.config/ds/config.kdl
+const KDL = `// ~/.config/gavno/config.kdl
 animations {
     spring stiffness=420 damping-ratio=0.82
 }
@@ -361,42 +361,42 @@ const SPEC = {
 UUID=5c1e-77a0  /boot         vfat    defaults,noatime  0 2
 UUID=9f3b…      /             ext4    noatime           0 1
 UUID=c0de…      /mnt/hdd      ntfs3   uid=1000,noatime  0 0`,
-    'hostname': 'ds-x1e',
-    'hosts': '127.0.0.1   localhost\n::1         localhost\n127.0.1.1   ds-x1e',
+    'hostname': 'gavno-x1e',
+    'hosts': '127.0.0.1   localhost\n::1         localhost\n127.0.1.1   gavno-x1e',
     portage: { '@': 'root', 'make.conf': `COMMON_FLAGS="-O2 -pipe -mcpu=oryon-1"
 USE="wayland gles2 egl udev libinput -X elogind"
 VIDEO_CARDS="freedreno"
-MAKEOPTS="-j12"`, 'package.use': { '@': 'root', 'ds': 'gui-wm/ds blur' } },
-    greetd: { '@': 'root', 'config.toml': '[default_session]\ncommand = "tuigreet --cmd ds"\nuser = "greeter"' },
+MAKEOPTS="-j12"`, 'package.use': { '@': 'root', 'gavno': 'gui-wm/gavno blur' } },
+    greetd: { '@': 'root', 'config.toml': '[default_session]\ncommand = "tuigreet --cmd gavno"\nuser = "greeter"' },
     'locale.gen': 'en_US.UTF-8 UTF-8\nru_RU.UTF-8 UTF-8',
   },
   home: { '@': 'root', user: { '@': 'user',
-    '.config': { ds: { 'config.kdl': KDL }, foot: { 'foot.ini': '[main]\nfont=Geist Mono:size=11\npad=12x10' } },
+    '.config': { gavno: { 'config.kdl': KDL }, foot: { 'foot.ini': '[main]\nfont=Geist Mono:size=11\npad=12x10' } },
     '.bashrc': '# ~/.bashrc\nexport EDITOR=hx\nalias ll="ls -lah"',
-    'Documents': { 'plan.md': '# ds plan\n\n- [x] Concept\n- [x] Compositor mockup\n- [ ] Smithay skeleton\n- [ ] ds-files', 'notes.txt': 'Gentoo on X Elite: kernel 6.18, freedreno, seatd.' },
+    'Documents': { 'plan.md': '# GAVNO plan\n\n- [x] Concept\n- [x] Compositor mockup\n- [ ] Smithay skeleton\n- [ ] gavno-files', 'notes.txt': 'Gentoo on X Elite: kernel 6.18, freedreno, seatd.' },
     'Downloads': { 'stage3-arm64-desktop-openrc.tar.xz': { size: 312e6 }, 'install-arm64-minimal.iso': { size: 724e6 }, 'smithay-main.zip': { size: 8.4e6 } },
     'Pictures': { 'wallpaper-dusk.png': { size: 4.1e6, img: 'dusk' }, 'screenshot-overview.png': { size: 1.2e6, img: 'ov' } },
     'Music': {},
     'Projects': { ds: {
       src: {
-        'main.rs': 'mod layout;\nmod snap;\nmod spring;\n\nfn main() -> anyhow::Result<()> {\n    let backend = ds::backend::detect()?;\n    ds::run(backend)\n}',
+        'main.rs': 'mod layout;\nmod snap;\nmod spring;\n\nfn main() -> anyhow::Result<()> {\n    let backend = gavno::backend::detect()?;\n    gavno::run(backend)\n}',
         'spring.rs': 'pub struct Spring { pub value: f64, pub velocity: f64, pub target: f64 }',
         'layout.rs': '/// Dwindle layout: each new window splits the last leaf.\npub fn dwindle(area: Rect, n: usize, ratio: f64) -> Vec<Rect> { todo!() }',
         'snap.rs': 'pub enum Zone { Left, Right, Max, TopLeft, TopRight, BottomLeft, BottomRight }',
       },
       shaders: { 'rounded.frag': 'precision mediump float;\nuniform float radius;\nvarying vec2 v_coords;', 'blur.frag': '// dual-kawase downsample pass' },
       design: { 'mockup.html': { size: 62e3 }, 'files-mockup.html': { size: 48e3 } },
-      'Cargo.toml': '[package]\nname = "ds"\nversion = "0.1.0"\nedition = "2024"\n\n[dependencies]\nsmithay = { version = "0.7", default-features = false }',
+      'Cargo.toml': '[package]\nname = "gavno"\nversion = "0.1.0"\nedition = "2024"\n\n[dependencies]\nsmithay = { version = "0.7", default-features = false }',
       'config.kdl': KDL,
-      'README.md': '# ds\n\nA lightweight Wayland compositor built on Smithay.',
+      'README.md': '# GAVNO\n\nA lightweight Wayland compositor built on Smithay.',
     } },
   } },
-  mnt: { '@': 'root', hdd: { '@': 'user', 'build': { 'target-ds': {} }, 'backup-2026-11.tar.zst': { size: 41.7e9 } } },
+  mnt: { '@': 'root', hdd: { '@': 'user', 'build': { 'target-gavno': {} }, 'backup-2026-11.tar.zst': { size: 41.7e9 } } },
   opt: { '@': 'root' },
   root: { '@': 'root!', '.bash_history': 'emerge -avuDN @world\nrc-update add seatd default', 'install.log': 'stage3 unpacked\nkernel built: 6.18-gentoo' },
   tmp: { '@': 'user' },
-  usr: { '@': 'root', bin: { '@': 'root', 'ds': { size: 7.9e6 }, 'ds-files': { size: 4.3e6 }, 'ds-files-helper': { size: 0.4e6 }, 'foot': { size: 0.6e6 } }, share: { '@': 'root' } },
-  var: { '@': 'root', log: { '@': 'root', 'emerge.log': '>>> emerge (1 of 1) gui-wm/ds-0.1.0\n::: completed emerge' } },
+  usr: { '@': 'root', bin: { '@': 'root', 'gavno': { size: 7.9e6 }, 'gavno-files': { size: 4.3e6 }, 'gavno-files-helper': { size: 0.4e6 }, 'foot': { size: 0.6e6 } }, share: { '@': 'root' } },
+  var: { '@': 'root', log: { '@': 'root', 'emerge.log': '>>> emerge (1 of 1) gui-wm/gavno-0.1.0\n::: completed emerge' } },
 };
 let seed = 7;
 const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
@@ -598,7 +598,7 @@ const PLACES = [
   { label: 'Downloads', path: HOME + '/Downloads', icon: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v8.5M4.5 7.5L8 11l3.5-3.5M2.5 13.5h11"/></svg>' },
   { label: 'Pictures', path: HOME + '/Pictures', icon: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><rect x="2" y="3" width="12" height="10" rx="2"/><path d="M2.5 11.5l3.5-3.5 3 3 1.5-1.5 3 3"/></svg>' },
   { label: 'Projects', path: HOME + '/Projects', icon: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 4L2 8l3.5 4M10.5 4L14 8l-3.5 4"/></svg>' },
-  { label: 'ds', path: HOME + '/Projects/ds', icon: '<svg viewBox="0 0 16 16"><rect x="1.5" y="2" width="8" height="9" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="6.5" y="5" width="8" height="9" rx="2" fill="currentColor"/></svg>' },
+  { label: 'GAVNO', path: HOME + '/Projects/ds', icon: '<svg viewBox="0 0 16 16"><rect x="1.5" y="2" width="8" height="9" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="6.5" y="5" width="8" height="9" rx="2" fill="currentColor"/></svg>' },
   { label: 'Trash', path: 'trash:', icon: I.trash },
   { h: 'Devices' },
   { label: 'System', path: '/', icon: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="2" y="3" width="12" height="10" rx="2"/><path d="M4.5 10.5h3" stroke-linecap="round"/><circle cx="11" cy="10.5" r=".6" fill="currentColor"/></svg>', note: '512 GB' },
@@ -849,7 +849,7 @@ async function copyText(t, msg) { try { await navigator.clipboard.writeText(t); 
 /* ---------------- root mode (polkit) ---------------- */
 let rootTimer = 0;
 const desk = $('.desk');
-const FM_NOTE = 'Runs through <b>ds-files-helper</b> using polkit. The file manager itself stays as your user. The root session lasts 5 minutes.';
+const FM_NOTE = 'Runs through <b>gavno-files-helper</b> using polkit. The file manager itself stays as your user. The root session lasts 5 minutes.';
 const SUDO_NOTE = 'This is sudo in the terminal. The polkit confirmation is valid for 5 minutes for this terminal.';
 function auth(what, ok, note) {
   const scrim = document.createElement('div'); scrim.className = 'scrim'; scrim.style.zIndex = 100000;
@@ -965,7 +965,7 @@ function popOut() {
   t.root = dock.root; t.sudoUntil = dock.sudoUntil; t.hist = dock.hist.slice(); t.hi = t.hist.length; tRender(t);
   dock.root = false; dock.sudoUntil = 0; dock.lines = []; dock.hist = []; dock.hi = 0;
   closeDock(); raise(t.el); setTimeout(() => t.input?.focus({ preventScroll: true }), 50);
-  toast('Terminal moved to a separate ds window');
+  toast('Terminal moved to a separate GAVNO window');
 }
 $('#btnTerm').onclick = e => { if (e.shiftKey) { openWin(S.cwd); return; } S.termOpen ? closeDock() : openDock(S.cwd); };
 $('#btnTermWin').onclick = () => openWin(S.cwd);
@@ -975,7 +975,7 @@ $('#termRootBtn').onclick = () => runCmd(dock, dock.root ? 'exit' : 'sudo -i');
 
 function promptHtml(t) {
   const p = esc(pretty(t.cwd));
-  return t.root ? `<span class="p-r">root@ds-x1e</span> <span class="p-path">${p}</span> <span class="p-r">#</span>` : `<span class="p-u">user@ds-x1e</span> <span class="p-path">${p}</span> <span class="t-dim">$</span>`;
+  return t.root ? `<span class="p-r">root@gavno-x1e</span> <span class="p-path">${p}</span> <span class="p-r">#</span>` : `<span class="p-u">user@gavno-x1e</span> <span class="p-path">${p}</span> <span class="t-dim">$</span>`;
 }
 function tRender(t) {
   if (t.closed) return;
@@ -1035,7 +1035,7 @@ function runCmd(t, line) {
     return;
   }
   switch (cmd) {
-    case 'help': out(`<span class="t-dim">Mockup commands: ls [-la] [path], cd, pwd, cat, mkdir, touch, rm, whoami, open ., sudo -i, sudo &lt;cmd&gt;, sudo !!, exit, clear. ${t.dock ? 'This terminal follows the file manager window; Shift+F4 pops it out into a separate window.' : 'This is a separate ds window and lives on its own; open . shows this folder in the file manager.'}</span>`); break;
+    case 'help': out(`<span class="t-dim">Mockup commands: ls [-la] [path], cd, pwd, cat, mkdir, touch, rm, whoami, open ., sudo -i, sudo &lt;cmd&gt;, sudo !!, exit, clear. ${t.dock ? 'This terminal follows the file manager window; Shift+F4 pops it out into a separate window.' : 'This is a separate GAVNO window and lives on its own; open . shows this folder in the file manager.'}</span>`); break;
     case 'clear': t.lines.length = 0; tRender(t); break;
     case 'pwd': out(esc(cwd)); break;
     case 'whoami': out(t.root ? 'root' : 'user'); break;

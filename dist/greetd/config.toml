@@ -1,12 +1,12 @@
-# greetd configuration for the ds compositor, installed as /etc/greetd/config.toml.
+# greetd configuration for the GAVNO compositor, installed as /etc/greetd/config.toml.
 
 [terminal]
 # Virtual terminal the greeter runs on.
 vt = 1
 
 [default_session]
-# The ds compositor in greeter mode; it talks to greetd via $GREETD_SOCK and
-# asks greetd to start the "ds-session" command after authentication.
-command = "/usr/local/bin/ds --greeter"
+# The GAVNO compositor in greeter mode; it talks to greetd via $GREETD_SOCK and
+# asks greetd to start the "gavno-session" command after authentication.
+command = "/usr/local/bin/gavno --greeter"
 # Unprivileged user the greeter runs as.
 user = "greetd"

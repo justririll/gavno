@@ -2,7 +2,7 @@
 
 This file is for any coding agent on this machine: Codex, OpenCode, Claude
 Code and others. It is installed once as `~/.config/agents/AGENTS.md`, and each
-tool's global instruction file points to it. Its source lives in the ds
+tool's global instruction file points to it. Its source lives in the GAVNO
 repository at `agent/AGENTS.md`; edit it there.
 
 ## The machine
@@ -14,12 +14,12 @@ repository at `agent/AGENTS.md`; edit it there.
   - never change system or security settings unless the user asked you to.
 - GPU: Adreno X1-85 via freedreno (Mesa). Display: msm DPU, `/dev/dri/card1`.
   The internal panel is eDP-1, 2880x1620 at 120 Hz, scale 1.75.
-- The desktop is **ds**, the user's own Wayland compositor, still in
+- The desktop is **GAVNO**, the user's own Wayland compositor, still in
   development. Its sources are in `~/Projects/ds`:
   - it is built natively here with `cargo build`;
   - `scripts/laptop.sh` drives it from the user's PC;
-  - a dev instance runs as the systemd unit `ds-dev` on VT 7;
-  - do not stop or restart a running ds session unless the user asks: it
+  - a dev instance runs as the systemd unit `gavno-dev` on VT 7;
+  - do not stop or restart a running GAVNO session unless the user asks: it
     holds their open windows.
 
 ## Hard rules for the NPU (Hexagon CDSP)
@@ -57,29 +57,29 @@ before you rely on them. In short:
 - Do not delete user data. Prefer moving to trash over `rm` for anything you
   did not create yourself.
 
-## Reading the screen and driving the desktop (ds-agent)
+## Reading the screen and driving the desktop (gavno-agent)
 
-ds will ship `ds-agent`, an MCP server that exposes the screen as text and
-lets you control the desktop. Until the `ds-agent` binary exists:
+GAVNO will ship `gavno-agent`, an MCP server that exposes the screen as text and
+lets you control the desktop. Until the `gavno-agent` binary exists:
 
 - you cannot see the screen;
-- ask the user, or read logs (`journalctl -u ds-dev`).
+- ask the user, or read logs (`journalctl -u gavno-dev`).
 
 Once it exists, register it in your tool:
 
-- Claude Code: `claude mcp add ds-agent -- ds-agent mcp`
+- Claude Code: `claude mcp add gavno-agent -- gavno-agent mcp`
 - Codex: add to `~/.codex/config.toml`:
 
   ```toml
-  [mcp_servers.ds-agent]
-  command = "ds-agent"
+  [mcp_servers.gavno-agent]
+  command = "gavno-agent"
   args = ["mcp"]
   ```
 
 - OpenCode: in `~/.config/opencode/opencode.json`:
 
   ```json
-  {"mcp": {"ds-agent": {"type": "local", "command": ["ds-agent", "mcp"]}}}
+  {"mcp": {"gavno-agent": {"type": "local", "command": ["gavno-agent", "mcp"]}}}
   ```
 
 Use it instead of screenshots: text reads cost a few hundred tokens, while
@@ -105,11 +105,11 @@ images cost thousands.
 - Prefer refs: `click("e12")`, `type("hello", ref="e3")`.
 - Use `key("ctrl+s")` for shortcuts.
 - Start apps with `launch("foot", cwd="~/Projects/ds")`.
-- For window management, use the ds tools (`snap`, `move`, `workspace`,
+- For window management, use the GAVNO tools (`snap`, `move`, `workspace`,
   `minimize`), not simulated shortcuts.
 - After an action, use `wait_for(...)` instead of sleeping or polling.
 
-### Limits ds enforces
+### Limits GAVNO enforces
 
 - You cannot read or type into password fields, the lock screen, or
   polkit/sudo dialogs. If an action needs root or a password, open the dialog
@@ -118,7 +118,7 @@ images cost thousands.
   you (`policy: none`). If you hit one, tell the user and stop.
 - The user can press `Super+Esc` at any time to stop you. If your session is
   revoked, do not reconnect on your own: say what you were doing and wait.
-- Every action is logged to `~/.local/state/ds/agent.log`.
+- Every action is logged to `~/.local/state/gavno/agent.log`.
 - Before anything destructive or outward-facing, confirm with the user. This
   covers deleting files, sending messages, submitting forms and purchases.
 

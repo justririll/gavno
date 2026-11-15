@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=GAVNO
+Comment=GAVNO Wayland compositor
+Exec=/usr/local/bin/gavno-session
+Type=Application
+DesktopNames=GAVNO

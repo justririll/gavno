@@ -1,12 +1,12 @@
 #!/bin/sh
-# Install ds as the greetd greeter and user session on the laptop.
+# Install GAVNO as the greetd greeter and user session on the laptop.
 #   scripts/install-greeter.sh                build on the laptop and install files
 #   scripts/install-greeter.sh --enable       also enable greetd.service at boot
 #   scripts/install-greeter.sh --test         also start greetd once on VT 8 (no boot change)
 # Without --enable nothing is enabled or started. Options may be combined
 # except that --test and --enable are mutually exclusive.
 set -eu
-HOST=${DS_HOST:-root@192.168.31.235}
+HOST=${GAVNO_HOST:-root@192.168.31.235}
 DIR=/home/kirill/Projects/ds
 TEST_VT=8
 cd "$(dirname "$0")/.."
@@ -34,9 +34,9 @@ ssh "$HOST" "cd $DIR && runuser -u kirill -- nice -n 19 ionice -c3 cargo build -
 ssh "$HOST" "DIR=$DIR ENABLE=$ENABLE TEST=$TEST TEST_VT=$TEST_VT sh -s" <<'REMOTE'
 set -eu
 cd "$DIR"
-install -D -m 755 target/release/ds /usr/local/bin/ds
-install -D -m 755 dist/ds-session /usr/local/bin/ds-session
-install -D -m 644 dist/wayland-sessions/ds.desktop /usr/share/wayland-sessions/ds.desktop
+install -D -m 755 target/release/gavno /usr/local/bin/gavno
+install -D -m 755 dist/gavno-session /usr/local/bin/gavno-session
+install -D -m 644 dist/wayland-sessions/gavno.desktop /usr/share/wayland-sessions/gavno.desktop
 
 if [ "$TEST" = 0 ]; then
     mkdir -p /etc/greetd
@@ -62,7 +62,7 @@ if [ "$TEST" = 1 ]; then
 vt = $TEST_VT
 
 [default_session]
-command = "/usr/local/bin/ds --greeter"
+command = "/usr/local/bin/gavno --greeter"
 user = "greetd"
 CONF
     greetd_bin=$(command -v greetd)

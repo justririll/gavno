@@ -1,0 +1,20 @@
+#!/bin/sh
+# GAVNO session wrapper, installed as /usr/local/bin/gavno-session.
+# Started by greetd (or a display manager) after login; runs GAVNO on the TTY.
+
+export XDG_SESSION_TYPE=wayland
+export XDG_CURRENT_DESKTOP=GAVNO
+export XDG_SESSION_DESKTOP=GAVNO
+
+# Make the session variables visible to user services and D-Bus activated
+# programs. Failures are ignored: the session works without them.
+systemctl --user import-environment XDG_SESSION_TYPE XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP 2>/dev/null || true
+if command -v dbus-update-activation-environment >/dev/null 2>&1; then
+    dbus-update-activation-environment --systemd XDG_SESSION_TYPE XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP 2>/dev/null || true
+fi
+
+# Send stdout/stderr to the journal when systemd-cat is available.
+if command -v systemd-cat >/dev/null 2>&1; then
+    exec systemd-cat -t gavno /usr/local/bin/gavno --tty
+fi
+exec /usr/local/bin/gavno --tty
