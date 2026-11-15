@@ -27,6 +27,11 @@ sync) sync_src ;;
 build) build ;;
 run)
     shift
+    # Never switch the screen away from a real login session (greetd) unless asked.
+    if [ "${FORCE:-0}" != 1 ] && ssh "$HOST" "loginctl list-sessions --no-legend | awk '{print \$1}' | xargs -r -n1 loginctl show-session -p Service -p Active --value | paste - - | grep -q '^greetd	yes'"; then
+        echo "a greetd login session is active on the laptop; not starting $UNIT (FORCE=1 to override)" >&2
+        exit 1
+    fi
     build
     ssh "$HOST" "systemctl stop $UNIT getty@tty$VT 2>/dev/null || true; systemctl reset-failed $UNIT 2>/dev/null || true
         systemd-run --unit=$UNIT \
