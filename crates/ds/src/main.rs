@@ -10,6 +10,7 @@ mod cursor;
 mod grabs;
 mod handlers;
 mod input;
+mod ipc;
 mod module;
 mod render;
 mod state;
@@ -57,6 +58,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         BackendChoice::Winit => backend::winit::init(&mut event_loop, &mut state)?,
         BackendChoice::Tty => backend::udev::init(&mut event_loop, &mut state)?,
     }
+    ipc::init(&mut state)?;
 
     // Clients we start must talk to us, never to a parent session.
     std::env::set_var("WAYLAND_DISPLAY", &state.socket_name);

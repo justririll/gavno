@@ -37,6 +37,7 @@ pub struct Ds {
     pub loop_handle: LoopHandle<'static, Ds>,
     pub loop_signal: LoopSignal,
     pub config: Config,
+    pub ipc: crate::ipc::IpcState,
 
     /// Mapped windows. A toplevel joins the space on its first buffer commit.
     pub space: Space<Window>,
@@ -109,6 +110,7 @@ impl Ds {
             loop_handle: event_loop.handle(),
             loop_signal: event_loop.get_signal(),
             config,
+            ipc: crate::ipc::IpcState::default(),
             space: Space::default(),
             unmapped: Vec::new(),
             popups: PopupManager::default(),

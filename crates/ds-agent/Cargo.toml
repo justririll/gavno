@@ -1,0 +1,9 @@
+[package]
+name = "ds-agent"
+description = "Window management MCP server for ds"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde_json = "1.0"

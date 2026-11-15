@@ -34,7 +34,9 @@ impl XdgShellHandler for Ds {
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
         // Mapped on the first buffer commit, see `CompositorHandler::commit`.
-        self.unmapped.push(Window::new_wayland_window(surface));
+        let window = Window::new_wayland_window(surface);
+        self.ipc.assign_id(&window);
+        self.unmapped.push(window);
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
