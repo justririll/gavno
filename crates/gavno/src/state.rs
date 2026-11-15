@@ -52,6 +52,8 @@ pub struct Gavno {
     pub mru: Vec<Window>,
     pub workspaces: crate::workspace::Workspaces,
     pub overview: crate::overview::Overview,
+    pub dock: crate::dock::Dock,
+    pub topbar: crate::topbar::TopBar,
     pub gestures: crate::gesture::Gestures,
     pub pointer_gestures: smithay::wayland::pointer_gestures::PointerGesturesState,
     pub overlay: crate::overlay::Overlay,
@@ -139,6 +141,8 @@ impl Gavno {
             mru: Vec::new(),
             workspaces: Default::default(),
             overview: Default::default(),
+            dock: Default::default(),
+            topbar: Default::default(),
             gestures: Default::default(),
             pointer_gestures: smithay::wayland::pointer_gestures::PointerGesturesState::new::<Self>(&dh),
             overlay: crate::overlay::Overlay::default(),
@@ -212,6 +216,8 @@ impl Gavno {
         self.update_shortcut_inhibitors(focus.as_ref());
         self.refresh_constraints(focus.as_ref());
         self.refresh_lock();
+        self.refresh_shell();
+        self.finish_dock_launches();
         self.refresh_idle();
         self.popups.cleanup();
         let _ = self.display_handle.flush_clients();
@@ -231,7 +237,8 @@ impl Gavno {
         match self.greeter.as_ref() {
             Some(g) => g.is_animating(),
             None => self.window_animations.is_animating() || self.overlay.is_animating()
-                || self.workspaces.active() || self.overview.progress.is_active(),
+                || self.workspaces.active() || self.overview.progress.is_active()
+                || self.dock.active() || self.topbar.active(),
         }
     }
 
@@ -241,6 +248,7 @@ impl Gavno {
 
     pub fn surface_under(&self, pos: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
         if self.protocols.locks.locked { return self.lock_surface_under(pos); }
+        if self.greeter.is_none() && self.shell_contains(pos) { return None; }
         use smithay::wayland::shell::wlr_layer::Layer;
         if let Some(hit) = self.layer_hit(pos, &[Layer::Overlay, Layer::Top]) {
             return Some((hit.surface, hit.surface_loc));
@@ -297,6 +305,7 @@ impl Gavno {
             if let Some((output, index)) = self.workspaces.membership(window) {
                 if self.workspaces.get(&output).is_some_and(|o| o.list.active != index) { self.switch_workspace(&output, index); }
             }
+            self.restore_minimized(window);
             self.workspace_focus(window);
             crate::handlers::xdg_activation::clear_urgency(window);
             self.space.raise_element(window, true);

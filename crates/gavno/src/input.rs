@@ -32,6 +32,7 @@ pub enum Action {
     Quit,
     Spawn(String),
     CloseWindow,
+    Minimize,
     /// Switch to virtual terminal N (Ctrl+Alt+F<N>), TTY backend only.
     SwitchVt(i32),
     ToggleMaximize,
@@ -264,6 +265,7 @@ impl Gavno {
         match sym {
             keysyms::KEY_Return | keysyms::KEY_KP_Enter => Some(Action::Spawn(self.config.terminal.clone())),
             keysyms::KEY_q if !mods.shift => Some(Action::CloseWindow),
+            keysyms::KEY_m | keysyms::KEY_M if !mods.shift => Some(Action::Minimize),
             keysyms::KEY_d => self.config.launcher.clone().map(Action::Spawn),
             keysyms::KEY_f | keysyms::KEY_F if mods.ctrl && !mods.shift => Some(Action::ToggleMaximize),
             keysyms::KEY_f | keysyms::KEY_F if mods.shift && !mods.ctrl => Some(Action::ToggleFullscreen),
@@ -281,6 +283,7 @@ impl Gavno {
             Action::Quit => self.quit(),
             Action::Spawn(cmd) => spawn_shell(&cmd),
             Action::CloseWindow => self.close_focused(),
+            Action::Minimize => { if let Some(window) = self.focused_window() { self.minimize_window(&window); } }
             Action::ToggleMaximize => self.toggle_window_mode(WindowMode::Maximized),
             Action::ToggleFullscreen => self.toggle_window_mode(WindowMode::Fullscreen),
             Action::Snap(dir) => self.snap_direction(dir),
@@ -370,6 +373,7 @@ impl Gavno {
         }
 
         self.gestures.super_tap.cancel();
+        if self.shell_button(button, button_state == ButtonState::Pressed) { return; }
         if self.overview_button(button, button_state == ButtonState::Pressed) { return; }
         if self.desktop_transform_at(pointer.current_location()) && self.layer_hit(pointer.current_location(), &[Layer::Overlay, Layer::Top]).is_none() { return; }
         if button_state == ButtonState::Pressed && !pointer.is_grabbed() {
@@ -471,7 +475,6 @@ impl Gavno {
     }
 
     fn on_pointer_axis<I: InputBackend>(&mut self, event: I::PointerAxisEvent) {
-        if self.overview.visible() { return; }
         let source = event.source();
         let horizontal = event
             .amount(Axis::Horizontal)
@@ -480,6 +483,8 @@ impl Gavno {
             .amount(Axis::Vertical)
             .unwrap_or_else(|| event.amount_v120(Axis::Vertical).unwrap_or(0.0) * 15.0 / 120.);
 
+        if self.greeter.is_none() && !self.protocols.locks.locked && self.shell_axis(horizontal, vertical) { return; }
+        if self.overview.visible() { return; }
         let mut frame = AxisFrame::new(event.time_msec()).source(source);
         if horizontal != 0.0 {
             frame = frame.value(Axis::Horizontal, horizontal);

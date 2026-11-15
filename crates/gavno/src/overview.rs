@@ -76,6 +76,7 @@ pub struct Overview {
     pub held: bool,
     pub hits: Vec<SceneWindow>,
     pub thumbnails: Vec<Rect>,
+    pub work_area: Option<Rectangle<i32, Logical>>,
     order: Vec<Window>,
     pub drag: Option<(Window, Point<f64, Logical>, Point<f64, Logical>)>,
     shaders: Option<Shaders>,
@@ -91,6 +92,7 @@ impl Default for Overview {
             held: false,
             hits: Vec::new(),
             thumbnails: Vec::new(),
+            work_area: None,
             order: Vec::new(),
             drag: None,
             shaders: None,
@@ -140,12 +142,13 @@ impl Overview {
             return None;
         }
         let geo = space.output_geometry(output)?;
+        let work_area = self.work_area.unwrap_or(geo);
         let (w, h) = (geo.size.w as f64, geo.size.h as f64);
         let zoom = 1.0 - 0.34 * p;
         let spacing = w * (1.0 - 0.28 * p);
         let mut scene = Vec::new();
         for (index, ws) in owner.list.items.iter().enumerate() {
-            let mut windows: Vec<_> = ws.windows.iter().collect();
+            let mut windows: Vec<_> = ws.windows.iter().filter(|v| p > 0.0 || !crate::window_mode::mode_state(&v.window).minimized).collect();
             if p > 0.0 {
                 for v in &windows {
                     if !self.order.contains(&v.window) {
@@ -154,9 +157,11 @@ impl Overview {
                 }
                 windows.sort_by_key(|v| self.order.iter().position(|w| w == &v.window));
             }
+            let local = work_area.loc - geo.loc;
+            let padding = 20.0_f64.min(work_area.size.w as f64 * 0.05);
             let area = Rectangle::new(
-                (60.0_f64.min(w * 0.1), 60.0_f64.min(h * 0.1)).into(),
-                ((w - 120.0).max(w * 0.8), (h - 130.0).max(h * 0.7)).into(),
+                (local.x as f64 + padding, local.y as f64 + 100.0_f64.min(work_area.size.h as f64 * 0.2)).into(),
+                ((work_area.size.w as f64 - 2.0 * padding).max(1.0), (work_area.size.h as f64 - 130.0).max(1.0)).into(),
             );
             let slots = pack(
                 &windows

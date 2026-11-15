@@ -27,6 +27,8 @@ pub enum WindowMode {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ModeState {
     pub mode: WindowMode,
+    /// Minimized windows retain their mode, geometry, and workspace ownership.
+    pub minimized: bool,
     /// Floating geometry to go back to. `None` while floating, or when the
     /// window was never floating (it asked for maximize before its first map).
     pub restore: Option<Rectangle<i32, Logical>>,

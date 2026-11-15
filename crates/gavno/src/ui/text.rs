@@ -150,6 +150,7 @@ impl TextRenderer {
         if let Some(img) = self.cache.get(&key) {
             return Some(img.clone());
         }
+        if self.cache.len() >= 512 { self.cache.clear(); }
         let font = self.font(style.weight)?;
         let px = style.size * scale as f32;
         let tracking = style.tracking * scale as f32;
