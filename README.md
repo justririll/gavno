@@ -47,7 +47,7 @@ Keyboard binds: [docs/keybinds.md](docs/keybinds.md)
 - Workspaces and overview.
 - Touchpad gestures.
 - Dock and top bar.
-- Config file.
+
 - Dwindle tiling.
 - Screencopy.
 
