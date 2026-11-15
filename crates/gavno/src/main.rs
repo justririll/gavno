@@ -33,6 +33,7 @@ mod tiling;
 mod overview;
 mod gesture;
 mod window_gesture;
+mod window_input;
 mod resize_mode;
 mod xwayland;
 

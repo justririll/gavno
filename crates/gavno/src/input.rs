@@ -448,7 +448,7 @@ impl Gavno {
             if let Some(hit) = self.layer_hit(pos, &[Layer::Overlay, Layer::Top]) {
                 self.focus_layer(&hit.layer);
             } else {
-                let hit = self.space.element_under(pos).map(|(w, l)| (w.clone(), l));
+                let hit = self.window_input_at(pos).map(|(w, l, _, _)| (w, l));
                 match hit {
                     Some((window, loc)) => {
                         if !keep_focus {
@@ -512,6 +512,7 @@ impl Gavno {
                 time: event.time_msec(),
             },
         );
+        if button_state == ButtonState::Pressed { self.install_window_click_grab(serial); }
         pointer.frame(self);
     }
 

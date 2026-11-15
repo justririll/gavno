@@ -41,39 +41,14 @@ impl SplitterGrab {
         let tree = &gv.workspaces.get(&output)?.list.items[i].tree;
         let area = gv.work_area(&output);
         let mut splits = Vec::new();
-        for (on, dir, other) in [
-            (
-                edges.intersects(ResizeEdge::LEFT | ResizeEdge::RIGHT),
-                if edges.contains(ResizeEdge::LEFT) {
-                    Direction::Left
-                } else {
-                    Direction::Right
-                },
-                if edges.contains(ResizeEdge::LEFT) {
-                    Direction::Right
-                } else {
-                    Direction::Left
-                },
-            ),
-            (
-                edges.intersects(ResizeEdge::TOP | ResizeEdge::BOTTOM),
-                if edges.contains(ResizeEdge::TOP) {
-                    Direction::Up
-                } else {
-                    Direction::Down
-                },
-                if edges.contains(ResizeEdge::TOP) {
-                    Direction::Down
-                } else {
-                    Direction::Up
-                },
-            ),
+        for (edge, dir) in [
+            (ResizeEdge::LEFT, Direction::Left),
+            (ResizeEdge::RIGHT, Direction::Right),
+            (ResizeEdge::TOP, Direction::Up),
+            (ResizeEdge::BOTTOM, Direction::Down),
         ] {
-            if on {
-                if let Some(s) = tree
-                    .side(window, dir, area, gv.config.gap)
-                    .or_else(|| tree.side(window, other, area, gv.config.gap))
-                {
+            if edges.contains(edge) {
+                if let Some(s) = tree.side(window, dir, area, gv.config.gap) {
                     splits.push(s);
                 }
             }

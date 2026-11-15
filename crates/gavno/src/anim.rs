@@ -160,14 +160,9 @@ impl WindowAnimations {
                 continue;
             }
             if let Some(loc) = space.element_location(&a.window) {
-                // The client may choose a different buffer size from the configure.
-                let immediate = a.motion.geometry.as_ref().is_some_and(|(from, to, _)| from == to);
-                let size = if immediate {
-                    // Interactive tiles keep their exact slot even if a client chooses another size.
-                    a.window.geometry().size
-                } else {
-                    a.window.toplevel().and_then(|t| t.current_state().size).unwrap_or(a.window.geometry().size)
-                };
+                // A configure acknowledgement does not describe the buffer geometry.
+                // Keep the displayed slot until the actual client geometry matches.
+                let size = a.window.geometry().size;
                 a.motion
                     .retire_geometry(Rectangle::new(loc, size).to_f64());
             }
@@ -246,6 +241,30 @@ mod tests {
             assert_eq!(h.gv.window_animations.motion(&w).unwrap().rect(r(0.0,1.0)), target);
             assert!(!h.gv.window_animations.is_animating());
         }
+    }
+    #[test]
+    fn animated_slot_waits_for_actual_geometry_after_configure_ack() {
+        let mut h = crate::state::tests::Harness::new();
+        let w = h.window();
+        h.gv.map_new_window(w.clone());
+        h.commit_size(&w, 100, 100);
+        let target = r(20.0, 500.0);
+        let t = w.toplevel().unwrap();
+        t.with_pending_state(|s| s.size = Some((500, 100).into()));
+        t.send_pending_configure();
+        h.gv.space.map_element(w.clone(), (20, 20), false);
+        h.gv.window_animations.entries[0].motion.retarget(r(20.0, 100.0), target, Duration::ZERO);
+        h.commit_size(&w, 300, 100);
+        assert_eq!(t.current_state().size, Some((500, 100).into()));
+        for i in 1..300 {
+            h.gv.window_animations.advance(Duration::from_millis(i * 8), &h.gv.space);
+        }
+        let motion = h.gv.window_animations.motion(&w).unwrap();
+        assert_eq!(motion.rect(r(20.0, 300.0)), target);
+        assert!(!motion.active());
+        h.commit_size(&w, 500, 100);
+        h.gv.window_animations.advance(Duration::from_secs(3), &h.gv.space);
+        assert!(h.gv.window_animations.motion(&w).unwrap().geometry.is_none());
     }
     #[test]
     fn open_close_and_idle() {

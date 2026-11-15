@@ -563,6 +563,9 @@ impl Dock {
         }
         c.finish()
     }
+    pub(crate) fn cancel_window_motion(&mut self, window: &Window) {
+        self.minimized.retain(|m| &m.window != window);
+    }
     pub fn minimize_scene(
         &mut self,
         space: &Space<Window>,
@@ -940,6 +943,7 @@ impl Gavno {
         let Some(geo) = self.space.output_geometry(&output) else {
             return;
         };
+        self.cancel_window_gestures();
         self.workspaces.snapshot(&self.space);
         self.save_workspace_location(window, location);
         let id = self

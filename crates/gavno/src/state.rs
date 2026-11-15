@@ -1,7 +1,7 @@
 use std::{ffi::OsString, sync::Arc, time::Instant};
 
 use smithay::{
-    desktop::{PopupManager, Space, Window, WindowSurfaceType},
+    desktop::{PopupManager, Space, Window},
     input::{keyboard::XkbConfig, pointer::CursorImageStatus, Seat, SeatState},
     output::Output,
     reexports::{
@@ -265,12 +265,8 @@ impl Gavno {
         }
         if self.desktop_transform_at(pos) { return None; }
         if self.splitter_at(pos).is_some() || self.resize_band_at(pos).is_some() || self.overlay.resize_mode.active() { return None; }
-        if let Some(found) = self.space.element_under(pos).and_then(|(window, location)| {
-            window
-                .surface_under(pos - location.to_f64(), WindowSurfaceType::ALL)
-                .map(|(s, p)| (s, (p + location).to_f64()))
-        }) {
-            return Some(found);
+        if let Some((_, _, surface, origin)) = self.window_input_at(pos) {
+            return Some((surface, origin));
         }
         self.layer_hit(pos, &[Layer::Bottom, Layer::Background])
             .map(|hit| (hit.surface, hit.surface_loc))

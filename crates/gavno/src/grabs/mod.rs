@@ -9,6 +9,7 @@ impl crate::Gavno {
     /// End window manipulation before any desktop mapping or transform changes.
     /// Client click grabs remain intact so their outstanding releases can arrive.
     pub(crate) fn end_window_grab(&mut self) {
+        self.cancel_window_gestures();
         let Some(pointer) = self.seat.get_pointer() else { return };
         let window_grab = pointer.with_grab(|_, grab| {
             grab.is::<MoveSurfaceGrab>() || grab.is::<ResizeSurfaceGrab>() || grab.is::<tiling_grab::SplitterGrab>()

@@ -192,6 +192,36 @@ pub struct WindowGestures {
 }
 
 impl Gavno {
+    /// Mapping changes must discard streams without restoring their old geometry.
+    pub(crate) fn cancel_window_gestures(&mut self) {
+        let drag = self.window_gestures.drag.take().is_some();
+        self.end_window_pinch(false);
+        if let Some(s) = self.window_gestures.scroll.take() {
+            if let Some(w) = s.window {
+                self.finish_interactive_resize(&w);
+            }
+        }
+        if drag {
+            self.workspaces.moving_tile = None;
+            self.overlay.hide_preview(self.start_time.elapsed());
+            self.queue_redraw_all();
+        }
+    }
+    fn gesture_window_is_active(&self, w: &Window) -> bool {
+        w.alive()
+            && !mode_state(w).minimized
+            && self.space.element_location(w).is_some()
+            && self.workspaces.membership(w).is_some_and(|(o, i)| {
+                self.space.output_geometry(&o).is_some()
+                    && self.workspaces.get(&o).is_some_and(|owner| owner.list.active == i)
+            })
+    }
+    fn drag_destination(&self, w: &Window, position: Pos) -> Option<Output> {
+        self.space.output_under(position).next().cloned()
+            .or_else(|| self.workspaces.membership(w).map(|v| v.0)
+                .filter(|o| self.space.output_geometry(o).is_some()))
+            .or_else(|| self.output_for_window(w))
+    }
     pub fn interactive_window_at(&self, pos: Pos) -> Option<Window> {
         self.space
             .elements()
@@ -312,7 +342,7 @@ impl Gavno {
         if self.interactive_rect(w) == Some(rect) {
             return;
         }
-        resize_grab::directed_anchor(t.wl_surface(), rect, anchor);
+        resize_grab::directed_anchor(t.wl_surface(), rect, anchor, self.interactive_rect(w).unwrap_or(rect));
         t.with_pending_state(|s| {s.size=Some(size); s.states.set(smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Resizing);});
         t.send_pending_configure();
         self.space.map_element(w.clone(), rect.loc, false);
@@ -377,6 +407,12 @@ impl Gavno {
         let Some(mut d) = self.window_gestures.drag.take() else {
             return false;
         };
+        if !self.gesture_window_is_active(&d.window) {
+            self.workspaces.moving_tile = None;
+            self.overlay.hide_preview(self.start_time.elapsed());
+            self.queue_redraw_all();
+            return true;
+        }
         if delta.x.is_finite()
             && delta.y.is_finite()
             && delta != (0.0, 0.0).into()
@@ -405,7 +441,9 @@ impl Gavno {
                 self.workspaces.moving_tile = Some(d.window.clone());
                 self.preview_tile_drop(&d.window, d.pointer + d.delta);
             } else {
-                self.preview_window_landing(&d.window, &d.output, d.pointer + d.delta);
+                if let Some(output) = self.drag_destination(&d.window, d.pointer + d.delta) {
+                    self.preview_window_landing(&d.window, &output, d.pointer + d.delta);
+                }
             }
             self.queue_redraw_all();
         }
@@ -419,7 +457,7 @@ impl Gavno {
         if !d.moved {
             return true;
         }
-        if !d.window.alive() {
+        if !self.gesture_window_is_active(&d.window) {
             self.workspaces.moving_tile = None;
             self.overlay.hide_preview(self.start_time.elapsed());
             self.queue_redraw_all();
@@ -467,14 +505,15 @@ impl Gavno {
                     .map_element(d.window.clone(), d.original_rect.loc, false);
                 crate::anim::animate_geometry(self, &d.window, from);
             }
-        } else if let Some(geo) = self.space.output_geometry(&d.output) {
+        } else if let Some(output) = self.drag_destination(&d.window, d.pointer + d.delta) {
+            let Some(geo) = self.space.output_geometry(&output) else { return true };
             match landing(d.pointer + d.delta, velocity, geo) {
                 Some(Landing::Minimize) => {
                     self.minimize_window(&d.window);
                     self.seed_minimize_velocity(&d.window, velocity);
                 }
                 Some(Landing::Snap(z)) => {
-                    self.set_window_mode(&d.window, z.mode(), Some(d.output));
+                    self.set_window_mode(&d.window, z.mode(), Some(output));
                     self.seed_geometry_velocity(&d.window, velocity);
                 }
                 None => {
@@ -550,17 +589,15 @@ impl Gavno {
         let area = self.work_area(&o);
         let gap = self.config.gap;
         let mut edges = Edge::empty();
-        for (edge, dir, opposite, other) in [
-            (Edge::LEFT, Direction::Left, Direction::Right, Edge::RIGHT),
-            (Edge::RIGHT, Direction::Right, Direction::Left, Edge::LEFT),
-            (Edge::TOP, Direction::Up, Direction::Down, Edge::BOTTOM),
-            (Edge::BOTTOM, Direction::Down, Direction::Up, Edge::TOP),
+        for (edge, dir) in [
+            (Edge::LEFT, Direction::Left),
+            (Edge::RIGHT, Direction::Right),
+            (Edge::TOP, Direction::Up),
+            (Edge::BOTTOM, Direction::Down),
         ] {
             if preferred.contains(edge) {
                 if tree.side(w, dir, area, gap).is_some() {
                     edges |= edge;
-                } else if tree.side(w, opposite, area, gap).is_some() {
-                    edges |= other;
                 }
             }
         }
@@ -621,6 +658,10 @@ impl Gavno {
         let Some(mut p) = self.window_gestures.pinch.take() else {
             return;
         };
+        if !self.gesture_window_is_active(&p.window) {
+            self.finish_interactive_resize(&p.window);
+            return;
+        }
         if scale.is_finite() && scale > 0.0 && scale != p.previous {
             if !p.started {
                 self.prepare_interactive_resize(&p.window);
@@ -663,7 +704,7 @@ impl Gavno {
     }
     pub fn end_window_pinch(&mut self, cancelled: bool) {
         if let Some(p) = self.window_gestures.pinch.take() {
-            if cancelled && p.started {
+            if cancelled && p.started && self.gesture_window_is_active(&p.window) {
                 if self.tiled(&p.window) {
                     if let Some((o, i, tree)) = p.tile_original {
                         if self.workspaces.membership(&p.window) == Some((o.clone(), i)) {
@@ -727,6 +768,10 @@ impl Gavno {
             });
         }
         let mut s = self.window_gestures.scroll.take().unwrap();
+        if s.window.as_ref().is_some_and(|w| !self.gesture_window_is_active(w)) {
+            if let Some(w) = s.window { self.finish_interactive_resize(&w); }
+            return s.claimed;
+        }
         for (i, v) in present.into_iter().enumerate() {
             if let Some(v) = v {
                 s.active[i] = v != 0.0;
@@ -1102,6 +1147,65 @@ mod tests {
         assert!(!h.gv.window_animations.is_animating());
     }
     #[test]
+    fn workspace_switch_cancels_drag_and_stale_updates_cannot_remap_windows() {
+        let (mut h, o) = setup();
+        let w = map(&mut h, r(100, 100, 400, 300));
+        point(&mut h.gv, (200.0, 200.0).into());
+        h.gv.begin_window_drag(0);
+        h.gv.update_window_drag((30.0, 20.0).into(), 10_000);
+        h.gv.switch_workspace(&o, 1);
+        assert!(h.gv.window_gestures.drag.is_none());
+        assert!(!h.gv.update_window_drag((30.0, 20.0).into(), 20_000));
+        assert!(!h.gv.end_window_drag(30_000, false));
+        assert!(h.gv.space.element_location(&w).is_none());
+        assert_eq!(h.gv.workspaces.membership(&w), Some((o, 0)));
+    }
+    #[test]
+    fn drag_validates_mapping_minimization_and_active_membership() {
+        for invalid in 0..3 {
+            let (mut h, o) = setup();
+            let w = map(&mut h, r(100, 100, 400, 300));
+            point(&mut h.gv, (200.0, 200.0).into());
+            h.gv.begin_window_drag(0);
+            match invalid {
+                0 => h.gv.space.unmap_elem(&w),
+                1 => crate::window_mode::with_mode_state(&w, |s| s.minimized = true),
+                _ => h.gv.workspaces.ensure(&o).list.active = 1,
+            }
+            let before = h.gv.space.element_location(&w);
+            h.gv.update_window_drag((50.0, 0.0).into(), 10_000);
+            assert!(h.gv.window_gestures.drag.is_none());
+            assert_eq!(h.gv.space.element_location(&w), before);
+            assert!(!h.gv.end_window_drag(20_000, false));
+        }
+    }
+    #[test]
+    fn cross_output_drag_lands_and_snaps_on_destination_before_or_after_transfer() {
+        for transfer in [false, true] {
+            for snap in [false, true] {
+                let (mut h, left) = setup();
+                let right = Output::new("right".into(), left.physical_properties());
+                right.change_current_state(Some(Mode { size: (1600, 1000).into(), refresh: 60000 }), None, None, Some((1600, 0).into()));
+                h.gv.space.map_output(&right, (1600, 0));
+                h.gv.workspaces.ensure(&right);
+                let w = map(&mut h, r(200, 200, 400, 300));
+                point(&mut h.gv, (400.0, 350.0).into());
+                h.gv.begin_window_drag(0);
+                let dx = if snap { 2795.0 } else { 1600.0 };
+                h.gv.update_window_drag((dx, 0.0).into(), 10_000);
+                if transfer { h.gv.refresh_workspaces(); }
+                h.gv.end_window_drag(300_000, false);
+                if snap {
+                    assert_eq!(mode_state(&w).mode, WindowMode::Snapped(Zone::Right));
+                    assert_eq!(h.gv.space.element_location(&w), Some(Zone::Right.rect(h.gv.work_area(&right), h.gv.config.gap).loc));
+                } else {
+                    assert_eq!(h.gv.space.element_location(&w), Some((1800, 200).into()));
+                    assert_eq!(mode_state(&w).mode, WindowMode::Floating);
+                }
+            }
+        }
+    }
+    #[test]
     fn four_finger_down_throw_minimizes_and_preserves_workspace_membership() {
         let (mut h, o) = setup();
         let w = map(&mut h, r(500, 250, 400, 300));
@@ -1148,7 +1252,7 @@ mod tests {
             point(
                 &mut h.gv,
                 (
-                    rect.loc.x as f64 + rect.size.w as f64 - 5.0,
+                    if w == &a { (rect.loc.x + rect.size.w - 5) as f64 } else { (rect.loc.x + 5) as f64 },
                     rect.loc.y as f64 + rect.size.h as f64 / 2.0,
                 )
                     .into(),

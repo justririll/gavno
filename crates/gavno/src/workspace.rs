@@ -178,6 +178,17 @@ impl Workspaces {
         }
     }
 }
+/// Translate saved floating geometry into the surviving work area, including hidden windows.
+fn migrate_rect(
+    mut rect: smithay::utils::Rectangle<i32, Logical>,
+    origin: Point<i32, Logical>,
+    area: smithay::utils::Rectangle<i32, Logical>,
+) -> smithay::utils::Rectangle<i32, Logical> {
+    rect.loc += area.loc - origin;
+    rect.loc.x = rect.loc.x.clamp(area.loc.x, area.loc.x + (area.size.w - rect.size.w).max(0));
+    rect.loc.y = rect.loc.y.clamp(area.loc.y, area.loc.y + (area.size.h - rect.size.h).max(0));
+    rect
+}
 impl Gavno {
     pub fn refresh_desktop_pointer(&mut self) {
         if self.greeter.is_some() || self.protocols.locks.locked {
@@ -221,6 +232,9 @@ impl Gavno {
         for output in &outputs {
             self.workspaces.ensure(output);
         }
+        if self.workspaces.outputs.iter().any(|o| !outputs.contains(&o.output)) {
+            self.end_window_grab();
+        }
         self.workspaces.snapshot(&self.space);
         if self
             .overview
@@ -243,17 +257,27 @@ impl Gavno {
             if outputs.contains(&o.output) {
                 true
             } else {
+                let origin = o.output.current_location();
                 for ws in &mut o.list.items {
-                    orphaned.append(&mut ws.windows);
+                    orphaned.extend(ws.windows.drain(..).map(|w| (w, origin)));
                 }
                 false
             }
         });
         if let Some(output) = outputs.first() {
-            for mut w in orphaned {
+            for (mut w, origin) in orphaned {
                 self.space.unmap_elem(&w.window);
                 let area = self.work_area(output);
-                w.location = area.loc;
+                let size = w.window.toplevel().and_then(|t| t.with_pending_state(|s| s.size))
+                    .unwrap_or(w.window.geometry().size);
+                w.location = migrate_rect(smithay::utils::Rectangle::new(w.location, size), origin, area).loc;
+                crate::window_mode::with_mode_state(&w.window, |s| {
+                    s.restore = s.restore.map(|r| migrate_rect(r, origin, area));
+                    s.tile_restore = s.tile_restore.map(|r| migrate_rect(r, origin, area));
+                });
+                crate::grabs::resize_grab::clear_anchor(&w.window);
+                self.window_animations.cancel(&w.window);
+                self.dock.cancel_window_motion(&w.window);
                 let owner = self.workspaces.ensure(output);
                 let active = owner.list.active;
                 if !crate::window_mode::mode_state(&w.window).minimized { self.space.map_element(w.window.clone(), w.location, false); }
@@ -320,6 +344,7 @@ impl Gavno {
         }
     }
     pub fn workspace_forget(&mut self, window: &Window) {
+        self.cancel_window_gestures();
         self.overview.forget(window);
         for o in &mut self.workspaces.outputs {
             for ws in &mut o.list.items {
@@ -576,6 +601,45 @@ mod tests {
         h.gv.space.unmap_output(&remaining);
         h.gv.refresh_workspaces();
         assert!(h.gv.workspaces.membership(&a).is_some());
+    }
+    #[test]
+    fn output_removal_migrates_tile_and_mode_restores_including_minimized_windows() {
+        use crate::window_mode::{mode_state, with_mode_state};
+        use smithay::utils::Rectangle;
+        let mut h = crate::state::tests::Harness::new();
+        let left = output(&mut h.gv, "left", 0);
+        let right = output(&mut h.gv, "right", 1600);
+        let mut windows = Vec::new();
+        for x in [1800, 2900] {
+            let w = h.window();
+            h.gv.map_new_window(w.clone());
+            w.toplevel().unwrap().with_pending_state(|s| s.size = Some((500, 400).into()));
+            h.gv.space.map_element(w.clone(), (x, 200), false);
+            windows.push(w);
+        }
+        h.gv.refresh_workspaces();
+        h.gv.toggle_workspace_tiling(&right);
+        h.gv.minimize_window(&windows[1]);
+        let saved: Vec<_> = windows.iter().map(|w| mode_state(w).tile_restore.unwrap()).collect();
+        for w in &windows {
+            with_mode_state(w, |s| s.restore = Some(Rectangle::new((3100, 800).into(), (500, 400).into())));
+        }
+        // Include an inactive source workspace as well as a minimized window.
+        h.gv.switch_workspace(&right, 1);
+        h.gv.space.unmap_output(&right);
+        h.gv.refresh_workspaces();
+        let area = h.gv.work_area(&left);
+        for (w, saved) in windows.iter().zip(saved) {
+            let expected = migrate_rect(saved, (1600, 0).into(), area);
+            assert_eq!(h.gv.workspaces.membership(w), Some((left.clone(), 0)));
+            assert_eq!(h.gv.workspaces.location(w), Some(expected.loc));
+            assert_eq!(w.toplevel().unwrap().with_pending_state(|s| s.size), Some(expected.size));
+            assert_eq!(mode_state(w).tile_restore, None);
+            assert!(area.contains(mode_state(w).restore.unwrap().loc));
+        }
+        assert!(h.gv.space.element_location(&windows[1]).is_none());
+        h.gv.focus_window(Some(&windows[1]));
+        assert!(area.contains(h.gv.space.element_location(&windows[1]).unwrap()));
     }
     #[test]
     fn strip_retargets_without_jumping_and_settles_to_idle() {

@@ -1180,6 +1180,35 @@ mod tests {
         assert!(h.gv.tiled(&a));
     }
     #[test]
+    fn outer_tile_edges_do_not_move_an_opposite_splitter_by_keyboard_or_grab() {
+        use crate::grabs::{resize_grab::ResizeEdge, tiling_grab::SplitterGrab};
+        use smithay::input::pointer::{Focus, GrabStartData, MotionEvent};
+        let mut h = crate::state::tests::Harness::new();
+        let o = output(&mut h);
+        for _ in 0..4 { window(&mut h, r(100, 100, 500, 400)); }
+        h.gv.toggle_workspace_tiling(&o);
+        let area = h.gv.work_area(&o);
+        let gap = h.gv.config.gap;
+        let before = h.gv.workspaces.get(&o).unwrap().list.items[0].tree.layout(area, gap).0;
+        let pointer = h.gv.seat.get_pointer().unwrap();
+        let mut tested = 0;
+        for (w, rect) in &before {
+            for (dir, edge) in [(Direction::Left, ResizeEdge::LEFT), (Direction::Right, ResizeEdge::RIGHT), (Direction::Up, ResizeEdge::TOP), (Direction::Down, ResizeEdge::BOTTOM)] {
+                if h.gv.workspaces.get(&o).unwrap().list.items[0].tree.side(w, dir, area, gap).is_some() { continue; }
+                tested += 1;
+                h.gv.resize_nearest_split(w, dir, 75);
+                assert!(h.gv.tile_resize_edges(w, edge).is_empty());
+                let start = rect.loc.to_f64();
+                let grab = SplitterGrab::for_tile(&h.gv, GrabStartData { focus: None, button: 0x110, location: start }, w, edge).unwrap();
+                pointer.set_grab(&mut h.gv, grab, smithay::utils::SERIAL_COUNTER.next_serial(), Focus::Clear);
+                pointer.motion(&mut h.gv, None, &MotionEvent { location: start + Point::from((100.0, 100.0)), serial: smithay::utils::SERIAL_COUNTER.next_serial(), time: 10 });
+                h.gv.end_window_grab();
+                assert_eq!(h.gv.workspaces.get(&o).unwrap().list.items[0].tree.layout(area, gap).0, before);
+            }
+        }
+        assert!(tested >= 4);
+    }
+    #[test]
     fn lifecycle_minimize_fixed_modes_override_and_workspace_migration() {
         let mut h = crate::state::tests::Harness::new();
         let o = output(&mut h);
@@ -1234,9 +1263,8 @@ impl Gavno {
     pub fn resize_nearest_split(&mut self,w:&Window,dir:Direction,delta:i32) {
         let Some((o,i))=self.workspaces.membership(w) else {return};
         let area=self.work_area(&o);let gap=self.config.gap;
-        let opposite=match dir {Direction::Left=>Direction::Right,Direction::Right=>Direction::Left,Direction::Up=>Direction::Down,Direction::Down=>Direction::Up};
         let tree=&mut self.workspaces.ensure(&o).list.items[i].tree;
-        if let Some(s)=tree.side(w,dir,area,gap).or_else(||tree.side(w,opposite,area,gap)) {
+        if let Some(s)=tree.side(w,dir,area,gap) {
             if tree.move_split(&s.path,delta,area,gap) {self.reflow_tiling(false);}
         }
     }

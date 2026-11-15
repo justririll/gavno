@@ -233,7 +233,7 @@ impl PointerGrab<Gavno> for ResizeSurfaceGrab {
 enum ResizeSurfaceState {
     #[default]
     Idle,
-    Directed { rect: Rectangle<i32, Logical>, anchor: Point<f64, Logical>, active: bool },
+    Directed { rect: Rectangle<i32, Logical>, anchor: Point<f64, Logical>, axes: [bool; 2], active: bool },
     Resizing {
         edges: ResizeEdge,
         /// The initial window size and location.
@@ -332,8 +332,16 @@ pub fn handle_commit(space: &mut Space<Window>, surface: &WlSurface) -> Option<(
 }
 
 /// Keep the requested anchor even when a client commits a different size.
-pub fn directed_anchor(surface: &WlSurface, rect: Rectangle<i32, Logical>, anchor: Point<f64, Logical>) {
-    ResizeSurfaceState::with(surface, |state| *state = ResizeSurfaceState::Directed { rect, anchor, active: true });
+pub fn directed_anchor(surface: &WlSurface, rect: Rectangle<i32, Logical>, anchor: Point<f64, Logical>, previous: Rectangle<i32, Logical>) {
+    ResizeSurfaceState::with(surface, |state| {
+        let mut axes = match *state {
+            ResizeSurfaceState::Directed { axes, active: true, .. } => axes,
+            _ => [false; 2],
+        };
+        axes[0] |= rect.size.w != previous.size.w;
+        axes[1] |= rect.size.h != previous.size.h;
+        *state = ResizeSurfaceState::Directed { rect, anchor, axes, active: true };
+    });
 }
 pub fn clear_anchor(window: &Window) {
     if let Some(t) = window.toplevel() {
@@ -360,11 +368,71 @@ pub fn directed_rect(window: &Window) -> Option<Rectangle<i32, Logical>> {
     let t=window.toplevel()?;
     let state=ResizeSurfaceState::with(t.wl_surface(), |s|*s);
     match state {
-        ResizeSurfaceState::Directed {rect,anchor,active} => {
-            Some(if !active && t.current_state().size==Some(rect.size) {
-                crate::window_gesture::anchored_size(rect,window.geometry().size,anchor)
+        ResizeSurfaceState::Directed {rect,anchor,axes,active} => {
+            Some(if !active && t.current_state().size==Some(rect.size) && !t.current_state().states.contains(xdg_toplevel::State::Resizing) {
+                accepted_rect(rect, window.geometry().size, anchor, axes)
             } else {rect})
         }
         _=>None,
+    }
+}
+
+/// A final buffer may change the dragged dimensions, while untouched axes stay displayed.
+fn accepted_rect(rect: Rectangle<i32, Logical>, actual: Size<i32, Logical>, anchor: Point<f64, Logical>, axes: [bool; 2]) -> Rectangle<i32, Logical> {
+    let size = (
+        if axes[0] { actual.w.max(1) } else { rect.size.w },
+        if axes[1] { actual.h.max(1) } else { rect.size.h },
+    ).into();
+    crate::window_gesture::anchored_size(rect, size, anchor)
+}
+
+/// Accept the final buffer without exposing changes on untouched axes.
+pub fn settle_directed(gv: &mut Gavno, window: &Window) {
+    if !directed_finished(window) { return; }
+    let Some(rect) = directed_rect(window) else { return };
+    gv.window_animations.cancel(window);
+    clear_anchor(window);
+    if window.geometry().size != rect.size {
+        gv.window_animations.geometry_immediate(window, rect.to_f64());
+    }
+    if gv.space.element_location(window).is_some() {
+        gv.space.map_element(window.clone(), rect.loc, false);
+        gv.save_workspace_location(window, rect.loc);
+    }
+    if let Some(t) = window.toplevel() { t.with_pending_state(|s| s.size = Some(rect.size)); }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn final_ack_preserves_untouched_axes_for_all_floating_resize_edges() {
+        let initial = Rectangle::new((100, 200).into(), (800, 600).into());
+        for edge in [ResizeEdge::LEFT, ResizeEdge::RIGHT, ResizeEdge::TOP, ResizeEdge::BOTTOM, ResizeEdge::TOP_LEFT, ResizeEdge::BOTTOM_RIGHT] {
+            let mut h = crate::state::tests::Harness::new();
+            let w = h.window();
+            h.gv.map_new_window(w.clone());
+            h.commit_size(&w, 800, 600);
+            h.gv.space.map_element(w.clone(), initial.loc, true);
+            let target = crate::window_gesture::resized(initial, edge, (100.0, 80.0).into());
+            h.gv.apply_interactive_resize(&w, target, crate::window_gesture::anchor_for(edge));
+            h.gv.finish_interactive_resize(&w);
+            h.commit_size(&w, 650, 450);
+            assert!(!directed_finished(&w), "final acknowledgement was processed");
+            let shown = h.gv.interactive_rect(&w).unwrap();
+            if !edge.intersects(ResizeEdge::LEFT | ResizeEdge::RIGHT) {
+                assert_eq!((shown.loc.x, shown.size.w), (100, 800));
+            } else if edge.contains(ResizeEdge::LEFT) {
+                assert_eq!(shown.loc.x + shown.size.w, 900);
+            } else { assert_eq!(shown.loc.x, 100); }
+            if !edge.intersects(ResizeEdge::TOP | ResizeEdge::BOTTOM) {
+                assert_eq!((shown.loc.y, shown.size.h), (200, 600));
+            } else if edge.contains(ResizeEdge::TOP) {
+                assert_eq!(shown.loc.y + shown.size.h, 800);
+            } else { assert_eq!(shown.loc.y, 200); }
+            let fallback = Rectangle::new(h.gv.space.element_location(&w).unwrap(), w.geometry().size).to_f64();
+            assert_eq!(h.gv.window_animations.motion(&w).unwrap().rect(fallback), shown.to_f64());
+            assert!(!h.gv.window_animations.is_animating());
+        }
     }
 }

@@ -58,10 +58,7 @@ impl CompositorHandler for Gavno {
         layer_shell::handle_commit(self, surface);
         resize_grab::handle_commit(&mut self.space, surface);
         if let Some(w)=self.window_for_surface(surface).filter(|w| resize_grab::directed_finished(w) && !self.window_animations.motion(w).is_some_and(|m|m.closing)) {
-            self.window_animations.cancel(&w);
-            resize_grab::clear_anchor(&w);
-            let size=w.geometry().size;
-            if let Some(t)=w.toplevel() {t.with_pending_state(|s|s.size=Some(size));}
+            resize_grab::settle_directed(self, &w);
         }
         if !hidden_commit || self.overview.visible() { self.queue_redraw_all(); }
     }
