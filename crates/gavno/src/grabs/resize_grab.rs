@@ -82,6 +82,7 @@ impl PointerGrab<Gavno> for ResizeSurfaceGrab {
         // While the grab is active, no client has pointer focus
         handle.motion(data, None, event);
 
+        data.window_animations.cancel(&self.window);
         let mut delta = event.location - self.start_data.location;
 
         let mut new_window_width = self.initial_rect.size.w;

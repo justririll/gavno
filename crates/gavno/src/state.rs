@@ -41,6 +41,8 @@ pub struct Gavno {
 
     /// Mapped windows. A toplevel joins the space on its first buffer commit.
     pub space: Space<Window>,
+    pub window_animations: crate::anim::WindowAnimations,
+    pub window_decor: crate::decor::WindowDecor,
     /// Toplevels that exist but have not committed a buffer yet.
     pub unmapped: Vec<Window>,
     pub popups: PopupManager,
@@ -116,6 +118,8 @@ impl Gavno {
             config,
             ipc: crate::ipc::IpcState::default(),
             space: Space::default(),
+            window_animations: Default::default(),
+            window_decor: Default::default(),
             unmapped: Vec::new(),
             popups: PopupManager::default(),
             compositor_state,
@@ -185,7 +189,10 @@ impl Gavno {
 
     /// True while something animates and needs the next frame drawn.
     pub fn is_animating(&self) -> bool {
-        self.greeter.as_ref().is_some_and(|g| g.is_animating())
+        self.greeter.as_ref().map_or_else(
+            || self.window_animations.is_animating(),
+            |g| g.is_animating(),
+        )
     }
 
     pub fn pointer_location(&self) -> Point<f64, Logical> {
@@ -290,6 +297,7 @@ impl Gavno {
             })
             .unwrap_or_default();
         self.space.map_element(window.clone(), loc, true);
+        self.window_animations.open(&window, self.start_time.elapsed());
         self.focus_window(Some(&window));
         self.dispatch_modules(|m, gv| {
             m.window_mapped(gv, &window);

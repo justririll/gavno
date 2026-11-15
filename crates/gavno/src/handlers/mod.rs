@@ -41,6 +41,9 @@ impl SeatHandler for Gavno {
     }
 
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
+        let window = focused.and_then(|surface| self.window_for_surface(surface));
+        self.window_decor.focus(window.as_ref());
+        self.queue_redraw_all();
         let dh = &self.display_handle;
         let client = focused.and_then(|s| dh.get_client(s.id()).ok());
         set_data_device_focus(dh, seat, client.clone());
