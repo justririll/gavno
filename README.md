@@ -33,15 +33,28 @@ What works today:
   `crates/gavno/src/grabs/move_grab.rs`).
 - Dynamic per-output workspaces with a sliding strip; Mod+1..9 selects and
   Mod+Shift+1..9 moves a window (`crates/gavno/src/workspace.rs`).
+- Per-workspace dwindle tiling: Mod+T or Mod+Alt+Space toggles a workspace,
+  Mod+Space floats one window, splitters resize by keyboard or pointer, and
+  dragging a tile onto another reorders the tree
+  (`crates/gavno/src/tiling.rs`, `crates/gavno/src/grabs/tiling_grab.rs`).
 - Overview with live window content, window titles and workspace thumbnails;
   click to focus, drag a window onto a thumbnail to move it, middle click to
   close (`crates/gavno/src/overview.rs`).
+- Built-in dock and top bar: pinned and running apps, icon magnification,
+  an app menu, scroll-to-cycle windows, workspace dots, a tiling/floating
+  chip, layout switching and a power menu
+  (`crates/gavno/src/dock.rs`, `crates/gavno/src/topbar.rs`).
 - 3-finger touchpad gestures: horizontal swipes switch workspaces, vertical
   swipes open and close the overview, hold catches an animation
   (`crates/gavno/src/gesture.rs`).
+- Window gestures and precision resize: 4-finger drag and throw, 4-finger
+  pinch, Super + 2-finger scroll/pinch, resize bands, modal resize mode
+  (Mod+R), a top-left hot corner and overview flick
+  (`crates/gavno/src/window_gesture.rs`,
+  `crates/gavno/src/resize_mode.rs`).
 - TOML configuration: mod key, terminal, launcher, gap, output scale and
-  keyboard layout, with `GAVNO_*` environment overrides
-  (`crates/gavno/src/config.rs`, [docs/config.md](docs/config.md)).
+  mode, HDR, tiling, lock and keyboard layout, with `GAVNO_*` environment
+  overrides (`crates/gavno/src/config.rs`, [docs/config.md](docs/config.md)).
 - Alt+Tab switcher with a text list in most-recently-used order.
 - Protocols: cursor-shape, xdg-activation, xdg-decoration (client-side),
   data-control, primary selection, relative pointer, pointer constraints,
@@ -49,18 +62,25 @@ What works today:
   and layer-shell (`crates/gavno/src/handlers/`).
 - Optional XWayland through `xwayland-satellite` when it is in `PATH`.
 - greetd greeter mode: `gavno --greeter`, see `design/login.md`.
+- Built-in lock screen with PAM authentication, idle and pre-suspend locking,
+  failed-attempt backoff, and gated IPC while locked
+  (`crates/gavno/src/lock.rs`, `dist/pam.d/gavno-lock`, [docs/lock.md](docs/lock.md)).
+- HDR output on DRM: EDID/BT.2020/PQ setup, SDR-to-HDR composition,
+  Mod+Shift+H toggle and runtime SDR white control
+  (`crates/gavno/src/hdr/`, `crates/gavno/src/backend/udev.rs`).
 - Idle means no redraw.
 
 Keyboard binds: [docs/keybinds.md](docs/keybinds.md)
 
 Configuration: [docs/config.md](docs/config.md)
 
+Lock screen: [docs/lock.md](docs/lock.md)
+
 ## Not yet
 
-- Dock and top bar.
-- 4-finger window gestures.
-- Remaining touchpad gestures and keyboard resize mode.
+- Three-finger pinch and rotation gestures.
 - Screencopy.
+- HDR for clients (`wp-color-management-v1`).
 
 ## Window management IPC
 
@@ -74,8 +94,11 @@ one JSON object per line, with a numeric request `id`:
 {"id":3,"method":"move","params":{"id":3,"x":100,"y":80,"w":820,"h":560}}
 ```
 
-Methods are `screen`, `focus`, `close`, `move` and `raise`. Window ids are
-stable for each toplevel's lifetime and never reused during a GAVNO run.
+Methods are `screen`, `workspace`, `focus`, `close`, `move`, `raise`,
+`move_to_workspace`, `togglefloating` and `set_hdr`. While the session is
+locked, `screen` returns `{"locked": true}` and every other method fails with
+`session locked`. Window ids are stable for each toplevel's lifetime and
+never reused during a GAVNO run.
 `screen` returns outputs and mapped windows, topmost first; geometry is in
 logical pixels. `raise` preserves keyboard focus. Width and height are
 optional for `move`; resizing asks the client to configure the new size.

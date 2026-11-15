@@ -38,6 +38,7 @@ default": see `terminal` and `launcher` below.
 | `launcher` | string | unset, Mod+D disabled | `GAVNO_LAUNCHER` |
 | `gap` | integer, logical px | `12` | none |
 | `[tiling] default` | boolean | `false` | none |
+| `[lock] after_idle_secs` | integer, seconds | `300` | none |
 | `[output] internal_scale` | float | `1.75` | `GAVNO_SCALE` |
 | `[output] mode` | string, `WIDTHxHEIGHT[@HZ]` | preferred mode, highest refresh among preferred modes | `GAVNO_OUTPUT_MODE` |
 | `[output] hdr` | boolean | `false` | `GAVNO_HDR` (`true`/`false` or `1`/`0`) |
@@ -64,7 +65,17 @@ Set `[tiling] default = true` to create workspaces in tiling mode. Existing
 workspaces keep their mode when another workspace is toggled. Mod+T,
 Mod+Alt+Space, or the mode chip next to the workspace dots toggles the current
 workspace. Floating geometry is restored when returning to floating mode.
-Both outer and inner tiling gaps use `gap`.
+Both outer and inner tiling gaps use `gap`. Tiling is per workspace; the mode
+is not global. See [keybinds.md](keybinds.md) for the tiling binds, splitter
+drag, and per-window floating override. IPC `togglefloating` accepts a window
+`id`.
+
+`[lock] after_idle_secs` is the idle delay before GAVNO locks the session.
+The default is 300 seconds; `0` disables automatic locking. Input resets the
+timer, and a mapped idle inhibitor postpones the lock. The timer is not armed
+in greeter mode or while the session is already locked. GAVNO also locks
+before suspend and on a logind Lock request. See [the lock screen](lock.md)
+for authentication, backoff and what is blocked while locked.
 
 `[output] internal_scale` applies to built-in panels (eDP) only; external
 outputs always use a scale of 1.0.
@@ -80,7 +91,8 @@ HDR requires atomic modesetting, EDID PQ + BT.2020 RGB + static metadata type 1,
 mutable connector color properties, XR30 scanout, and fp16 or 10-bit offscreen
 rendering. GAVNO warns and keeps SDR when initialization fails. SDR content is
 composed as usual and converted to BT.2020/PQ with `sdr_white_nits` as its white
-level. This value is clamped to 80–400. There is no HDR client protocol yet.
+level. This value is clamped to 80–400. There is no HDR client protocol yet
+(`wp-color-management-v1` is not implemented).
 
 Mod+Shift+H toggles HDR on the active output. Mod+Shift+F2/F3 adjusts SDR white
 by −10/+10 nits while HDR is enabled. Runtime changes last until output removal
@@ -107,7 +119,8 @@ default. Set `options = ""` in the file to disable XKB options; an empty
 - A `GAVNO_SCALE` that is not a number becomes `1.75` without a warning. It
   still overrides the file.
 - Unknown keys are ignored with one warning that lists all of them. Nested keys
-  are reported as `output.<key>` and `keyboard.<key>`.
+  are reported with their section name, for example `output.<key>`,
+  `keyboard.<key>`, `tiling.<key>` or `lock.<key>`.
 - A file `internal_scale` or `sdr_white_nits` must be finite. `nan`, `inf` and `-inf` are treated as
   an invalid file, not clamped.
 
@@ -118,6 +131,7 @@ A file is discarded as a whole, with one warning, when it cannot be used:
 - invalid TOML syntax;
 - a value of the wrong type, for example `gap = "big"` or `keyboard = 1`;
 - an unknown `mod_key`, for example `"ctrl"`;
+- a negative, too large or non-integer `[lock] after_idle_secs`;
 - a non-finite `[output] internal_scale` or `sdr_white_nits`.
 
 GAVNO then starts with the built-in defaults; `GAVNO_*` variables still apply.
@@ -146,6 +160,12 @@ mod_key = "super"
 terminal = "foot"
 launcher = "fuzzel"
 gap = 12
+
+[tiling]
+default = false
+
+[lock]
+after_idle_secs = 300
 
 [output]
 internal_scale = 1.75
