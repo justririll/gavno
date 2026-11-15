@@ -624,6 +624,66 @@ mod tests {
         assert!(!h.gv.overview.visible());
     }
     #[test]
+    fn held_swipes_advance_in_the_scene_and_return_to_idle_without_release() {
+        let mut h = crate::state::tests::Harness::new();
+        let o = output(&mut h.gv, "test", 0);
+        let w = h.window();
+        h.gv.map_new_window(w);
+        h.gv.window_animations.entries.clear();
+        let owner = h.gv.workspaces.ensure(&o);
+        owner.held = true;
+        owner.position.follow(0.4, Duration::ZERO);
+        h.gv.overview.output = Some(o.clone());
+        h.gv.overview.held = true;
+        h.gv.overview.progress.follow(0.6, Duration::ZERO);
+        assert!(h.gv.is_animating());
+        let mut previous = (0.0, 0.0);
+        for frame in 1..=12 {
+            h.gv.overview.scene(
+                &mut h.gv.workspaces,
+                &h.gv.space,
+                &o,
+                Duration::from_micros(frame * 8_333),
+            );
+            let current = (
+                h.gv.workspaces.get(&o).unwrap().position.value,
+                h.gv.overview.progress.value,
+            );
+            assert!(current.0 >= previous.0 && current.1 >= previous.1);
+            if frame <= 2 {
+                assert!(current.0 > previous.0 && current.1 > previous.1);
+                assert!(
+                    h.gv.is_animating(),
+                    "request the next vblank without new input"
+                );
+            }
+            previous = current;
+        }
+        assert_eq!(previous, (0.4, 0.6));
+        assert!(h.gv.workspaces.get(&o).unwrap().held);
+        assert!(h.gv.overview.held);
+        assert!(
+            !h.gv.is_animating(),
+            "stationary fingers must let the backend idle"
+        );
+        let mut stationary = Vec::new();
+        for seconds in [1, 2] {
+            stationary.push(
+                h.gv.overview
+                    .scene(
+                        &mut h.gv.workspaces,
+                        &h.gv.space,
+                        &o,
+                        Duration::from_secs(seconds),
+                    )
+                    .unwrap()[0]
+                    .rect,
+            );
+        }
+        assert_eq!(stationary[0], stationary[1]);
+        assert!(!h.gv.is_animating());
+    }
+    #[test]
     fn hidden_mode_changes_keep_output_and_floating_restore_geometry() {
         let mut h = crate::state::tests::Harness::new();
         let o = output(&mut h.gv, "test", 0);
