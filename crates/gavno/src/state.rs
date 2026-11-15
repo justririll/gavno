@@ -30,6 +30,8 @@ use smithay::{
 use crate::{backend::Backend, config::Config, module::Module};
 
 pub struct Gavno {
+    pub protocols: crate::handlers::protocols::Protocols,
+    pub satellite: Option<crate::xwayland::Satellite>,
     pub start_time: Instant,
     pub clock: Clock<Monotonic>,
     pub socket_name: OsString,
@@ -93,6 +95,8 @@ impl Gavno {
         let presentation_state = PresentationState::new::<Self>(&dh, clock.id() as u32);
         let fractional_scale_state = FractionalScaleManagerState::new::<Self>(&dh);
 
+        let protocols = crate::handlers::protocols::Protocols::new(&dh, event_loop.handle(), &primary_selection_state);
+
         let mut seat_state = SeatState::new();
         let mut seat: Seat<Self> = seat_state.new_wl_seat(&dh, "seat0");
         let xkb = XkbConfig {
@@ -111,6 +115,8 @@ impl Gavno {
         let socket_name = Self::init_wayland_listener(display, event_loop);
 
         Self {
+            protocols,
+            satellite: None,
             start_time: Instant::now(),
             clock,
             socket_name,
@@ -182,6 +188,11 @@ impl Gavno {
     pub fn on_loop_idle(&mut self) {
         self.space.refresh();
         self.prune_navigation();
+        let focus = self.seat.get_keyboard().and_then(|k| k.current_focus());
+        self.update_shortcut_inhibitors(focus.as_ref());
+        self.refresh_constraints(focus.as_ref());
+        self.refresh_lock();
+        self.refresh_idle();
         self.popups.cleanup();
         let _ = self.display_handle.flush_clients();
     }
@@ -205,6 +216,7 @@ impl Gavno {
     }
 
     pub fn surface_under(&self, pos: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
+        if self.protocols.locks.locked { return self.lock_surface_under(pos); }
         use smithay::wayland::shell::wlr_layer::Layer;
         if let Some(hit) = self.layer_hit(pos, &[Layer::Overlay, Layer::Top]) {
             return Some((hit.surface, hit.surface_loc));
@@ -253,8 +265,10 @@ impl Gavno {
     /// Raises `window`, gives it keyboard focus and marks it activated;
     /// `None` clears focus.
     pub fn focus_window(&mut self, window: Option<&Window>) {
+        if self.protocols.locks.locked { return; }
         let serial = SERIAL_COUNTER.next_serial();
         if let Some(window) = window {
+            crate::handlers::xdg_activation::clear_urgency(window);
             self.space.raise_element(window, true);
             crate::snap::touch_mru(&mut self.mru, window);
         } else {
@@ -269,6 +283,10 @@ impl Gavno {
         }
         let keyboard = self.seat.get_keyboard().unwrap();
         let surface = window.and_then(|w| w.toplevel()).map(|t| t.wl_surface().clone());
+        if surface.is_none() {
+            self.update_shortcut_inhibitors(None);
+            self.refresh_constraints(None);
+        }
         keyboard.set_focus(self, surface, serial);
         self.queue_redraw_all();
     }
@@ -303,9 +321,10 @@ impl Gavno {
                 }
             })
             .unwrap_or_default();
-        self.space.map_element(window.clone(), loc, true);
+        let urgent = crate::handlers::xdg_activation::is_urgent(&window);
+        self.space.map_element(window.clone(), loc, !urgent && !self.protocols.locks.locked);
         self.window_animations.open(&window, self.start_time.elapsed());
-        self.focus_window(Some(&window));
+        if !urgent { self.focus_window(Some(&window)); }
         self.dispatch_modules(|m, gv| {
             m.window_mapped(gv, &window);
             crate::module::Handled::No
@@ -314,6 +333,7 @@ impl Gavno {
 
     /// Called by backends after a new output was mapped.
     pub fn output_added_hook(&mut self) {
+        self.protocols.locks.outputs_added(self.space.outputs().cloned());
         self.arrange_layers_all();
         if let Some(cmd) = self.startup_cmd.take() {
             spawn_shell(&cmd);

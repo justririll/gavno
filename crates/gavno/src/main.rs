@@ -22,6 +22,7 @@ mod render;
 mod state;
 mod ui;
 mod window_mode;
+mod xwayland;
 
 use smithay::reexports::{calloop::EventLoop, wayland_server::Display};
 
@@ -86,6 +87,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::env::set_var("XDG_CURRENT_DESKTOP", "GAVNO");
     std::env::set_var("XDG_SESSION_DESKTOP", "GAVNO");
     std::env::set_var("XDG_SESSION_TYPE", "wayland");
+    if !greeter_mode { xwayland::start(&mut state); }
     tracing::info!(socket = ?state.socket_name, "gavno is listening");
 
     // Clients such as foot quit when there is no output yet, so the startup

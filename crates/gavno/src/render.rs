@@ -75,8 +75,8 @@ impl CursorCache {
     }
 
     /// Buffer and hotspot (logical px) for an integer `scale`.
-    fn get(&mut self, scale: u32, time: Duration) -> (MemoryRenderBuffer, Point<f64, Logical>) {
-        let image = self.cursor.image(scale, time);
+    fn get(&mut self, name: &str, scale: u32, time: Duration) -> (MemoryRenderBuffer, Point<f64, Logical>) {
+        let image = self.cursor.image(name, scale, time);
         let hotspot = Point::from((image.xhot as f64 / scale as f64, image.yhot as f64 / scale as f64));
         if let Some((_, _, buf)) = self.buffers.iter().find(|(i, s, _)| *s == scale && i == &image) {
             return (buf.clone(), hotspot);
@@ -107,12 +107,24 @@ pub fn output_elements(
     overlay: &mut crate::overlay::Overlay,
     window_decor: &mut crate::decor::WindowDecor,
     animations: &mut crate::anim::WindowAnimations,
+    locks: &crate::handlers::session_lock::Locks,
 ) -> Vec<GavnoRenderElement> {
     let mut elements: Vec<GavnoRenderElement> = Vec::new();
     let Some(output_geo) = space.output_geometry(output) else {
         return elements;
     };
     let scale = Scale::from(output.current_scale().fractional_scale());
+
+    // Locked sessions expose only locker surfaces; the normal clear color is
+    // the fail-closed fallback when the locker has no buffer or has crashed.
+    if locks.locked {
+        if let Some(surface) = locks.surface(output) {
+            elements.extend(render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<_>>(
+                renderer, surface, (0, 0), scale, 1.0, Kind::Unspecified,
+            ).into_iter().map(GavnoRenderElement::Surface));
+        }
+        return elements;
+    }
 
     if output_geo.to_f64().contains(pointer_pos) {
         if let CursorImageStatus::Surface(surface) = cursor_status {
@@ -145,10 +157,9 @@ pub fn output_elements(
                     .map(GavnoRenderElement::Surface),
                 );
             }
-            // Named shapes all draw the default arrow until cursor-shape lands.
-            CursorImageStatus::Named(_) => {
+            CursorImageStatus::Named(icon) => {
                 let int_scale = output.current_scale().integer_scale().max(1) as u32;
-                let (buffer, hotspot) = cursor.get(int_scale, time);
+                let (buffer, hotspot) = cursor.get(icon.name(), int_scale, time);
                 let loc = (rel - hotspot).to_physical(scale);
                 if let Ok(elem) =
                     MemoryRenderBufferRenderElement::from_buffer(renderer, loc, &buffer, None, None, None, Kind::Cursor)
@@ -180,6 +191,17 @@ pub fn post_render(
 ) {
     let time = gv.clock.now();
     let throttle = Some(Duration::from_secs(1));
+
+    if gv.protocols.locks.locked {
+        if let Some(surface) = gv.protocols.locks.surface(output) {
+            with_surfaces_surface_tree(surface, |surface, surface_states| {
+                update_surface_primary_scanout_output(surface, output, surface_states, states, default_primary_scanout_output_compare);
+                with_fractional_scale(surface_states, |fs| fs.set_preferred_scale(output.current_scale().fractional_scale()));
+            });
+            send_frames_surface_tree(surface, output, time, throttle, surface_primary_scanout_output);
+        }
+        return;
+    }
 
     for window in gv.space.elements() {
         window.with_surfaces(|surface, surface_states| {

@@ -565,6 +565,7 @@ fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
         &mut gv.overlay,
         &mut gv.window_decor,
         &mut gv.window_animations,
+        &gv.protocols.locks,
     );
     let result = surface
         .drm_output
@@ -583,13 +584,18 @@ fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
     if !is_empty {
         let feedback = render::take_presentation_feedback(&gv.space, &output, &states);
         match surface.drm_output.queue_frame(Some(feedback)) {
-            Ok(()) => surface.redraw = RedrawState::WaitingForVBlank { queued: false },
+            Ok(()) => {
+                surface.redraw = RedrawState::WaitingForVBlank { queued: false };
+                gv.protocols.locks.submitted(&output);
+            },
             Err(err) => {
                 warn!(?err, output = output.name(), "queue_frame failed");
                 surface.redraw = RedrawState::Idle;
             }
         }
     } else {
+        gv.protocols.locks.submitted(&output);
+        gv.protocols.locks.presented(&output);
         // Nothing changed on screen. Pace frame callbacks with a timer of
         // one refresh period instead of spinning.
         let refresh = output.current_mode().map(|m| m.refresh).unwrap_or(60_000).max(1);
@@ -649,16 +655,20 @@ fn on_vblank(gv: &mut Gavno, crtc: crtc::Handle, metadata: &mut Option<DrmEventM
     };
     let seq = metadata.as_ref().map(|m| m.sequence).unwrap_or(0);
 
+    let lock_output = surface.output.clone();
+    let mut presented = false;
     match surface.drm_output.frame_submitted() {
         Ok(Some(Some(mut feedback))) => {
+            presented = true;
             feedback.presented(time, Refresh::fixed(period), seq as u64, flags);
         }
-        Ok(_) => {}
+        Ok(_) => { presented = true; }
         Err(err) => warn!(?err, "frame_submitted failed"),
     }
 
     let queued = matches!(surface.redraw, RedrawState::WaitingForVBlank { queued: true });
     surface.redraw = RedrawState::Idle;
+    if presented { gv.protocols.locks.presented(&lock_output); }
     if queued {
         queue_redraw(gv, crtc);
     }
@@ -736,6 +746,7 @@ pub fn screenshot(gv: &mut Gavno) -> Option<(u32, u32, Vec<u8>)> {
         &mut gv.overlay,
         &mut gv.window_decor,
         &mut gv.window_animations,
+        &gv.protocols.locks,
     );
     let size: Size<i32, BufferCoord> = (mode.size.w, mode.size.h).into();
     let mut texture: GlesTexture = gpu.renderer.create_buffer(Fourcc::Abgr8888, size).ok()?;

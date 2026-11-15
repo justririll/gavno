@@ -1,3 +1,14 @@
+pub mod protocols;
+mod cursor_shape;
+mod data_control;
+mod idle_inhibit;
+mod idle_notify;
+mod keyboard_shortcuts_inhibit;
+mod pointer_constraints;
+mod relative_pointer;
+pub mod session_lock;
+pub mod xdg_activation;
+mod xdg_decoration;
 mod compositor;
 pub mod layer_shell;
 pub mod xdg_shell;
@@ -36,6 +47,7 @@ impl SeatHandler for Gavno {
     }
 
     fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
+        if self.cursor_status == image { return; }
         self.cursor_status = image;
         self.queue_redraw_all();
     }
@@ -44,6 +56,11 @@ impl SeatHandler for Gavno {
         let window = focused.and_then(|surface| self.window_for_surface(surface));
         self.window_decor.focus(window.as_ref());
         self.queue_redraw_all();
+        if let Some(serial) = seat.get_keyboard().and_then(|keyboard| keyboard.last_enter()) {
+            self.record_activation_serial(focused.cloned(), serial);
+        }
+        self.update_shortcut_inhibitors(focused);
+        self.refresh_constraints(focused);
         let dh = &self.display_handle;
         let client = focused.and_then(|s| dh.get_client(s.id()).ok());
         set_data_device_focus(dh, seat, client.clone());

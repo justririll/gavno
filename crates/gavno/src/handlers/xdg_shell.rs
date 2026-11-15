@@ -75,7 +75,8 @@ impl XdgShellHandler for Gavno {
     }
 
     fn move_request(&mut self, surface: ToplevelSurface, seat: wl_seat::WlSeat, serial: Serial) {
-        let seat = Seat::from_resource(&seat).unwrap();
+        if self.protocols.locks.locked { return; }
+        let Some(seat) = Seat::from_resource(&seat) else { return; };
 
         let wl_surface = surface.wl_surface();
 
@@ -105,7 +106,8 @@ impl XdgShellHandler for Gavno {
         serial: Serial,
         edges: xdg_toplevel::ResizeEdge,
     ) {
-        let seat = Seat::from_resource(&seat).unwrap();
+        if self.protocols.locks.locked { return; }
+        let Some(seat) = Seat::from_resource(&seat) else { return; };
 
         let wl_surface = surface.wl_surface();
 
