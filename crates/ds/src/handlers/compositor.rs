@@ -12,7 +12,7 @@ use smithay::{
     },
 };
 
-use super::xdg_shell;
+use super::{layer_shell, xdg_shell};
 use crate::{grabs::resize_grab, state::ClientState, Ds};
 
 impl CompositorHandler for Ds {
@@ -53,6 +53,7 @@ impl CompositorHandler for Ds {
         }
 
         xdg_shell::handle_commit(self, surface);
+        layer_shell::handle_commit(self, surface);
         resize_grab::handle_commit(&mut self.space, surface);
         self.queue_redraw_all();
     }

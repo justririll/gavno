@@ -24,7 +24,7 @@ use smithay::{
             surface_primary_scanout_output, update_surface_primary_scanout_output,
             with_surfaces_surface_tree, OutputPresentationFeedback,
         },
-        Space, Window,
+        layer_map_for_output, Space, Window,
     },
     input::pointer::{CursorImageAttributes, CursorImageStatus},
     output::Output,
@@ -202,6 +202,8 @@ pub fn post_render(
         }
     }
 
+    layers_post_render(output, states, feedback, time, throttle);
+
     if let CursorImageStatus::Surface(surface) = &ds.cursor_status {
         if surface.alive() {
             with_surfaces_surface_tree(surface, |surface, surface_states| {
@@ -214,6 +216,38 @@ pub fn post_render(
                 );
             });
             send_frames_surface_tree(surface, output, time, throttle, surface_primary_scanout_output);
+        }
+    }
+}
+
+/// `post_render` for layer surfaces (they are not in the space's element list).
+fn layers_post_render(
+    output: &Output,
+    states: &RenderElementStates,
+    feedback: Option<&SurfaceDmabufFeedback>,
+    time: smithay::utils::Time<smithay::utils::Monotonic>,
+    throttle: Option<Duration>,
+) {
+    let map = layer_map_for_output(output);
+    for layer in map.layers() {
+        layer.with_surfaces(|surface, surface_states| {
+            update_surface_primary_scanout_output(
+                surface,
+                output,
+                surface_states,
+                states,
+                default_primary_scanout_output_compare,
+            );
+            if let Some(primary) = surface_primary_scanout_output(surface, surface_states) {
+                let scale = primary.current_scale().fractional_scale();
+                with_fractional_scale(surface_states, |fs| fs.set_preferred_scale(scale));
+            }
+        });
+        layer.send_frame(output, time, throttle, surface_primary_scanout_output);
+        if let Some(feedback) = feedback {
+            layer.send_dmabuf_feedback(output, surface_primary_scanout_output, |surface, _| {
+                select_dmabuf_feedback(surface, states, &feedback.render, &feedback.scanout)
+            });
         }
     }
 }
@@ -231,6 +265,11 @@ pub fn take_presentation_feedback(
                 surface_presentation_feedback_flags_from_states(surface, states)
             });
         }
+    }
+    for layer in layer_map_for_output(output).layers() {
+        layer.take_presentation_feedback(&mut feedback, surface_primary_scanout_output, |surface, _| {
+            surface_presentation_feedback_flags_from_states(surface, states)
+        });
     }
     feedback
 }
