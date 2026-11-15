@@ -9,6 +9,68 @@ use smithay::{
     output::Output,
     utils::{Logical, Point, SERIAL_COUNTER},
 };
+use std::{any::Any, collections::VecDeque};
+
+// Unaccelerated libinput motion is normalized to 1000 dpi. Around 400 units
+// per workspace is the GNOME-style comfortable touchpad swipe; keep the env
+// override for device/user tuning. Overview keeps the mockup's shorter travel.
+const WORKSPACE_SWIPE_DISTANCE: f64 = 400.0;
+const OVERVIEW_SWIPE_DISTANCE: f64 = 340.0;
+
+/// Least-squares fit of normalized positions over the last 100 ms.
+/// Use event microseconds, independent of the compositor's frame clock.
+#[derive(Default)]
+struct MotionHistory(VecDeque<(u64, Point<f64, Logical>)>);
+
+impl MotionHistory {
+    const WINDOW: u64 = 100_000;
+
+    fn push(&mut self, time: u64, value: Point<f64, Logical>) {
+        if let Some(&(last, _)) = self.0.back() {
+            if time < last {
+                return;
+            }
+            if time == last {
+                self.0.pop_back();
+            }
+        }
+        self.0.push_back((time, value));
+        while self.0.front().is_some_and(|(t, _)| time - t > Self::WINDOW) || self.0.len() > 128 {
+            self.0.pop_front();
+        }
+    }
+
+    fn velocity(&self, now: u64) -> Point<f64, Logical> {
+        let samples: Vec<_> = self
+            .0
+            .iter()
+            .filter(|(t, _)| *t <= now && now - t <= Self::WINDOW)
+            .collect();
+        let mut velocity = Point::from((0.0, 0.0));
+        let (Some(first), Some(last)) = (samples.first(), samples.last()) else {
+            return velocity;
+        };
+        if last.0 - first.0 < 4_000 {
+            return velocity;
+        }
+        let n = samples.len() as f64;
+        let mean_t = samples
+            .iter()
+            .map(|(t, _)| (now - t) as f64 / 1e6)
+            .sum::<f64>()
+            / n;
+        let mean_x = samples.iter().map(|(_, p)| p.x).sum::<f64>() / n;
+        let mean_y = samples.iter().map(|(_, p)| p.y).sum::<f64>() / n;
+        let mut variance = 0.0;
+        for (t, p) in samples {
+            let dt = mean_t - (now - t) as f64 / 1e6;
+            variance += dt * dt;
+            velocity.x += dt * (p.x - mean_x);
+            velocity.y += dt * (p.y - mean_y);
+        }
+        velocity.upscale(1.0 / variance)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Axis {
@@ -77,8 +139,7 @@ struct Swipe {
     overview_start: f64,
     workspace_origin: usize,
     overview_origin: bool,
-    velocity: Point<f64, Logical>,
-    last: u32,
+    history: MotionHistory,
     last_value: Point<f64, Logical>,
 }
 pub struct Gestures {
@@ -88,7 +149,7 @@ pub struct Gestures {
     hold_client: bool,
     hold_output: Option<Output>,
     pub super_tap: SuperTap,
-    /// Logical input units per workspace. Read once, never on the frame path.
+    /// Unaccelerated input units per workspace. Read once, never on the frame path.
     distance: f64,
     direction: f64,
 }
@@ -105,7 +166,7 @@ impl Default for Gestures {
                 .ok()
                 .and_then(|s| s.parse::<f64>().ok())
                 .filter(|v| v.is_finite() && *v >= 24.0)
-                .unwrap_or(300.0),
+                .unwrap_or(WORKSPACE_SWIPE_DISTANCE),
             direction: if std::env::var("GAVNO_NATURAL_SCROLL").as_deref() == Ok("0") {
                 -1.0
             } else {
@@ -173,6 +234,8 @@ impl Gavno {
         } else {
             0.0
         };
+        let mut history = MotionHistory::default();
+        history.push(event.time(), (workspace_start, overview_start).into());
         self.gestures.swipe = Some(Swipe {
             output,
             axis: None,
@@ -181,12 +244,14 @@ impl Gavno {
             overview_start,
             workspace_origin,
             overview_origin,
-            velocity: (0.0, 0.0).into(),
-            last: event.time_msec(),
-            last_value: (0.0, 0.0).into(),
+            history,
+            last_value: (workspace_start, overview_start).into(),
         });
     }
-    pub fn on_gesture_swipe_update<I: InputBackend>(&mut self, event: I::GestureSwipeUpdateEvent) {
+    pub fn on_gesture_swipe_update<I: InputBackend>(&mut self, event: I::GestureSwipeUpdateEvent)
+    where
+        I::GestureSwipeUpdateEvent: 'static,
+    {
         if !self.gestures_enabled() {
             return;
         }
@@ -203,33 +268,42 @@ impl Gavno {
         let Some(s) = &mut self.gestures.swipe else {
             return;
         };
-        s.delta += event.delta().upscale(self.gestures.direction);
+        use smithay::reexports::input::event::gesture::GestureEventCoordinates;
+        let delta = (&event as &dyn Any)
+            .downcast_ref::<smithay::reexports::input::event::gesture::GestureSwipeUpdateEvent>()
+            .map(|e| Point::from((e.dx_unaccelerated(), e.dy_unaccelerated())))
+            .unwrap_or_else(|| event.delta());
+        if !delta.x.is_finite() || !delta.y.is_finite() {
+            return;
+        }
+        s.delta += delta.upscale(self.gestures.direction);
         if s.axis.is_none() {
             s.axis = lock_axis(s.delta.x, s.delta.y);
         }
-        let dt = event.time_msec().wrapping_sub(s.last) as f64 / 1000.0;
-        s.last = event.time_msec();
-        if dt > 0.0 {
-            s.velocity = event.delta().upscale(self.gestures.direction / dt);
-        }
+        let o = self.workspaces.ensure(&s.output);
+        let position = Point::from((
+            rubber_band(
+                progress(s.workspace_start, s.delta.x, self.gestures.distance),
+                (o.list.items.len() - 1) as f64,
+            ),
+            progress(s.overview_start, s.delta.y, OVERVIEW_SWIPE_DISTANCE).clamp(0.0, 1.0),
+        ));
+        s.history.push(event.time(), position);
         let Some(axis) = s.axis else {
             return;
         };
-        let o = self.workspaces.ensure(&s.output);
+        let now = self.start_time.elapsed();
         let value = match axis {
             Axis::Horizontal => {
-                let value = rubber_band(
-                    progress(s.workspace_start, s.delta.x, self.gestures.distance),
-                    (o.list.items.len() - 1) as f64,
-                );
-                o.position.jump(value);
+                let value = position.x;
+                o.position.follow(value, now);
                 value
             }
             Axis::Vertical => {
-                let value = progress(s.overview_start, s.delta.y, 340.0).clamp(0.0, 1.0);
+                let value = position.y;
                 self.overview.output = Some(s.output.clone());
                 self.overview.held = true;
-                self.overview.progress.jump(value);
+                self.overview.progress.follow(value, now);
                 value
             }
         };
@@ -260,18 +334,22 @@ impl Gavno {
             );
             return;
         }
-        let Some(s) = self.gestures.swipe.take() else {
+        let Some(mut s) = self.gestures.swipe.take() else {
             return;
         };
-        let stale = event.time_msec().wrapping_sub(s.last) > 100;
-        let velocity = if stale || event.cancelled() {
+        // Include the stationary interval between the final update and release.
+        s.history.push(event.time(), s.last_value);
+        let velocity = if event.cancelled() {
             Point::from((0.0, 0.0))
         } else {
-            s.velocity
+            s.history.velocity(event.time())
         };
         let o = self.workspaces.ensure(&s.output);
-        o.position.advance(self.start_time.elapsed());
-        self.overview.progress.advance(self.start_time.elapsed());
+        let now = self.start_time.elapsed();
+        let workspace_target = o.position.target;
+        let overview_target = self.overview.progress.target;
+        o.position.end_follow(0.0, now);
+        self.overview.progress.end_follow(0.0, now);
         o.held = false;
         self.overview.held = false;
         match s.axis {
@@ -279,25 +357,20 @@ impl Gavno {
                 let target = if event.cancelled() {
                     s.workspace_origin
                 } else {
-                    release_target(
-                        o.position.value,
-                        -velocity.x / self.gestures.distance,
-                        o.list.items.len() - 1,
-                    )
+                    release_target(workspace_target, velocity.x, o.list.items.len() - 1)
                 };
                 self.switch_workspace(&s.output, target);
-                self.workspaces.ensure(&s.output).position.velocity =
-                    -velocity.x / self.gestures.distance;
+                self.workspaces.ensure(&s.output).position.velocity = velocity.x;
                 self.overview
                     .progress
                     .set(if s.overview_origin { 1.0 } else { 0.0 });
             }
             Some(Axis::Vertical) => {
-                let v = -velocity.y / 340.0;
+                let v = velocity.y;
                 let target = if event.cancelled() {
                     usize::from(s.overview_origin)
                 } else {
-                    release_target(self.overview.progress.value, v, 1)
+                    release_target(overview_target, v, 1)
                 };
                 self.overview.progress.set(target as f64);
                 self.overview.progress.velocity = v;
@@ -423,8 +496,63 @@ mod tests {
     }
     #[test]
     fn mapping_is_one_to_one() {
-        assert_eq!(progress(1.0, -150.0, 300.0), 1.5);
-        assert_eq!(progress(0.0, -170.0, 340.0), 0.5);
+        assert_eq!(progress(1.0, -200.0, WORKSPACE_SWIPE_DISTANCE), 1.5);
+        assert_eq!(progress(0.0, -170.0, OVERVIEW_SWIPE_DISTANCE), 0.5);
+    }
+    #[test]
+    fn velocity_fit_recovers_constant_speed_at_irregular_timestamps() {
+        let mut history = MotionHistory::default();
+        // A large base also checks that the fit does not lose clock precision.
+        let base = 9_000_000_000_000;
+        for t in [0, 7_000, 21_000, 29_000, 41_000, 56_000, 70_000, 84_000] {
+            let seconds = t as f64 / 1e6;
+            history.push(base + t, (0.2 + 2.5 * seconds, 0.8 - 1.5 * seconds).into());
+        }
+        let velocity = history.velocity(base + 84_000);
+        assert!((velocity.x - 2.5).abs() < 1e-10);
+        assert!((velocity.y + 1.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn velocity_fit_rejects_single_event_noise() {
+        let mut history = MotionHistory::default();
+        for i in 0..=10 {
+            let noise = if i % 2 == 0 { 0.007 } else { -0.007 };
+            let position = 0.1 + 2.0 * i as f64 * 0.008 + noise;
+            history.push(i * 8_000, (position, -position).into());
+        }
+        let velocity = history.velocity(80_000);
+        // Alternating sample noise changes the final single-event speed by 1.75
+        // workspaces/s, while the fit recovers the underlying 2 workspaces/s.
+        assert!((velocity.x - 2.0).abs() < 0.05);
+        assert!((velocity.y + 2.0).abs() < 0.05);
+    }
+
+    #[test]
+    fn velocity_fit_ignores_stale_samples_and_stationary_release() {
+        let mut history = MotionHistory::default();
+        history.push(0, (-100.0, 100.0).into());
+        history.push(110_000, (0.0, 0.0).into());
+        history.push(130_000, (0.04, -0.02).into());
+        let velocity = history.velocity(130_000);
+        assert!((velocity.x - 2.0).abs() < 1e-10);
+        assert!((velocity.y + 1.0).abs() < 1e-10);
+        assert_eq!(history.velocity(231_000), (0.0, 0.0).into());
+        history.push(240_000, (0.04, -0.02).into());
+        assert_eq!(history.velocity(240_000), (0.0, 0.0).into());
+        history.push(250_000, (0.04, -0.02).into());
+        assert_eq!(history.velocity(250_000), (0.0, 0.0).into());
+    }
+
+    #[test]
+    fn velocity_fit_handles_duplicate_and_out_of_order_timestamps() {
+        let mut history = MotionHistory::default();
+        history.push(10_000, (0.0, 0.0).into());
+        history.push(10_000, (0.1, 0.0).into());
+        history.push(9_000, (999.0, 0.0).into());
+        assert_eq!(history.velocity(10_000), (0.0, 0.0).into());
+        history.push(20_000, (0.12, 0.0).into());
+        assert!((history.velocity(20_000).x - 2.0).abs() < 1e-10);
     }
     #[test]
     fn rubber_is_continuous_bounded_and_monotonic() {

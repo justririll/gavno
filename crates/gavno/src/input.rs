@@ -50,7 +50,10 @@ pub enum Action {
 }
 
 impl Gavno {
-    pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
+    pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>)
+    where
+        I::GestureSwipeUpdateEvent: 'static,
+    {
         if !matches!(&event, InputEvent::DeviceAdded { .. } | InputEvent::DeviceRemoved { .. }) {
             self.protocols.idle_policy.activity();
         }
