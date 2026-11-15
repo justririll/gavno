@@ -20,6 +20,37 @@ Primary target: Snapdragon X Elite laptops (aarch64, freedreno).
 The window grabs and the initial structure started from Smithay's `smallvil`
 example (MIT, © Smithay contributors).
 
+## Status
+
+What works today:
+
+- Floating windows with rounded corners, shadows, a focus ring and spring
+  animations for open, close and geometry changes
+  (`crates/gavno/src/decor.rs`, `crates/gavno/src/anim.rs`).
+- Windows-style snapping: drag a window to an edge, a corner or the top, or
+  snap it from the keyboard. A snap preview shows the target zone
+  (`crates/gavno/src/snap.rs`, `crates/gavno/src/overlay.rs`,
+  `crates/gavno/src/grabs/move_grab.rs`).
+- Alt+Tab switcher with a text list in most-recently-used order.
+- Protocols: cursor-shape, xdg-activation, xdg-decoration (client-side),
+  data-control, primary selection, relative pointer, pointer constraints,
+  idle notify with idle inhibit, ext-session-lock, keyboard-shortcuts-inhibit
+  and layer-shell (`crates/gavno/src/handlers/`).
+- Optional XWayland through `xwayland-satellite` when it is in `PATH`.
+- greetd greeter mode: `gavno --greeter`, see `design/login.md`.
+- Idle means no redraw.
+
+Keyboard binds: [docs/keybinds.md](docs/keybinds.md)
+
+## Not yet
+
+- Workspaces and overview.
+- Touchpad gestures.
+- Dock and top bar.
+- Config file.
+- Dwindle tiling.
+- Screencopy.
+
 ## Window management IPC
 
 GAVNO listens on `$XDG_RUNTIME_DIR/gavno/ipc.sock` and exports `GAVNO_SOCK` to its

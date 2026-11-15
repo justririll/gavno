@@ -78,6 +78,10 @@ elif [ "$ENABLE" = 1 ]; then
     echo "greetd enabled; takes effect on next boot."
     echo "roll back with: systemctl disable greetd && systemctl set-default multi-user.target"
 else
-    echo "installed; greetd not enabled (re-run with --enable, or --test for a one-off run on VT $TEST_VT)"
+    if systemctl is-enabled --quiet greetd.service; then
+        echo "installed; greetd is enabled and will use the new binary on next login screen"
+    else
+        echo "installed; greetd not enabled (re-run with --enable, or --test for a one-off run on VT $TEST_VT)"
+    fi
 fi
 REMOTE
