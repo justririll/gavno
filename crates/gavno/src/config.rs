@@ -22,6 +22,9 @@ pub struct Config {
     pub launcher: Option<String>,
     /// Output scale for built-in panels (eDP). External outputs use 1.0.
     pub internal_scale: f64,
+    pub output_mode: Option<crate::hdr::mode::ModeRequest>,
+    pub output_hdr: bool,
+    pub sdr_white_nits: f32,
     pub xkb_layout: String,
     pub xkb_variant: String,
     pub xkb_options: Option<String>,
@@ -62,6 +65,9 @@ struct FileConfig {
 #[serde(default)]
 struct Output {
     internal_scale: Option<f64>,
+    mode: Option<String>,
+    hdr: Option<bool>,
+    sdr_white_nits: Option<f32>,
     #[serde(flatten)]
     unknown: toml::Table,
 }
@@ -118,8 +124,9 @@ impl Config {
         if !unknown.is_empty() {
             warnings.push(format!("unknown config keys ignored: {}", unknown.join(", ")));
         }
-        if file.output.internal_scale.is_some_and(|scale| !scale.is_finite()) {
-            warnings.push("invalid config file: internal_scale must be finite".into());
+        if file.output.internal_scale.is_some_and(|scale| !scale.is_finite())
+            || file.output.sdr_white_nits.is_some_and(|nits| !nits.is_finite()) {
+            warnings.push("invalid config file: output scale and SDR white must be finite".into());
             file = FileConfig::default();
         }
         let var = |name| env(name).filter(|value| !value.is_empty());
@@ -135,6 +142,18 @@ impl Config {
         if gap != gap.clamp(0, 64) {
             warnings.push(format!("gap {gap} clamped to {}", gap.clamp(0, 64)));
         }
+        let output_mode = var("GAVNO_OUTPUT_MODE").or(file.output.mode).and_then(|text| match text.parse() {
+            Ok(mode) => Some(mode),
+            Err(error) => { warnings.push(format!("invalid output mode {text:?}: {error}; using preferred mode")); None }
+        });
+        let output_hdr = var("GAVNO_HDR").and_then(|s| match s.as_str() {
+            "true" | "1" => Some(true), "false" | "0" => Some(false),
+            _ => { warnings.push("invalid GAVNO_HDR; using file/default value".into()); None }
+        }).or(file.output.hdr).unwrap_or(false);
+        let white = var("GAVNO_SDR_WHITE_NITS").and_then(|s| s.parse::<f32>().ok())
+            .or(file.output.sdr_white_nits).unwrap_or(203.0);
+        let sdr_white_nits = if white.is_finite() { white.clamp(80.0, 400.0) } else { 203.0 };
+        if white != sdr_white_nits { warnings.push(format!("SDR white {white} clamped to {sdr_white_nits} nits")); }
         (
             Self {
                 mod_key: var("GAVNO_MOD")
@@ -149,6 +168,9 @@ impl Config {
                     .unwrap_or_else(|| "foot".into()),
                 launcher: var("GAVNO_LAUNCHER").or(file.launcher.filter(|s| !s.is_empty())),
                 internal_scale: scale_clamped,
+                output_mode,
+                output_hdr,
+                sdr_white_nits,
                 xkb_layout: var("GAVNO_XKB_LAYOUT").or(file.keyboard.layout).unwrap_or_else(|| "us,ru".into()),
                 xkb_variant: var("GAVNO_XKB_VARIANT").or(file.keyboard.variant).unwrap_or_default(),
                 xkb_options: Some(
@@ -200,6 +222,9 @@ options = "caps:escape"
             terminal: "foot".into(),
             launcher: None,
             internal_scale: 1.75,
+            output_mode: None,
+            output_hdr: false,
+            sdr_white_nits: 203.0,
             xkb_layout: "us,ru".into(),
             xkb_variant: "".into(),
             xkb_options: Some("grp:alt_shift_toggle".into()),
@@ -213,7 +238,7 @@ options = "caps:escape"
         let settings = example
             .lines()
             .filter_map(|line| line.strip_prefix("# "))
-            .filter(|line| (line.contains(" = ") || line.starts_with('[')) && !line.starts_with("launcher"))
+            .filter(|line| (line.contains(" = ") || line.starts_with('[')) && !line.starts_with("launcher") && !line.starts_with("mode"))
             .collect::<Vec<_>>()
             .join("\n");
         assert_eq!(build(false, Some(&settings), &[]), (expected, vec![]));
@@ -226,6 +251,9 @@ options = "caps:escape"
             terminal: "kitty".into(),
             launcher: Some("rofi".into()),
             internal_scale: 2.0,
+            output_mode: None,
+            output_hdr: false,
+            sdr_white_nits: 203.0,
             xkb_layout: "de".into(),
             xkb_variant: "nodeadkeys".into(),
             xkb_options: Some("caps:escape".into()),
@@ -322,6 +350,24 @@ options = "caps:escape"
         assert_eq!(c.launcher, None);
         assert_eq!(c.xkb_options.as_deref(), Some(""));
         assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn hdr_output_settings() {
+        let (c, warnings) = build(false, Some("[output]\nmode = '2880x1620@120'\nhdr = true\nsdr_white_nits = 250"), &[]);
+        assert!(warnings.is_empty());
+        assert_eq!(c.output_mode.unwrap().refresh, Some(120000));
+        assert!(c.output_hdr);
+        assert_eq!(c.sdr_white_nits, 250.0);
+        let (c, warnings) = build(false, Some("[output]\nmode = 'bad'\nsdr_white_nits = 500"), &[]);
+        assert_eq!(warnings.len(), 2);
+        assert_eq!(c.output_mode, None);
+        assert_eq!(c.sdr_white_nits, 400.0);
+        let (c, warnings) = build(false, Some("[output]\nhdr = true"), &[("GAVNO_HDR", "false"), ("GAVNO_OUTPUT_MODE", "1920x1080@60"), ("GAVNO_SDR_WHITE_NITS", "1")]);
+        assert!(!c.output_hdr);
+        assert_eq!(c.output_mode.unwrap().width, 1920);
+        assert_eq!(c.sdr_white_nits, 80.0);
+        assert_eq!(warnings.len(), 1);
     }
 
     #[test]

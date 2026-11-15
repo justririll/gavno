@@ -38,6 +38,9 @@ default": see `terminal` and `launcher` below.
 | `launcher` | string | unset, Mod+D disabled | `GAVNO_LAUNCHER` |
 | `gap` | integer, logical px | `12` | none |
 | `[output] internal_scale` | float | `1.75` | `GAVNO_SCALE` |
+| `[output] mode` | string, `WIDTHxHEIGHT[@HZ]` | preferred mode, highest refresh among preferred modes | `GAVNO_OUTPUT_MODE` |
+| `[output] hdr` | boolean | `false` | `GAVNO_HDR` (`true`/`false` or `1`/`0`) |
+| `[output] sdr_white_nits` | float, cd/m² | `203` | `GAVNO_SDR_WHITE_NITS` |
 | `[keyboard] layout` | string | `"us,ru"` | `GAVNO_XKB_LAYOUT` |
 | `[keyboard] variant` | string | `""` | `GAVNO_XKB_VARIANT` |
 | `[keyboard] options` | string | `"grp:alt_shift_toggle"` | `GAVNO_XKB_OPTIONS` |
@@ -59,6 +62,29 @@ environment override.
 `[output] internal_scale` applies to built-in panels (eDP) only; external
 outputs always use a scale of 1.0.
 
+`[output] mode = "2880x1620@120"` selects the panel's 120 Hz timing.
+Omit `@HZ` to select the highest refresh at that resolution. Integer Hz allow
+±0.5 Hz for rounded timings; fractional Hz (up to three decimal places) allow
+±0.001 Hz. When the requested timing is unavailable, GAVNO warns and selects
+the preferred timing. These settings apply independently to each DRM output;
+the nested backend keeps its host-selected mode.
+
+HDR requires atomic modesetting, EDID PQ + BT.2020 RGB + static metadata type 1,
+mutable connector color properties, XR30 scanout, and fp16 or 10-bit offscreen
+rendering. GAVNO warns and keeps SDR when initialization fails. SDR content is
+composed as usual and converted to BT.2020/PQ with `sdr_white_nits` as its white
+level. This value is clamped to 80–400. There is no HDR client protocol yet.
+
+Mod+Shift+H toggles HDR on the active output. Mod+Shift+F2/F3 adjusts SDR white
+by −10/+10 nits while HDR is enabled. Runtime changes last until output removal
+or compositor restart. The IPC request
+`{"id":1,"method":"set_hdr","params":{"output":"eDP-1","enabled":true}}`
+returns a queued acknowledgement; actual enablement happens after any pending
+page flip. Read `screen.outputs[].hdr` for `enabled`, `pending`, `supported`,
+and `sdr_white_nits` after initialization or fallback. `supported` reports EDID
+and connector-property eligibility; allocation and rendering can still fail.
+Screenshots remain sRGB PNGs of the composition before PQ conversion.
+
 `[keyboard]` values are passed to the seat keyboard. `layout` takes XKB layout
 names such as `"us,ru"`; `variant` takes one variant per layout and is empty by
 default. Set `options = ""` in the file to disable XKB options; an empty
@@ -75,7 +101,7 @@ default. Set `options = ""` in the file to disable XKB options; an empty
   still overrides the file.
 - Unknown keys are ignored with one warning that lists all of them. Nested keys
   are reported as `output.<key>` and `keyboard.<key>`.
-- A file `internal_scale` must be finite. `nan`, `inf` and `-inf` are treated as
+- A file `internal_scale` or `sdr_white_nits` must be finite. `nan`, `inf` and `-inf` are treated as
   an invalid file, not clamped.
 
 ## Errors
@@ -85,7 +111,7 @@ A file is discarded as a whole, with one warning, when it cannot be used:
 - invalid TOML syntax;
 - a value of the wrong type, for example `gap = "big"` or `keyboard = 1`;
 - an unknown `mod_key`, for example `"ctrl"`;
-- a non-finite `[output] internal_scale`.
+- a non-finite `[output] internal_scale` or `sdr_white_nits`.
 
 GAVNO then starts with the built-in defaults; `GAVNO_*` variables still apply.
 A file that exists but cannot be read (permissions, I/O) produces a warning and
@@ -116,6 +142,8 @@ gap = 12
 
 [output]
 internal_scale = 1.75
+hdr = false
+sdr_white_nits = 203
 
 [keyboard]
 layout = "us,ru"

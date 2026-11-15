@@ -8,6 +8,8 @@ mod anim;
 mod decor;
 mod backend;
 mod config;
+mod color;
+mod hdr;
 mod cursor;
 mod debug;
 mod greeter;

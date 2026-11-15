@@ -29,7 +29,7 @@ use smithay::{
         egl::{EGLContext, EGLDevice, EGLDisplay},
         input::InputEvent,
         libinput::{LibinputInputBackend, LibinputSessionInterface},
-        renderer::{gles::GlesRenderer, ImportDma, ImportMemWl},
+        renderer::{element::RenderElementStates, gles::GlesRenderer, ImportDma, ImportMemWl},
         session::{libseat::LibSeatSession, Event as SessionEvent, Session},
         udev::{primary_gpu, UdevBackend, UdevEvent},
     },
@@ -61,11 +61,11 @@ use tracing::{debug, error, info, warn};
 use super::Backend;
 use crate::{
     render::{self, GavnoRenderElement, SurfaceDmabufFeedback},
+    hdr::{compose::Composition, kms::ConnectorColor, mode::{self, Candidate}},
     Gavno,
 };
 
-/// 8-bit formats only: msm scans these out everywhere, 10-bit is not worth
-/// the risk on the panel yet.
+/// The initial and fallback SDR formats. HDR explicitly tests XR30 separately.
 const SUPPORTED_FORMATS: &[Fourcc] = &[Fourcc::Argb8888, Fourcc::Abgr8888, Fourcc::Xrgb8888, Fourcc::Xbgr8888];
 
 type GbmDrmOutput = DrmOutput<
@@ -92,12 +92,21 @@ pub struct UdevData {
     pending_devices: Vec<(DrmNode, std::path::PathBuf)>,
 }
 
+impl Drop for UdevData {
+    fn drop(&mut self) {
+        // Drop the GPU (and restore connector properties) before libseat closes
+        // the session. Struct fields otherwise drop in declaration order.
+        self.gpu.take();
+    }
+}
+
 struct Gpu {
     node: DrmNode,
     render_node: DrmNode,
     token: RegistrationToken,
     renderer: GlesRenderer,
     manager: GbmDrmOutputManager,
+    allocator: GbmAllocator<DrmDeviceFd>,
     scanner: DrmScanner,
     surfaces: HashMap<crtc::Handle, Surface>,
 }
@@ -108,6 +117,22 @@ struct Surface {
     drm_output: GbmDrmOutput,
     feedback: Option<SurfaceDmabufFeedback>,
     redraw: RedrawState,
+    color: Result<ConnectorColor, String>,
+    hdr: Option<Composition>,
+    hdr_requested: Option<bool>,
+    sdr_format: Fourcc,
+    white_nits: f32,
+}
+
+impl Drop for Gpu {
+    fn drop(&mut self) {
+        // Restore while the manager still owns the active DRM device.
+        for surface in self.surfaces.values_mut() {
+            if let Ok(color) = &mut surface.color {
+                if let Err(error) = color.restore() { warn!(%error, "failed to restore SDR at GPU shutdown"); }
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -294,7 +319,7 @@ fn open_gpu(gv: &mut Gavno, node: DrmNode, path: &Path) -> Result<(), Box<dyn st
     let render_formats = renderer.egl_context().dmabuf_render_formats().clone();
     let manager = DrmOutputManager::new(
         drm,
-        allocator,
+        allocator.clone(),
         exporter,
         Some(gbm),
         SUPPORTED_FORMATS.iter().copied(),
@@ -317,6 +342,7 @@ fn open_gpu(gv: &mut Gavno, node: DrmNode, path: &Path) -> Result<(), Box<dyn st
         token,
         renderer,
         manager,
+        allocator,
         scanner: DrmScanner::new(),
         surfaces: HashMap::new(),
     });
@@ -355,9 +381,10 @@ fn device_removed(gv: &mut Gavno, node: DrmNode) {
     if data.gpu.as_ref().map(|g| g.node) != Some(node) {
         return;
     }
-    let gpu = data.gpu.take().unwrap();
+    let mut gpu = data.gpu.take().unwrap();
     let global = data.dmabuf_global.take();
-    for (_, surface) in gpu.surfaces {
+    for (_, mut surface) in gpu.surfaces.drain() {
+        if let Ok(color) = &mut surface.color { let _ = color.restore(); }
         crate::handlers::layer_shell::close_layers(&surface.output);
         gv.space.unmap_output(&surface.output);
         gv.display_handle.remove_global::<Gavno>(surface.global);
@@ -377,18 +404,25 @@ fn connector_connected(gv: &mut Gavno, connector: connector::Info, crtc: crtc::H
     );
     let scale = if internal { gv.config.internal_scale } else { 1.0 };
 
-    let Some(mode) = connector
-        .modes()
-        .iter()
-        .find(|m| m.mode_type().contains(ModeTypeFlags::PREFERRED))
-        .or_else(|| connector.modes().first())
-        .copied()
-    else {
+    let modes: Vec<_> = connector.modes().iter().map(|m| {
+        let wl = WlMode::from(*m);
+        Candidate { width: m.size().0, height: m.size().1, refresh: wl.refresh,
+            preferred: m.mode_type().contains(ModeTypeFlags::PREFERRED) }
+    }).collect();
+    let requested = gv.config.output_mode;
+    let selected = mode::select(&modes, requested).or_else(|| {
+        if requested.is_some() { warn!(name, ?requested, "requested output mode unavailable; using preferred mode"); }
+        mode::select(&modes, None)
+    });
+    let Some(mode) = selected.map(|i| connector.modes()[i]) else {
         warn!(name, "connector has no modes");
         return;
     };
     let wl_mode = WlMode::from(mode);
-    info!(name, ?wl_mode, scale, "output connected");
+    info!(name, width = wl_mode.size.w, height = wl_mode.size.h,
+        refresh_hz = f64::from(wl_mode.refresh) / 1000.0, scale, "selected output mode");
+    let hdr_requested = gv.config.output_hdr;
+    let white_nits = gv.config.sdr_white_nits;
 
     // Outputs are placed left to right in connection order.
     let x = gv
@@ -440,6 +474,11 @@ fn connector_connected(gv: &mut Gavno, connector: connector::Info, crtc: crtc::H
         }
     };
     let feedback = surface_dmabuf_feedback(&drm_output, &gpu.renderer, primary, gpu.render_node);
+    let color = if gpu.manager.device().is_atomic() {
+        ConnectorColor::probe(gpu.manager.device().device_fd().clone(), connector.handle())
+    } else { Err("HDR requires atomic modesetting".into()) };
+    if let Err(reason) = &color { debug!(name, reason, "HDR unavailable on connector"); }
+    let sdr_format = drm_output.format();
 
     gpu.surfaces.insert(
         crtc,
@@ -449,6 +488,11 @@ fn connector_connected(gv: &mut Gavno, connector: connector::Info, crtc: crtc::H
             drm_output,
             feedback,
             redraw: RedrawState::Idle,
+            color,
+            hdr: None,
+            hdr_requested: Some(hdr_requested),
+            sdr_format,
+            white_nits,
         },
     );
 
@@ -461,12 +505,13 @@ fn connector_connected(gv: &mut Gavno, connector: connector::Info, crtc: crtc::H
 }
 
 fn connector_disconnected(gv: &mut Gavno, connector: connector::Info, crtc: crtc::Handle) {
-    let Some(surface) = udev(gv).and_then(|d| d.gpu.as_mut()).and_then(|g| g.surfaces.remove(&crtc)) else {
+    let Some(mut surface) = udev(gv).and_then(|d| d.gpu.as_mut()).and_then(|g| g.surfaces.remove(&crtc)) else {
         return;
     };
     if let RedrawState::WaitingForTimer { token, .. } = surface.redraw {
         gv.loop_handle.remove(token);
     }
+    if let Ok(color) = &mut surface.color { let _ = color.restore(); }
     info!(output = surface.output.name(), ?connector, "output disconnected");
     crate::handlers::layer_shell::close_layers(&surface.output);
     gv.space.unmap_output(&surface.output);
@@ -507,6 +552,104 @@ fn surface_dmabuf_feedback(
         .build()
         .ok()?;
     Some(SurfaceDmabufFeedback { render, scanout })
+}
+
+/// Requests are applied only after an outstanding page flip/timer completes.
+/// This keeps format changes out of the in-flight frame's lifetime.
+pub fn set_hdr(gv: &mut Gavno, output: &str, enabled: bool) -> Result<(), String> {
+    let Some(gpu) = udev(gv).and_then(|d| d.gpu.as_mut()) else { return Err("HDR requires the DRM backend".into()); };
+    let (_, surface) = gpu.surfaces.iter_mut().find(|(_, s)| s.output.name() == output).ok_or("unknown output")?;
+    if enabled { surface.color.as_ref().map_err(Clone::clone)?; }
+    surface.hdr_requested = Some(enabled);
+    gv.queue_redraw_all();
+    Ok(())
+}
+
+pub fn hdr_status(backend: &Backend, output: &Output) -> Option<crate::hdr::Status> {
+    let Backend::Udev(data) = backend else { return None };
+    let surface = data.gpu.as_ref()?.surfaces.values().find(|s| s.output == *output)?;
+    Some(crate::hdr::Status {
+        enabled: surface.hdr.is_some(), pending: surface.hdr_requested,
+        supported: surface.color.is_ok(), sdr_white_nits: surface.white_nits,
+    })
+}
+
+pub fn toggle_hdr(gv: &mut Gavno) {
+    let Some(output) = gv.active_output() else { return };
+    let enabled = udev(gv).and_then(|d| d.gpu.as_ref()).and_then(|g| g.surfaces.values()
+        .find(|s| s.output == output)).map(|s| !s.hdr_requested.unwrap_or(s.hdr.is_some()));
+    if let Some(enabled) = enabled {
+        if let Err(error) = set_hdr(gv, &output.name(), enabled) { warn!(%error, "HDR toggle unavailable"); }
+    }
+}
+
+pub fn adjust_sdr_white(gv: &mut Gavno, delta: f32) {
+    let Some(output) = gv.active_output() else { return };
+    let Some(gpu) = udev(gv).and_then(|d| d.gpu.as_mut()) else { return };
+    let Some((_, surface)) = gpu.surfaces.iter_mut().find(|(_, s)| s.output == output) else { return };
+    if let Some(hdr) = &mut surface.hdr {
+        hdr.adjust_white(delta);
+        surface.white_nits = hdr.white_nits;
+        info!(output = output.name(), nits = surface.white_nits, "HDR SDR white adjusted");
+        gv.queue_redraw_all();
+    }
+}
+
+fn set_scanout_format(surface: &mut Surface, renderer: &GlesRenderer,
+    allocator: &GbmAllocator<DrmDeviceFd>, format: Fourcc) -> Result<(), String> {
+    let modifiers: Vec<_> = renderer.egl_context().dmabuf_render_formats().iter()
+        .filter(|f| f.code == format).map(|f| f.modifier).collect();
+    surface.drm_output.with_compositor(|c| c.set_format(allocator.clone(), format, modifiers))
+        .map_err(|e| format!("scanout format {format:?}: {e:?}"))
+}
+
+fn change_hdr(surface: &mut Surface, renderer: &mut GlesRenderer,
+    allocator: &GbmAllocator<DrmDeviceFd>, enabled: bool) -> Result<(), String> {
+    if enabled == surface.hdr.is_some() { return Ok(()); }
+    if enabled {
+        surface.color.as_ref().map_err(Clone::clone)?;
+        // Prepare all GL resources before touching connector properties.
+        let composition = Composition::new(renderer, &surface.output, surface.white_nits)?;
+        set_scanout_format(surface, renderer, allocator, Fourcc::Xrgb2101010)?;
+        if let Err(error) = surface.color.as_mut().map_err(|e| e.clone())?.enable() {
+            if let Err(restore) = set_scanout_format(surface, renderer, allocator, surface.sdr_format) {
+                warn!(%restore, "using 10-bit SDR swapchain after failed HDR enable");
+            }
+            return Err(format!("HDR connector commit: {error}"));
+        }
+        surface.hdr = Some(composition);
+    } else {
+        // Do not feed SDR pixels to a PQ connector if restoring it failed.
+        surface.color.as_mut().map_err(|e| e.clone())?.restore().map_err(|e| e.to_string())?;
+        surface.hdr = None;
+        if let Err(error) = set_scanout_format(surface, renderer, allocator, surface.sdr_format) {
+            warn!(%error, "using 10-bit SDR swapchain after HDR disable");
+        }
+    }
+    surface.drm_output.reset_buffers();
+    info!(output = surface.output.name(), enabled, nits = surface.white_nits, "HDR output state changed");
+    Ok(())
+}
+
+fn draw_frame(surface: &mut Surface, renderer: &mut GlesRenderer,
+    elements: &[GavnoRenderElement]) -> Result<(bool, RenderElementStates), String> {
+    use smithay::backend::drm::compositor::PrimaryPlaneElement;
+    if let Some(hdr) = &mut surface.hdr {
+        let (element, states) = hdr.render(renderer, &surface.output, elements, render::CLEAR_COLOR)?;
+        // All pixels, including the cursor, must pass through PQ encoding.
+        let elements = [element];
+        let result = surface.drm_output.render_frame(renderer, &elements, [0.0, 0.0, 0.0, 1.0], FrameFlags::empty())
+            .map_err(|e| format!("HDR scanout render: {e:?}"))?;
+        if result.needs_sync() {
+            if let PrimaryPlaneElement::Swapchain(element) = &result.primary_element {
+                element.sync.wait().map_err(|e| format!("HDR scanout fence: {e:?}"))?;
+            }
+        }
+        Ok((result.is_empty, states))
+    } else {
+        surface.drm_output.render_frame(renderer, elements, render::CLEAR_COLOR, FrameFlags::DEFAULT)
+            .map(|r| (r.is_empty, r.states)).map_err(|e| format!("SDR render: {e:?}"))
+    }
 }
 
 pub fn queue_redraw_all(gv: &mut Gavno) {
@@ -551,6 +694,11 @@ fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
         surface.redraw = RedrawState::Idle;
         return;
     }
+    if let Some(enabled) = surface.hdr_requested.take() {
+        if let Err(error) = change_hdr(surface, &mut gpu.renderer, &gpu.allocator, enabled) {
+            warn!(output = surface.output.name(), %error, "HDR change failed; retaining SDR or last working mode");
+        }
+    }
     let output = surface.output.clone();
 
     let elements = render::output_elements(
@@ -569,10 +717,13 @@ fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
         &mut gv.workspaces,
         &mut gv.overview,
     );
-    let result = surface
-        .drm_output
-        .render_frame(&mut gpu.renderer, &elements, render::CLEAR_COLOR, FrameFlags::DEFAULT)
-        .map(|r| (r.is_empty, r.states));
+    let mut result = draw_frame(surface, &mut gpu.renderer, &elements);
+    if result.is_err() && surface.hdr.is_some() {
+        warn!(output = output.name(), error = ?result.as_ref().err(), "HDR render failed; falling back to SDR");
+        if change_hdr(surface, &mut gpu.renderer, &gpu.allocator, false).is_ok() {
+            result = draw_frame(surface, &mut gpu.renderer, &elements);
+        }
+    }
 
     let (is_empty, states) = match result {
         Ok(r) => r,
@@ -583,6 +734,7 @@ fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
         }
     };
 
+    let mut retry_sdr = false;
     if !is_empty {
         let feedback = render::take_presentation_feedback(&gv.space, &output, &states);
         match surface.drm_output.queue_frame(Some(feedback)) {
@@ -593,6 +745,9 @@ fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
             Err(err) => {
                 warn!(?err, output = output.name(), "queue_frame failed");
                 surface.redraw = RedrawState::Idle;
+                if surface.hdr.is_some() {
+                    retry_sdr = change_hdr(surface, &mut gpu.renderer, &gpu.allocator, false).is_ok();
+                }
             }
         }
     } else {
@@ -617,7 +772,7 @@ fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
 
     let feedback = surface.feedback.clone();
     render::post_render(gv, &output, &states, feedback.as_ref());
-    if gv.is_animating() {
+    if retry_sdr || gv.is_animating() {
         queue_redraw(gv, crtc);
     }
 }
@@ -681,6 +836,11 @@ fn on_session_pause(gv: &mut Gavno) {
     let Backend::Udev(data) = &mut gv.backend else { return };
     data.libinput.suspend();
     if let Some(gpu) = data.gpu.as_mut() {
+        for surface in gpu.surfaces.values_mut() {
+            if let Ok(color) = &mut surface.color {
+                if let Err(error) = color.restore() { warn!(%error, "failed to restore SDR before session pause"); }
+            }
+        }
         gpu.manager.pause();
         for surface in gpu.surfaces.values_mut() {
             if let RedrawState::WaitingForTimer { token, .. } = surface.redraw {
@@ -722,6 +882,14 @@ fn on_session_activate(gv: &mut Gavno) {
         }
         for surface in gpu.surfaces.values_mut() {
             surface.drm_output.reset_buffers();
+            if surface.hdr.is_some() {
+                let restored = surface.color.as_mut().is_ok_and(|color| match color.restore() {
+                    Ok(()) => true,
+                    Err(error) => { warn!(%error, "failed to restore SDR on session activation"); false }
+                });
+                if restored { surface.hdr = None; }
+                surface.hdr_requested = Some(surface.hdr_requested.unwrap_or(true));
+            }
         }
         let node = gpu.node;
         // Connectors may have changed while we were away.
@@ -730,6 +898,7 @@ fn on_session_activate(gv: &mut Gavno) {
     gv.queue_redraw_all();
 }
 
+/// Capture the original sRGB scene, independently of HDR/PQ scanout.
 pub fn screenshot(gv: &mut Gavno) -> Option<(u32, u32, Vec<u8>)> {
     use smithay::backend::renderer::{damage::OutputDamageTracker, Bind, ExportMem, Offscreen};
     use smithay::backend::renderer::gles::GlesTexture;

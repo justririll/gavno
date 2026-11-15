@@ -34,6 +34,8 @@ pub enum Action {
     CloseWindow,
     /// Switch to virtual terminal N (Ctrl+Alt+F<N>), TTY backend only.
     SwitchVt(i32),
+    ToggleHdr,
+    SdrWhite(i32),
     ToggleMaximize,
     ToggleFullscreen,
     Snap(Direction),
@@ -262,6 +264,9 @@ impl Gavno {
             });
         }
         match sym {
+            keysyms::KEY_h | keysyms::KEY_H if mods.shift && !mods.ctrl => Some(Action::ToggleHdr),
+            keysyms::KEY_F2 if mods.shift && !mods.ctrl => Some(Action::SdrWhite(-10)),
+            keysyms::KEY_F3 if mods.shift && !mods.ctrl => Some(Action::SdrWhite(10)),
             keysyms::KEY_Return | keysyms::KEY_KP_Enter => Some(Action::Spawn(self.config.terminal.clone())),
             keysyms::KEY_q if !mods.shift => Some(Action::CloseWindow),
             keysyms::KEY_d => self.config.launcher.clone().map(Action::Spawn),
@@ -273,6 +278,8 @@ impl Gavno {
 
     pub fn run_action(&mut self, action: Action) {
         match action {
+            Action::ToggleHdr => crate::backend::udev::toggle_hdr(self),
+            Action::SdrWhite(delta) => crate::backend::udev::adjust_sdr_white(self, delta as f32),
             Action::Workspace(index) => { if let Some(output) = self.active_output() { self.switch_workspace(&output, index); } }
             Action::MoveWorkspace(index) => { if let Some(window) = self.focused_window() { self.move_to_workspace(&window, index); } }
             Action::WorkspaceStep(backwards) => self.workspace_step(backwards),
@@ -521,6 +528,26 @@ fn clamp_to(pos: Point<f64, Logical>, rect: Rectangle<i32, Logical>) -> Point<f6
 #[cfg(test)]
 mod workspace_tests {
     use super::*;
+
+    #[test]
+    fn hdr_shortcuts_follow_configured_modifier() {
+        let mut h = crate::state::tests::Harness::new();
+        for (mod_key, mut mods) in [
+            (crate::config::ModKey::Super, ModifiersState { logo: true, shift: true, ..Default::default() }),
+            (crate::config::ModKey::Alt, ModifiersState { alt: true, shift: true, ..Default::default() }),
+        ] {
+            h.gv.config.mod_key = mod_key;
+            for key in [keysyms::KEY_h, keysyms::KEY_H] {
+                assert_eq!(h.gv.bind_for(Keysym::from(key), &mods), Some(Action::ToggleHdr));
+            }
+            assert_eq!(h.gv.bind_for(Keysym::from(keysyms::KEY_F2), &mods), Some(Action::SdrWhite(-10)));
+            assert_eq!(h.gv.bind_for(Keysym::from(keysyms::KEY_F3), &mods), Some(Action::SdrWhite(10)));
+            mods.shift = false;
+            assert_eq!(h.gv.bind_for(Keysym::from(keysyms::KEY_h), &mods), None);
+            assert_eq!(h.gv.bind_for(Keysym::from(keysyms::KEY_F2), &mods), None);
+        }
+        assert!(crate::backend::udev::set_hdr(&mut h.gv, "eDP-1", true).is_err());
+    }
 
     #[test]
     fn workspace_shortcuts_follow_configured_modifier() {

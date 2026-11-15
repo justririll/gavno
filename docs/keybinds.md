@@ -146,3 +146,11 @@ natural scrolling off; natural scrolling is on by default.
 Ctrl+Alt+Delete and VT switching work even when the session is locked or a
 client inhibits keyboard shortcuts. In `--greeter` mode every key except VT
 switching goes to the login screen.
+
+## HDR output (DRM backend)
+
+- Mod+Shift+H: toggle HDR on the active output, when EDID and DRM support it.
+- Mod+Shift+F2 / Mod+Shift+F3: decrease / increase SDR white by 10 nits while
+  HDR is enabled (80–400 nits, default 203).
+
+See [configuration](config.md) for mode selection, HDR requirements, and IPC.
