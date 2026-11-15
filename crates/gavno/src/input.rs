@@ -11,7 +11,7 @@ use smithay::{
     utils::{Logical, Point, Rectangle, SERIAL_COUNTER},
     wayland::{shell::wlr_layer::Layer,
         keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitorSeat,
-        pointer_constraints::{with_pointer_constraint, PointerConstraint, PointerConstraintsHandler}},
+        pointer_constraints::PointerConstraintsHandler},
 };
 
 use crate::{
@@ -254,42 +254,15 @@ impl Gavno {
         let pointer = self.seat.get_pointer().unwrap();
         let current = pointer.current_location();
         let under = self.surface_under(current);
-        let focus = self.seat.get_keyboard().and_then(|k| k.current_focus());
-        let mut locked = false;
-        let mut confined = false;
-        let mut region = None;
-        if let Some((surface, origin)) = &under {
-            self.new_constraint(surface, &pointer);
-            with_pointer_constraint(surface, &pointer, |constraint| {
-                let Some(c) = constraint else { return };
-                if focus.as_ref() != Some(surface) {
-                    if c.is_active() { c.deactivate(); }
-                    return;
-                }
-                if c.is_active() && c.region().is_none_or(|r| r.contains((current - *origin).to_i32_floor())) {
-                    locked = matches!(&*c, PointerConstraint::Locked(_));
-                    confined = matches!(&*c, PointerConstraint::Confined(_));
-                    region = c.region().cloned();
-                }
-            });
-        }
+        let mut pos = current + event.delta();
+        if let Some(bbox) = self.outputs_bbox() { pos = clamp_to(pos, bbox); }
+        let allowed = self.pointer_motion_allowed(pos);
         // Relative input belongs to the old focus and remains live while locked.
         pointer.relative_motion(self, under.clone(), &RelativeMotionEvent {
             delta: event.delta(), delta_unaccel: event.delta_unaccel(), utime: event.time(),
         });
-        if locked { pointer.frame(self); return; }
-        let mut pos = current + event.delta();
-        if let Some(bbox) = self.outputs_bbox() { pos = clamp_to(pos, bbox); }
+        if !allowed { pointer.frame(self); return; }
         let new_under = self.surface_under(pos);
-        if confined {
-            if let Some((surface, origin)) = &under {
-                if new_under.as_ref().map(|(s, _)| s) != Some(surface)
-                    || region.as_ref().is_some_and(|r| !r.contains((pos - *origin).to_i32_floor())) {
-                    pointer.frame(self);
-                    return;
-                }
-            }
-        }
         let serial = SERIAL_COUNTER.next_serial();
         pointer.motion(self, new_under.clone(), &MotionEvent { location: pos, serial, time: event.time_msec() });
         pointer.frame(self);
@@ -308,12 +281,15 @@ impl Gavno {
             return;
         };
         let pos = event.position_transformed(output_geo.size) + output_geo.loc.to_f64();
+        if !self.pointer_motion_allowed(pos) {
+            return;
+        }
         let serial = SERIAL_COUNTER.next_serial();
         let pointer = self.seat.get_pointer().unwrap();
         let under = self.surface_under(pos);
         pointer.motion(
             self,
-            under,
+            under.clone(),
             &MotionEvent {
                 location: pos,
                 serial,
@@ -321,6 +297,7 @@ impl Gavno {
             },
         );
         pointer.frame(self);
+        if let Some((surface, _)) = under { self.new_constraint(&surface, &pointer); }
         self.queue_redraw_all();
     }
 

@@ -271,6 +271,7 @@ impl Gavno {
         // Pending size keeps rapid key repeats from losing steps before commit.
         let size = t.with_pending_state(|s| s.size).unwrap_or(r.size);
         let target = resize_step(Rectangle::new(r.loc, size), dir, min, max);
+        self.window_animations.cancel(&w);
         t.with_pending_state(|s| s.size = Some(target.size));
         t.send_pending_configure();
         self.queue_redraw_all();
