@@ -220,6 +220,20 @@ impl<K: Clone + PartialEq> Node<K> {
             _ => false,
         }
     }
+    fn insert_edge(&mut self, target: &K, key: K, dir: Direction) -> bool {
+        match self {
+            Self::Leaf { key: old, .. } if old==target => {
+                let leaf=Self::Leaf {key,flipped:false};
+                let original=self.clone();
+                let before=matches!(dir,Direction::Left|Direction::Up);
+                *self=Self::Split {axis:if matches!(dir,Direction::Left|Direction::Right) {Axis::X} else {Axis::Y}, ratio:0.5,
+                    first:Box::new(if before {leaf.clone()} else {original.clone()}),
+                    second:Box::new(if before {original} else {leaf})};true
+            }
+            Self::Split {first,second,..} => if first.contains(target) {first.insert_edge(target,key,dir)} else {second.insert_edge(target,key,dir)},
+            _ => false,
+        }
+    }
     fn remove(self, key: &K) -> Option<Self> {
         match self {
             Self::Leaf { key: ref k, .. } if k == key => None,
@@ -364,6 +378,13 @@ impl<K: Clone + PartialEq> Tree<K> {
             root.swap(a, b);
         }
         true
+    }
+    pub fn drop_at(&mut self, key: &K, target: &K, edge: Option<Direction>) -> bool {
+        if key==target || !self.contains(key) || !self.contains(target) {return false;}
+        if let Some(dir)=edge {
+            self.remove(key);
+            self.root.as_mut().is_some_and(|n|n.insert_edge(target,key.clone(),dir))
+        } else {self.swap(key,target)}
     }
     pub fn neighbour(&self, key: &K, dir: Direction, area: Rect, gap: i32) -> Option<K> {
         let tiles = self.layout(area, gap).0;
@@ -523,6 +544,7 @@ impl Gavno {
         self.queue_redraw_all();
     }
     fn apply_tile_rect(&mut self, window: &Window, rect: Rect, animate: bool, tiled: bool) {
+        crate::grabs::resize_grab::clear_anchor(window);
         let from = self.tile_rect(window);
         let mapped = self.space.element_location(window).is_some();
         let flags_match = window.toplevel().is_none_or(|t| {
@@ -664,15 +686,15 @@ impl Gavno {
         let Some(w) = self.focused_window().filter(|w| self.tiled(w)) else {
             return;
         };
-        let Some((o, i)) = self.workspaces.membership(&w) else {
-            return;
-        };
-        let area = self.work_area(&o);
-        let gap = self.config.gap;
-        let tree = &mut self.workspaces.ensure(&o).list.items[i].tree;
-        if let Some(n) = tree.neighbour(&w, dir, area, gap) {
-            tree.swap(&w, &n);
-        }
+        self.move_tile_window(&w,dir);
+    }
+    pub fn move_tile_window(&mut self,w:&Window,dir:Direction) {
+        let Some((o,i))=self.workspaces.membership(w) else {return};
+        let area=self.work_area(&o);let gap=self.config.gap;
+        let tree=&mut self.workspaces.ensure(&o).list.items[i].tree;
+        if let Some(n)=tree.neighbour(w,dir,area,gap) {tree.swap(w,&n);}
+        // The dragged window has a temporary position; animate it back to its slot.
+        if let Some((_,r))=tree.layout(area,gap).0.into_iter().find(|(n,_)| n==w) {self.apply_tile_rect(w,r,true,true);}
         self.reflow_tiling(true);
     }
     pub fn resize_tile(&mut self, w: &Window, dir: Direction, delta: i32, animate: bool) {
@@ -694,13 +716,13 @@ impl Gavno {
         let area = self.work_area(&o);
         let gap = self.config.gap;
         let tree = &mut self.workspaces.ensure(&o).list.items[i].tree;
-        if let Some((n, _)) = tree
+        if let Some((n, r)) = tree
             .layout(area, gap)
             .0
             .into_iter()
             .find(|(n, r)| n != w && r.to_f64().contains(pos))
         {
-            tree.swap(w, &n);
+            tree.drop_at(w, &n, drop_edge(r,pos));
         }
         // The grab still exists during release; explicitly restore its own slot.
         if let Some((_, r)) = tree.layout(area, gap).0.into_iter().find(|(n, _)| n == w) {
@@ -1080,7 +1102,7 @@ mod tests {
         let destination = before.iter().find(|(w, _)| w == &b).unwrap().1;
         let initial = h.gv.space.element_location(&a).unwrap();
         let start = initial.to_f64() + Point::from((30.0, 30.0));
-        let end = destination.loc.to_f64() + Point::from((100.0, 100.0));
+        let end = destination.loc.to_f64() + Point::from((destination.size.w as f64 / 2.0, destination.size.h as f64 / 2.0));
         let pointer = h.gv.seat.get_pointer().unwrap();
         let grab = crate::grabs::MoveSurfaceGrab::start(
             GrabStartData {
@@ -1198,5 +1220,37 @@ mod tests {
             .layout(area(), 12)
             .0
             .is_empty());
+    }
+}
+
+/// The middle half swaps, the nearest outer quarter creates a new split.
+pub fn drop_edge(r:Rect,p:Point<f64,Logical>) -> Option<Direction> {
+    let x=(p.x-r.loc.x as f64)/r.size.w.max(1) as f64;
+    let y=(p.y-r.loc.y as f64)/r.size.h.max(1) as f64;
+    [(x,Direction::Left),(1.0-x,Direction::Right),(y,Direction::Up),(1.0-y,Direction::Down)]
+        .into_iter().min_by(|a,b|a.0.total_cmp(&b.0)).filter(|(d,_)| *d<0.25).map(|(_,d)|d)
+}
+impl Gavno {
+    pub fn resize_nearest_split(&mut self,w:&Window,dir:Direction,delta:i32) {
+        let Some((o,i))=self.workspaces.membership(w) else {return};
+        let area=self.work_area(&o);let gap=self.config.gap;
+        let opposite=match dir {Direction::Left=>Direction::Right,Direction::Right=>Direction::Left,Direction::Up=>Direction::Down,Direction::Down=>Direction::Up};
+        let tree=&mut self.workspaces.ensure(&o).list.items[i].tree;
+        if let Some(s)=tree.side(w,dir,area,gap).or_else(||tree.side(w,opposite,area,gap)) {
+            if tree.move_split(&s.path,delta,area,gap) {self.reflow_tiling(false);}
+        }
+    }
+    pub fn preview_tile_drop(&mut self,w:&Window,pos:Point<f64,Logical>) {
+        let Some((o,i))=self.workspaces.membership(w) else {return};
+        let area=self.work_area(&o);let gap=self.config.gap;
+        let tree=&self.workspaces.ensure(&o).list.items[i].tree;
+        let target=tree.layout(area,gap).0.into_iter().find(|(n,r)|n!=w && r.to_f64().contains(pos));
+        if let Some((n,r))=target {
+            let mut projected=tree.clone();
+            projected.drop_at(w,&n,drop_edge(r,pos));
+            let preview=projected.layout(area,gap).0.into_iter().find(|(n,_)|n==w).map(|(_,r)|r).unwrap_or(r);
+            let from=self.interactive_rect(w).unwrap_or(preview);
+            self.overlay.preview(o,Zone::Maximized,from,preview,self.start_time.elapsed());
+        } else {self.overlay.hide_preview(self.start_time.elapsed());}
     }
 }

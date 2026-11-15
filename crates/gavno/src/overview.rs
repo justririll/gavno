@@ -74,6 +74,7 @@ pub struct Overview {
     pub output: Option<Output>,
     pub progress: Spring,
     pub held: bool,
+    pub flick: Option<(Window, Spring, Spring)>,
     pub hits: Vec<SceneWindow>,
     pub thumbnails: Vec<Rect>,
     pub work_area: Option<Rectangle<i32, Logical>>,
@@ -90,6 +91,7 @@ impl Default for Overview {
             output: None,
             progress: Spring::new(0.0, SpringParams::SMOOTH),
             held: false,
+            flick: None,
             hits: Vec::new(),
             thumbnails: Vec::new(),
             work_area: None,
@@ -104,6 +106,7 @@ impl Default for Overview {
 }
 impl Overview {
     pub fn forget(&mut self, window: &Window) {
+        if self.flick.as_ref().is_some_and(|(w,_,_)|w==window) {self.flick=None;}
         if self.drag.as_ref().is_some_and(|(w, _, _)| w == window) {
             self.drag = None;
         }
@@ -134,6 +137,8 @@ impl Overview {
         output: &Output,
         now: Duration,
     ) -> Option<Vec<SceneWindow>> {
+        if let Some((_,x,y))=&mut self.flick {x.advance(now);y.advance(now);}
+        if self.flick.as_ref().is_some_and(|(w,_,_)| !w.alive()) {self.flick=None;}
         workspaces.advance(now);
         self.progress.advance(now);
         let owner = workspaces.get(output)?;
@@ -200,6 +205,9 @@ impl Overview {
                     if drag == &v.window && (current.x - start.x).hypot(current.y - start.y) > 6.0 {
                         rect.loc += *current - *start;
                     }
+                }
+                if let Some((window,x,y))=&self.flick {
+                    if window==&v.window {rect.loc+=(x.value,y.value).into();}
                 }
                 scene.push(SceneWindow {
                     window: v.window.clone(),

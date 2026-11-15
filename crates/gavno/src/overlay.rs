@@ -75,6 +75,7 @@ struct OutputCache {
 pub struct Overlay {
     preview: Option<Preview>,
     pub switcher: Option<Switcher>,
+    pub resize_mode: crate::resize_mode::ResizeMode,
     shaders: Option<Shaders>,
     shader_failed: bool,
     caches: Vec<(Output, OutputCache)>,
@@ -85,6 +86,7 @@ impl Default for Overlay {
         Self {
             preview: None,
             switcher: None,
+            resize_mode: Default::default(),
             shaders: None,
             shader_failed: false,
             caches: Vec::new(),
@@ -258,7 +260,7 @@ pub fn overlay_elements(
     scale: f64,
     now: Duration,
 ) -> Vec<GavnoRenderElement> {
-    let mut out = Vec::new();
+    let mut out = gv.resize_mode.elements(renderer,output,geometry,scale);
     let preview = gv.preview.as_mut().map(|p| {
         let r = p.rect.advance(now);
         let a = p.opacity.advance(now).clamp(0.0, 1.0) as f32;

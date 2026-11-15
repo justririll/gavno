@@ -11,7 +11,7 @@ use smithay::{
         wayland_protocols::xdg::shell::server::xdg_toplevel, wayland_server::protocol::wl_surface::WlSurface,
     },
     utils::{Logical, Point, Rectangle, Size},
-    wayland::{compositor, shell::xdg::SurfaceCachedState},
+    wayland::compositor,
 };
 use std::cell::RefCell;
 
@@ -34,7 +34,7 @@ bitflags::bitflags! {
 impl From<xdg_toplevel::ResizeEdge> for ResizeEdge {
     #[inline]
     fn from(x: xdg_toplevel::ResizeEdge) -> Self {
-        Self::from_bits(x as u32).unwrap()
+        Self::from_bits_truncate(x as u32)
     }
 }
 
@@ -57,9 +57,9 @@ impl ResizeSurfaceGrab {
     ) -> Self {
         let initial_rect = initial_window_rect;
 
-        ResizeSurfaceState::with(window.toplevel().unwrap().wl_surface(), |state| {
-            *state = ResizeSurfaceState::Resizing { edges, initial_rect };
-        });
+        if let Some(t)=window.toplevel() {
+            ResizeSurfaceState::with(t.wl_surface(), |state| { *state = ResizeSurfaceState::Resizing { edges, initial_rect }; });
+        }
 
         Self {
             start_data,
@@ -82,53 +82,11 @@ impl PointerGrab<Gavno> for ResizeSurfaceGrab {
         // While the grab is active, no client has pointer focus
         handle.motion(data, None, event);
 
-        data.window_animations.cancel(&self.window);
-        let mut delta = event.location - self.start_data.location;
+        let delta=event.location-self.start_data.location;
+        let requested=crate::window_gesture::resized(self.initial_rect,self.edges,delta);
+        data.apply_interactive_resize(&self.window,requested,crate::window_gesture::anchor_for(self.edges));
+        self.last_window_size=data.interactive_rect(&self.window).map(|r|r.size).unwrap_or(self.initial_rect.size);
 
-        let mut new_window_width = self.initial_rect.size.w;
-        let mut new_window_height = self.initial_rect.size.h;
-
-        if self.edges.intersects(ResizeEdge::LEFT | ResizeEdge::RIGHT) {
-            if self.edges.intersects(ResizeEdge::LEFT) {
-                delta.x = -delta.x;
-            }
-
-            new_window_width = (self.initial_rect.size.w as f64 + delta.x) as i32;
-        }
-
-        if self.edges.intersects(ResizeEdge::TOP | ResizeEdge::BOTTOM) {
-            if self.edges.intersects(ResizeEdge::TOP) {
-                delta.y = -delta.y;
-            }
-
-            new_window_height = (self.initial_rect.size.h as f64 + delta.y) as i32;
-        }
-
-        let (min_size, max_size) =
-            compositor::with_states(self.window.toplevel().unwrap().wl_surface(), |states| {
-                let mut guard = states.cached_state.get::<SurfaceCachedState>();
-                let data = guard.current();
-                (data.min_size, data.max_size)
-            });
-
-        let min_width = min_size.w.max(1);
-        let min_height = min_size.h.max(1);
-
-        let max_width = if max_size.w == 0 { i32::MAX } else { max_size.w };
-        let max_height = if max_size.h == 0 { i32::MAX } else { max_size.h };
-
-        self.last_window_size = Size::from((
-            new_window_width.max(min_width).min(max_width),
-            new_window_height.max(min_height).min(max_height),
-        ));
-
-        let xdg = self.window.toplevel().unwrap();
-        xdg.with_pending_state(|state| {
-            state.states.set(xdg_toplevel::State::Resizing);
-            state.size = Some(self.last_window_size);
-        });
-
-        xdg.send_pending_configure();
     }
 
     fn relative_motion(
@@ -253,12 +211,16 @@ impl PointerGrab<Gavno> for ResizeSurfaceGrab {
         });
         xdg.send_pending_configure();
         // The final client commit still keeps the edge opposite the drag anchored.
-        ResizeSurfaceState::with(xdg.wl_surface(), |state| {
-            *state = ResizeSurfaceState::WaitingForLastCommit {
-                edges: self.edges,
-                initial_rect: self.initial_rect,
-            };
-        });
+        if directed_rect(&self.window).is_some() {
+            finish_directed(&self.window);
+        } else {
+            ResizeSurfaceState::with(xdg.wl_surface(), |state| {
+                *state = ResizeSurfaceState::WaitingForLastCommit {
+                    edges: self.edges,
+                    initial_rect: self.initial_rect,
+                };
+            });
+        }
         data.queue_redraw_all();
     }
 }
@@ -267,10 +229,11 @@ impl PointerGrab<Gavno> for ResizeSurfaceGrab {
 ///
 /// It is stored inside of WlSurface,
 /// and can be accessed using [`ResizeSurfaceState::with`]
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 enum ResizeSurfaceState {
     #[default]
     Idle,
+    Directed { rect: Rectangle<i32, Logical>, anchor: Point<f64, Logical>, active: bool },
     Resizing {
         edges: ResizeEdge,
         /// The initial window size and location.
@@ -306,7 +269,7 @@ impl ResizeSurfaceState {
 
                 Some((edges, initial_rect))
             }
-            Self::Idle => None,
+            Self::Idle | Self::Directed { .. } => None,
         }
     }
 }
@@ -315,12 +278,23 @@ impl ResizeSurfaceState {
 pub fn handle_commit(space: &mut Space<Window>, surface: &WlSurface) -> Option<()> {
     let window = space
         .elements()
-        .find(|w| w.toplevel().unwrap().wl_surface() == surface)
+        .find(|w| w.toplevel().is_some_and(|t|t.wl_surface()==surface))
         .cloned()?;
 
     let mut window_loc = space.element_location(&window)?;
     let geometry = window.geometry();
 
+    let directed = ResizeSurfaceState::with(surface, |state| match *state {
+        ResizeSurfaceState::Directed { rect, anchor, .. } => Some(Point::from((
+            rect.loc.x + ((rect.size.w - geometry.size.w) as f64 * anchor.x).round() as i32,
+            rect.loc.y + ((rect.size.h - geometry.size.h) as f64 * anchor.y).round() as i32,
+        ))),
+        _ => None,
+    });
+    if let Some(loc) = directed {
+        space.map_element(window, loc, false);
+        return Some(());
+    }
     let new_loc: Point<Option<i32>, Logical> = ResizeSurfaceState::with(surface, |state| {
         state
             .commit()
@@ -355,4 +329,42 @@ pub fn handle_commit(space: &mut Space<Window>, surface: &WlSurface) -> Option<(
     }
 
     Some(())
+}
+
+/// Keep the requested anchor even when a client commits a different size.
+pub fn directed_anchor(surface: &WlSurface, rect: Rectangle<i32, Logical>, anchor: Point<f64, Logical>) {
+    ResizeSurfaceState::with(surface, |state| *state = ResizeSurfaceState::Directed { rect, anchor, active: true });
+}
+pub fn clear_anchor(window: &Window) {
+    if let Some(t) = window.toplevel() {
+        ResizeSurfaceState::with(t.wl_surface(), |state| *state = ResizeSurfaceState::Idle);
+    }
+}
+
+pub fn finish_directed(window: &Window) {
+    if let Some(t)=window.toplevel() {ResizeSurfaceState::with(t.wl_surface(), |s| {
+        if let ResizeSurfaceState::Directed {active,..}=s {*active=false;}
+    });}
+}
+/// Retire the temporary scale only after the client acknowledges the final size.
+pub fn directed_finished(window: &Window) -> bool {
+    let Some(t)=window.toplevel() else {return false};
+    let state=ResizeSurfaceState::with(t.wl_surface(), |s|*s);
+    let current=t.current_state();
+    matches!(state,ResizeSurfaceState::Directed {active:false,rect,..} if current.size==Some(rect.size) && !current.states.contains(xdg_toplevel::State::Resizing))
+}
+
+/// While held, subsequent deltas start from the requested geometry rather than
+/// an older client commit. After the final acknowledgement accept its actual size.
+pub fn directed_rect(window: &Window) -> Option<Rectangle<i32, Logical>> {
+    let t=window.toplevel()?;
+    let state=ResizeSurfaceState::with(t.wl_surface(), |s|*s);
+    match state {
+        ResizeSurfaceState::Directed {rect,anchor,active} => {
+            Some(if !active && t.current_state().size==Some(rect.size) {
+                crate::window_gesture::anchored_size(rect,window.geometry().size,anchor)
+            } else {rect})
+        }
+        _=>None,
+    }
 }

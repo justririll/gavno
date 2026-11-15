@@ -55,6 +55,7 @@ pub struct Gavno {
     pub dock: crate::dock::Dock,
     pub topbar: crate::topbar::TopBar,
     pub gestures: crate::gesture::Gestures,
+    pub window_gestures: crate::window_gesture::WindowGestures,
     pub pointer_gestures: smithay::wayland::pointer_gestures::PointerGesturesState,
     pub overlay: crate::overlay::Overlay,
     pub popups: PopupManager,
@@ -147,6 +148,7 @@ impl Gavno {
             dock: Default::default(),
             topbar: Default::default(),
             gestures: Default::default(),
+            window_gestures: Default::default(),
             pointer_gestures: smithay::wayland::pointer_gestures::PointerGesturesState::new::<Self>(&dh),
             overlay: crate::overlay::Overlay::default(),
             popups: PopupManager::default(),
@@ -216,6 +218,8 @@ impl Gavno {
         self.refresh_workspaces();
         self.refresh_desktop_pointer();
         self.refresh_splitter_cursor();
+        self.validate_resize_mode();
+        self.refresh_resize_cursor();
         self.prune_navigation();
         let focus = self.seat.get_keyboard().and_then(|k| k.current_focus());
         self.update_shortcut_inhibitors(focus.as_ref());
@@ -243,6 +247,7 @@ impl Gavno {
             Some(g) => g.is_animating(),
             None => self.window_animations.is_animating() || self.overlay.is_animating()
                 || self.workspaces.active() || self.overview.progress.is_active()
+                || self.overview.flick.as_ref().is_some_and(|(_,x,y)|x.is_active() || y.is_active())
                 || self.dock.active() || self.topbar.active(),
         }
     }
@@ -259,7 +264,7 @@ impl Gavno {
             return Some((hit.surface, hit.surface_loc));
         }
         if self.desktop_transform_at(pos) { return None; }
-        if self.splitter_at(pos).is_some() { return None; }
+        if self.splitter_at(pos).is_some() || self.resize_band_at(pos).is_some() || self.overlay.resize_mode.active() { return None; }
         if let Some(found) = self.space.element_under(pos).and_then(|(window, location)| {
             window
                 .surface_under(pos - location.to_f64(), WindowSurfaceType::ALL)

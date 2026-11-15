@@ -46,6 +46,7 @@ pub enum Action {
     FocusDirection(Direction),
     Swap(Direction),
     Resize(Direction),
+    ResizeMode,
     SwitcherCycle(bool),
     SwitcherFinish(bool),
     Workspace(usize),
@@ -148,6 +149,10 @@ impl Gavno {
                     return FilterResult::Forward;
                 }
 
+                if gv.resize_mode_key(handle.modified_sym().raw(),mods.shift) {
+                    gv.suppressed_keys.push(raw_code);
+                    return FilterResult::Intercept(None);
+                }
                 if gv.overlay.switcher_open() {
                     let sym = handle.modified_sym().raw();
                     let action = match sym {
@@ -271,6 +276,7 @@ impl Gavno {
             });
         }
         match sym {
+            keysyms::KEY_r | keysyms::KEY_R if !mods.ctrl && !mods.shift => Some(Action::ResizeMode),
             keysyms::KEY_t | keysyms::KEY_T if !mods.ctrl && !mods.shift => Some(Action::ToggleTiling),
             keysyms::KEY_space if !mods.ctrl && !mods.shift => Some(if (mods.alt && self.config.mod_key == crate::config::ModKey::Super) || (mods.logo && self.config.mod_key == crate::config::ModKey::Alt) { Action::ToggleTiling } else { Action::ToggleFloating }),
             keysyms::KEY_i | keysyms::KEY_I if mods.shift && !mods.ctrl => Some(Action::RotateSplit),
@@ -309,6 +315,7 @@ impl Gavno {
             Action::FocusDirection(dir) => self.focus_direction(dir),
             Action::Swap(dir) => self.swap_direction(dir),
             Action::Resize(dir) => self.resize_direction(dir),
+            Action::ResizeMode => self.enter_resize_mode(),
             Action::SwitcherCycle(backwards) => self.switcher_cycle(backwards),
             Action::SwitcherFinish(commit) => self.switcher_finish(commit),
             Action::SwitchVt(vt) => crate::backend::switch_vt(self, vt),
@@ -320,15 +327,18 @@ impl Gavno {
         let current = pointer.current_location();
         let under = self.surface_under(current);
         let mut pos = current + event.delta();
+        let proposed=pos;
         if let Some(bbox) = self.outputs_bbox() { pos = clamp_to(pos, bbox); }
+        self.pressure_motion(current,proposed,pos);
         let allowed = self.pointer_motion_allowed(pos);
         // Relative input belongs to the old focus and remains live while locked.
         pointer.relative_motion(self, under.clone(), &RelativeMotionEvent {
             delta: event.delta(), delta_unaccel: event.delta_unaccel(), utime: event.time(),
         });
         if !allowed { pointer.frame(self); return; }
+        let resizing=self.resize_mode_motion(pos);
         self.overview_motion(pos);
-        let new_under = self.surface_under(pos);
+        let new_under = if resizing {None} else {self.surface_under(pos)};
         let serial = SERIAL_COUNTER.next_serial();
         pointer.motion(self, new_under.clone(), &MotionEvent { location: pos, serial, time: event.time_msec() });
         pointer.frame(self);
@@ -337,6 +347,7 @@ impl Gavno {
             self.greeter_pointer(false);
         }
         self.refresh_splitter_cursor();
+        self.refresh_resize_cursor();
         self.queue_redraw_all();
     }
 
@@ -353,8 +364,9 @@ impl Gavno {
         }
         let serial = SERIAL_COUNTER.next_serial();
         let pointer = self.seat.get_pointer().unwrap();
+        let resizing=self.resize_mode_motion(pos);
         self.overview_motion(pos);
-        let under = self.surface_under(pos);
+        let under = if resizing {None} else {self.surface_under(pos)};
         pointer.motion(
             self,
             under.clone(),
@@ -367,6 +379,7 @@ impl Gavno {
         pointer.frame(self);
         if let Some((surface, _)) = under { self.new_constraint(&surface, &pointer); }
         self.refresh_splitter_cursor();
+        self.refresh_resize_cursor();
         self.queue_redraw_all();
     }
 
@@ -407,9 +420,16 @@ impl Gavno {
             pointer.frame(self);
             return;
         }
+        if button_state==ButtonState::Released && self.window_gestures.swallowed_buttons.contains(&button) {
+            self.window_gestures.swallowed_buttons.retain(|b|*b!=button);return;
+        }
+        if button_state==ButtonState::Pressed && self.exit_resize_mode() {
+            self.window_gestures.swallowed_buttons.push(button);return;
+        }
         if self.shell_button(button, button_state == ButtonState::Pressed) { return; }
         if self.overview_button(button, button_state == ButtonState::Pressed) { return; }
         if self.desktop_transform_at(pointer.current_location()) && self.layer_hit(pointer.current_location(), &[Layer::Overlay, Layer::Top]).is_none() { return; }
+        if button_state == ButtonState::Pressed && button == BTN_LEFT && self.start_band_resize(button,serial,event.time_msec()) {return;}
         if button_state == ButtonState::Pressed && button == BTN_LEFT && !pointer.is_grabbed() {
             if let Some((output, splitter)) = self.splitter_at(pointer.current_location()) {
                 let start = GrabStartData { focus: None, button, location: pointer.current_location() };
@@ -539,7 +559,11 @@ impl Gavno {
             .amount(Axis::Vertical)
             .unwrap_or_else(|| event.amount_v120(Axis::Vertical).unwrap_or(0.0) * 15.0 / 120.);
 
+        if self.greeter.is_none() && !self.protocols.locks.locked && source==AxisSource::Finger {
+            if self.precision_scroll((-horizontal,-vertical).into(),[event.amount(Axis::Horizontal),event.amount(Axis::Vertical)]) {return;}
+        }
         if self.greeter.is_none() && !self.protocols.locks.locked && self.shell_axis(horizontal, vertical) { return; }
+        if self.greeter.is_none() && !self.protocols.locks.locked && source==AxisSource::Finger && self.overview_flick_axis((-horizontal,-vertical).into(),event.time(),[event.amount(Axis::Horizontal),event.amount(Axis::Vertical)]) {return;}
         if self.overview.visible() { return; }
         let mut frame = AxisFrame::new(event.time_msec()).source(source);
         if horizontal != 0.0 {

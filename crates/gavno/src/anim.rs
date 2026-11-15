@@ -65,6 +65,14 @@ impl Motion {
         progress.advance(now);
         self.geometry = (from != to).then_some((from, to, progress));
     }
+    pub fn seed_velocity(&mut self, velocity: smithay::utils::Point<f64, Logical>) {
+        if let Some((from,to,progress))=&mut self.geometry {
+            let dx=to.loc.x-from.loc.x;
+            let dy=to.loc.y-from.loc.y;
+            let length=dx*dx+dy*dy;
+            if length>1.0 {progress.velocity=(velocity.x*dx+velocity.y*dy)/length;}
+        }
+    }
     pub fn cancel(&mut self) {
         self.geometry = None;
         self.visibility.jump(1.0);
@@ -348,5 +356,11 @@ mod tests {
         let mid = interpolate_rect(a, b, 0.5);
         assert_eq!(mid, r(50.0, 250.0));
         assert_eq!(mid.loc.x + mid.size.w, 300.0);
+    }
+}
+
+impl Gavno {
+    pub fn seed_geometry_velocity(&mut self, w: &Window, velocity: smithay::utils::Point<f64, Logical>) {
+        if let Some(a)=self.window_animations.entries.iter_mut().find(|a| &a.window==w) {a.motion.seed_velocity(velocity);}
     }
 }

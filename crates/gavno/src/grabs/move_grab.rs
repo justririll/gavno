@@ -47,6 +47,7 @@ impl PointerGrab<Gavno> for MoveSurfaceGrab {
         // While the grab is active, no client has pointer focus
         handle.motion(data, None, event);
 
+        crate::grabs::resize_grab::clear_anchor(&self.window);
         data.window_animations.cancel(&self.window);
         let delta = event.location - self.start_data.location;
         if !self.window.alive() {
@@ -70,7 +71,7 @@ impl PointerGrab<Gavno> for MoveSurfaceGrab {
                 data.window_animations.cancel(&self.window);
             }
         }
-        if data.tiled(&self.window) { data.workspaces.moving_tile = Some(self.window.clone()); }
+        if data.tiled(&self.window) { data.workspaces.moving_tile = Some(self.window.clone()); data.preview_tile_drop(&self.window,event.location); }
         let new_location = self.initial_window_location.to_f64() + delta;
         data.space
             .map_element(self.window.clone(), new_location.to_i32_round(), true);

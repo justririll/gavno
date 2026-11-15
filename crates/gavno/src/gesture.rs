@@ -20,12 +20,12 @@ const OVERVIEW_SWIPE_DISTANCE: f64 = 340.0;
 /// Least-squares fit of normalized positions over the last 100 ms.
 /// Use event microseconds, independent of the compositor's frame clock.
 #[derive(Default)]
-struct MotionHistory(VecDeque<(u64, Point<f64, Logical>)>);
+pub(crate) struct MotionHistory(VecDeque<(u64, Point<f64, Logical>)>);
 
 impl MotionHistory {
     const WINDOW: u64 = 100_000;
 
-    fn push(&mut self, time: u64, value: Point<f64, Logical>) {
+    pub(crate) fn push(&mut self, time: u64, value: Point<f64, Logical>) {
         if let Some(&(last, _)) = self.0.back() {
             if time < last {
                 return;
@@ -40,7 +40,7 @@ impl MotionHistory {
         }
     }
 
-    fn velocity(&self, now: u64) -> Point<f64, Logical> {
+    pub(crate) fn velocity(&self, now: u64) -> Point<f64, Logical> {
         let samples: Vec<_> = self
             .0
             .iter()
@@ -203,7 +203,7 @@ impl Gavno {
             return;
         }
         self.gestures.super_tap.cancel();
-        self.gestures.swipe_client = self.client_gesture(event.fingers());
+        self.gestures.swipe_client = self.client_gesture(event.fingers()) || (event.fingers()==4 && self.window_gesture_locked());
         if self.gestures.swipe_client {
             self.seat.get_pointer().unwrap().gesture_swipe_begin(
                 self,
@@ -215,6 +215,7 @@ impl Gavno {
             );
             return;
         }
+        if event.fingers()==4 {self.begin_window_drag(event.time());return;}
         if event.fingers() != 3
             && !(event.fingers() == 2 && self.seat.get_keyboard().unwrap().modifier_state().logo)
         {
@@ -265,9 +266,6 @@ impl Gavno {
             );
             return;
         }
-        let Some(s) = &mut self.gestures.swipe else {
-            return;
-        };
         use smithay::reexports::input::event::gesture::GestureEventCoordinates;
         let delta = (&event as &dyn Any)
             .downcast_ref::<smithay::reexports::input::event::gesture::GestureSwipeUpdateEvent>()
@@ -276,6 +274,8 @@ impl Gavno {
         if !delta.x.is_finite() || !delta.y.is_finite() {
             return;
         }
+        if self.update_window_drag(delta.upscale(self.gestures.direction),event.time()) {return;}
+        let Some(s) = &mut self.gestures.swipe else {return;};
         s.delta += delta.upscale(self.gestures.direction);
         if s.axis.is_none() {
             s.axis = lock_axis(s.delta.x, s.delta.y);
@@ -334,6 +334,7 @@ impl Gavno {
             );
             return;
         }
+        if self.end_window_drag(event.time(),event.cancelled()) {return;}
         let Some(mut s) = self.gestures.swipe.take() else {
             return;
         };
@@ -392,7 +393,10 @@ impl Gavno {
             return;
         }
         self.gestures.super_tap.cancel();
-        self.gestures.pinch_client = self.client_gesture(event.fingers());
+        self.gestures.pinch_client = self.client_gesture(event.fingers()) || (event.fingers()==4 && self.window_gesture_locked());
+        if !self.gestures.pinch_client && (event.fingers()==4 || event.fingers()==2) {
+            self.begin_window_pinch(event.fingers()==2);
+        }
         if self.gestures.pinch_client {
             self.seat.get_pointer().unwrap().gesture_pinch_begin(
                 self,
@@ -405,6 +409,8 @@ impl Gavno {
         }
     }
     pub fn on_gesture_pinch_update<I: InputBackend>(&mut self, event: I::GesturePinchUpdateEvent) {
+        if !self.gestures_enabled() {return;}
+        if !self.gestures.pinch_client {self.update_window_pinch(event.scale());}
         if self.gestures.pinch_client {
             self.seat.get_pointer().unwrap().gesture_pinch_update(
                 self,
@@ -418,6 +424,7 @@ impl Gavno {
         }
     }
     pub fn on_gesture_pinch_end<I: InputBackend>(&mut self, event: I::GesturePinchEndEvent) {
+        if !self.gestures.pinch_client {self.end_window_pinch(event.cancelled());}
         if self.gestures.pinch_client {
             self.gestures.pinch_client = false;
             self.seat.get_pointer().unwrap().gesture_pinch_end(

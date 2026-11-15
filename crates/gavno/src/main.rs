@@ -32,6 +32,8 @@ mod workspace;
 mod tiling;
 mod overview;
 mod gesture;
+mod window_gesture;
+mod resize_mode;
 mod xwayland;
 
 use smithay::reexports::{calloop::EventLoop, wayland_server::Display};

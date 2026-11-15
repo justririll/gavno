@@ -119,6 +119,7 @@ impl Gavno {
         let Some(toplevel) = window.toplevel().cloned() else {
             return;
         };
+        crate::grabs::resize_grab::clear_anchor(window);
         let mapped = self.space.element_location(window).is_some();
         let output = output.or_else(|| self.output_for_window(window));
 
@@ -185,6 +186,7 @@ impl Gavno {
         rect: Rectangle<i32, Logical>,
         mode: WindowMode,
     ) {
+        crate::grabs::resize_grab::clear_anchor(window);
         self.window_animations.cancel(window);
         configure_mode(window, mode, Some(rect.size));
         self.space.map_element(window.clone(), rect.loc, false);

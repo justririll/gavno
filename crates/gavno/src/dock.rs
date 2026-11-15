@@ -106,6 +106,7 @@ struct DockView {
     canvas: Canvas,
     icons: Vec<IconMotion>,
     slide: Spring,
+    pushed: bool,
     hits: Vec<(String, Rectangle<f64, Logical>)>,
     panel: Rectangle<f64, Logical>,
     visible: bool,
@@ -159,6 +160,9 @@ pub struct Dock {
     /// Pinned ids already reported as unresolved, so each logs only once.
     skipped: HashSet<String>,
     pub changed: bool,
+    cycle_scroll: f64,
+    cycle_app: Option<String>,
+    cycle_windows: Vec<Window>,
 }
 impl Default for Dock {
     fn default() -> Self {
@@ -178,6 +182,9 @@ impl Default for Dock {
             buttons: Vec::new(),
             skipped: HashSet::new(),
             changed: false,
+            cycle_scroll: 0.0,
+            cycle_app: None,
+            cycle_windows: Vec::new(),
         }
     }
 }
@@ -325,6 +332,7 @@ impl Dock {
                     if self.config.autohide { 1.0 } else { 0.0 },
                     SpringParams::SMOOTH,
                 ),
+                pushed: false,
                 hits: Vec::new(),
                 panel: Rectangle::default(),
                 visible,
@@ -354,7 +362,8 @@ impl Dock {
         let base_left = (size.w as f64 - base_width * fit) / 2.0;
         let over = v.panel.contains(pointer) || v.hits.iter().any(|(_, r)| r.contains(pointer));
         let menu_open = self.menu.as_ref().is_some_and(|m| &m.output == output);
-        let reveal = !self.config.autohide || pointer.y >= size.h as f64 - 1.5 || over || menu_open;
+        if pointer.y < size.h as f64 - DOCK_H as f64 * DOCK_MAG - 20.0 {v.pushed=false;}
+        let reveal = !self.config.autohide || v.pushed || over || menu_open;
         v.slide.advance(now);
         v.slide.set(if reveal { 0.0 } else { 1.0 });
         let bottom = size.h as f64 - DOCK_M as f64 + (DOCK_H + 16) as f64 * v.slide.value;
@@ -826,6 +835,30 @@ impl Gavno {
             }
             return true;
         }
+        let p=pos-geo.loc.to_f64();
+        let id=self.dock.views.iter().find(|v|v.output==output).and_then(|v|v.hits.iter().find(|(_,r)|r.contains(p)).map(|(id,_)|id.clone()));
+        if let Some(id)=id {
+            let delta=if horizontal.abs()>vertical.abs() {horizontal} else {vertical};
+            if self.dock.cycle_app.as_ref()!=Some(&id) || delta==0.0 || delta.signum()!=self.dock.cycle_scroll.signum() {self.dock.cycle_scroll=0.0;}
+            if self.dock.cycle_app.as_ref()!=Some(&id) {
+                self.dock.cycle_windows=self.dock.apps.iter().find(|a|a.id==id).map(|a|a.windows.clone()).unwrap_or_default();
+            }
+            self.dock.cycle_app=Some(id.clone());
+            self.dock.cycle_scroll+=delta;
+            if self.dock.cycle_scroll.abs()>=30.0 {
+                self.dock.cycle_windows.retain(|w|w.alive());
+                let windows=self.dock.cycle_windows.clone();
+                if !windows.is_empty() {
+                    let selected=self.focused_window().and_then(|w|windows.iter().position(|v|v==&w));
+                    let index=match selected {Some(i)=>(i+if delta<0.0 {windows.len()-1} else {1})%windows.len(),None=>if delta<0.0 {windows.len()-1} else {0}};
+                    self.focus_window(Some(&windows[index]));
+                }
+                self.dock.cycle_scroll=0.0;
+            }
+            if delta==0.0 {self.dock.cycle_app=None;self.dock.cycle_windows.clear();}
+            return true;
+        }
+        self.dock.cycle_scroll=0.0;self.dock.cycle_app=None;self.dock.cycle_windows.clear();
         self.shell_contains(pos)
     }
     pub fn finish_dock_launches(&mut self) {
@@ -992,6 +1025,26 @@ impl Gavno {
 mod tests {
     use super::*;
     #[test]
+    fn icon_scroll_keeps_a_stable_cycle_and_bottom_push_reveals_autohide() {
+        use smithay::input::pointer::MotionEvent;
+        let mut h=crate::state::tests::Harness::new();
+        let output=Output::new("dock-input".into(),smithay::output::PhysicalProperties {size:(0,0).into(),subpixel:smithay::output::Subpixel::Unknown,make:"test".into(),model:"test".into()});
+        output.change_current_state(Some(smithay::output::Mode {size:(1600,900).into(),refresh:60000}),None,None,None);h.gv.space.map_output(&output,(0,0));
+        let mut windows=Vec::new();for _ in 0..3 {let w=h.window();h.gv.map_new_window(w.clone());windows.push(w);}
+        h.gv.focus_window(Some(&windows[0]));
+        h.gv.dock.apps.push(App {id:"test".into(),name:"Test".into(),icon:"".into(),entry:None,windows:windows.clone()});
+        h.gv.dock.views.push(DockView {output:output.clone(),canvas:Default::default(),icons:Vec::new(),slide:Spring::new(1.0,SpringParams::SMOOTH),pushed:false,hits:vec![("test".into(),Rectangle::new((700.0,800.0).into(),(100.0,100.0).into()))],panel:Rectangle::default(),visible:true,menu_rect:None});
+        let pointer=h.gv.seat.get_pointer().unwrap();pointer.motion(&mut h.gv,None,&MotionEvent {location:(750.0,850.0).into(),serial:smithay::utils::SERIAL_COUNTER.next_serial(),time:1});
+        assert!(h.gv.shell_axis(0.0,30.0));assert_eq!(h.gv.focused_window(),Some(windows[1].clone()));
+        h.gv.dock.apps[0].windows.rotate_left(1);
+        assert!(h.gv.shell_axis(0.0,30.0));assert_eq!(h.gv.focused_window(),Some(windows[2].clone()));
+        h.gv.shell_axis(0.0,-30.0);assert_eq!(h.gv.focused_window(),Some(windows[1].clone()));
+        h.gv.shell_axis(0.0,0.0);assert!(h.gv.dock.cycle_app.is_none());
+        h.gv.config.dock.autohide=true;
+        h.gv.pressure_motion((750.0,899.0).into(),(750.0,899.0).into(),(750.0,899.0).into());assert!(!h.gv.dock.views[0].pushed);
+        h.gv.pressure_motion((750.0,899.0).into(),(750.0,910.0).into(),(750.0,899.0).into());assert!(h.gv.dock.views[0].pushed);
+    }
+    #[test]
     fn minimize_restore_keeps_geometry_mode_and_workspace() {
         let mut h = crate::state::tests::Harness::new();
         let output = Output::new(
@@ -1073,6 +1126,7 @@ mod tests {
                 scale,
             }],
             slide,
+            pushed: false,
             hits: vec![(
                 "closed".into(),
                 Rectangle::from_size((10.0, 10.0).into()),
@@ -1171,5 +1225,24 @@ mod tests {
             ]
         );
         assert!(resolvable_pins(&p, |_| false).is_empty());
+    }
+}
+
+impl Gavno {
+    pub fn push_dock_edge(&mut self,output:&Output) {
+        if !self.config.dock.autohide {return;}
+        if let Some(v)=self.dock.views.iter_mut().find(|v|&v.output==output) {
+            if !v.pushed {v.pushed=true;self.queue_redraw_all();}
+        }
+    }
+}
+
+impl Gavno {
+    pub fn seed_minimize_velocity(&mut self,w:&Window,velocity:Point<f64,Logical>) {
+        if let Some(m)=self.dock.minimized.iter_mut().find(|m|&m.window==w) {
+            let delta=m.to.loc-m.from.loc;
+            let length=delta.x*delta.x+delta.y*delta.y;
+            if length>1.0 {m.progress.velocity=(velocity.x*delta.x+velocity.y*delta.y)/length;}
+        }
     }
 }
