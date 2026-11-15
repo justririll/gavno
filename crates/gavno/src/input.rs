@@ -258,6 +258,13 @@ impl Gavno {
         if mods.ctrl && mods.alt && sym == keysyms::KEY_Delete {
             return Some(Action::Quit);
         }
+        // Screenshots (KooL: Print = full output, Shift+Print = area) via grim/slurp.
+        let area = (sym == keysyms::KEY_Print && mods.shift && !mods.ctrl)
+            || (main && mods.shift && !mods.ctrl && matches!(sym, keysyms::KEY_s | keysyms::KEY_S));
+        if area || (sym == keysyms::KEY_Print && !mods.shift && !mods.ctrl && !mods.alt) {
+            let output = self.active_output().map(|o| o.name());
+            return Some(Action::Spawn(screenshot_command(area, output.as_deref())));
+        }
         if !main && mods.alt && !mods.ctrl && !mods.logo
             && matches!(sym, keysyms::KEY_Tab | keysyms::KEY_ISO_Left_Tab)
         {
@@ -730,3 +737,35 @@ mod workspace_tests {
 #[cfg(test)]
 #[path = "input_review_tests.rs"]
 mod review_tests;
+
+/// Shell command that saves a screenshot to ~/Pictures/Screenshots and copies
+/// it to the clipboard. `area` asks slurp for a region; otherwise the whole
+/// `output` is captured.
+pub fn screenshot_command(area: bool, output: Option<&str>) -> String {
+    let target = if area {
+        r#"-g "$(slurp)""#.to_owned()
+    } else {
+        output
+            .filter(|o| o.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+            .map(|o| format!("-o {o}"))
+            .unwrap_or_default()
+    };
+    format!(
+        r#"dir="${{XDG_PICTURES_DIR:-$HOME/Pictures}}/Screenshots"; mkdir -p "$dir"; f="$dir/Screenshot_$(date +%F_%H-%M-%S).png"; grim {target} "$f" && wl-copy --type image/png < "$f""#
+    )
+}
+
+#[cfg(test)]
+mod screenshot_tests {
+    use super::screenshot_command;
+
+    #[test]
+    fn full_and_area_commands() {
+        let full = screenshot_command(false, Some("eDP-1"));
+        assert!(full.contains(r#"grim -o eDP-1 "$f""#));
+        assert!(full.contains("wl-copy --type image/png"));
+        assert!(screenshot_command(true, Some("eDP-1")).contains(r#"grim -g "$(slurp)" "$f""#));
+        // Output names are never interpolated unless they are plain identifiers.
+        assert!(screenshot_command(false, Some("x; rm -rf ~")).contains(r#"grim  "$f""#));
+    }
+}

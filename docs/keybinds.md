@@ -296,3 +296,14 @@ In `--greeter` mode every key except VT switching goes to the login screen.
   HDR is enabled (80–400 nits, default 203). They do nothing while HDR is off.
 
 See [configuration](config.md) for mode selection, HDR requirements, and IPC.
+
+## Screenshots
+
+Screenshots use `grim`, `slurp` and `wl-copy` (wl-clipboard) through the
+wlr-screencopy protocol. Files go to `$XDG_PICTURES_DIR/Screenshots` (default
+`~/Pictures/Screenshots`) and are copied to the clipboard.
+
+| Keys | Action |
+|---|---|
+| Print | Capture the active output. |
+| Shift+Print, Mod+Shift+S | Select an area with slurp and capture it. |

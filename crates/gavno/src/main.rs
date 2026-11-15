@@ -86,6 +86,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The window IPC lets agents drive the desktop; never on the login screen.
     if !greeter_mode {
         lock::start(&mut state);
+        handlers::screencopy::init(&mut state);
         if let Err(err) = ipc::init(&mut state) {
             tracing::warn!(?err, "window IPC disabled");
         }

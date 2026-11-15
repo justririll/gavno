@@ -1,4 +1,5 @@
 pub mod protocols;
+pub mod screencopy;
 mod cursor_shape;
 mod data_control;
 mod idle_inhibit;

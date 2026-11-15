@@ -799,6 +799,9 @@ fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
 
     let feedback = surface.feedback.clone();
     render::post_render(gv, &output, &states, feedback.as_ref());
+    if !is_empty {
+        crate::handlers::screencopy::frame_drawn(gv, &output);
+    }
     if retry_sdr || gv.is_animating() {
         queue_redraw(gv, crtc);
     }
@@ -924,15 +927,24 @@ fn on_session_activate(gv: &mut Gavno) {
 
 /// Capture the original sRGB scene, independently of HDR/PQ scanout.
 pub fn screenshot(gv: &mut Gavno) -> Option<(u32, u32, Vec<u8>)> {
+    let Backend::Udev(data) = &gv.backend else { return None };
+    let output = data.gpu.as_ref()?.surfaces.values().next()?.output.clone();
+    capture_output(gv, &output, true)
+}
+
+/// Renders `output` offscreen (the SDR composition, also in HDR mode) and
+/// returns its physical size and tightly packed RGBA pixels.
+pub fn capture_output(gv: &mut Gavno, output: &Output, cursor: bool) -> Option<(u32, u32, Vec<u8>)> {
     use smithay::backend::renderer::{damage::OutputDamageTracker, Bind, ExportMem, Offscreen};
     use smithay::backend::renderer::gles::GlesTexture;
     use smithay::utils::{Buffer as BufferCoord, Rectangle, Size};
 
-    let pointer_pos = gv.pointer_location();
+    // A pointer position outside every output leaves the cursor out of the frame.
+    let pointer_pos = if cursor { gv.pointer_location() } else { (-1.0e6, -1.0e6).into() };
     let time = gv.start_time.elapsed();
     let Backend::Udev(data) = &mut gv.backend else { return None };
     let gpu = data.gpu.as_mut()?;
-    let output = gpu.surfaces.values().next()?.output.clone();
+    let output = output.clone();
     let mode = output.current_mode()?;
     let scale = output.current_scale().fractional_scale();
     let elements = render::output_elements(

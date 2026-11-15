@@ -79,7 +79,7 @@ Lock screen: [docs/lock.md](docs/lock.md)
 ## Not yet
 
 - Three-finger pinch and rotation gestures.
-- Screencopy.
+
 - HDR for clients (`wp-color-management-v1`).
 
 ## Window management IPC

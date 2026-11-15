@@ -36,6 +36,7 @@ pub struct Protocols {
     pub shortcuts: KeyboardShortcutsInhibitState,
     pub shortcut_inhibitors:
         Vec<smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitor>,
+    pub screencopy: super::screencopy::Screencopy,
 }
 impl Protocols {
     pub fn new(
@@ -58,6 +59,7 @@ impl Protocols {
             locks: Default::default(),
             shortcuts: KeyboardShortcutsInhibitState::new::<Gavno>(dh),
             shortcut_inhibitors: Vec::new(),
+            screencopy: Default::default(),
         }
     }
 }
