@@ -692,6 +692,12 @@ fn on_session_pause(gv: &mut Gavno) {
 fn on_session_activate(gv: &mut Gavno) {
     info!("session activated");
     let Some(data) = udev(gv) else { return };
+    // Started on an inactive VT, libinput failed to open its devices, and
+    // resume() on a never-suspended context is a no-op. Suspend first so
+    // resume() re-enumerates the seat.
+    if !data.pending_devices.is_empty() {
+        data.libinput.suspend();
+    }
     if data.libinput.resume().is_err() {
         warn!("failed to resume libinput");
     }
