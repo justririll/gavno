@@ -111,6 +111,9 @@ pub fn output_elements(
     locks: &crate::handlers::session_lock::Locks,
     workspaces: &mut crate::workspace::Workspaces,
     overview: &mut crate::overview::Overview,
+    dock: &mut crate::dock::Dock,
+    topbar: &mut crate::topbar::TopBar,
+    config: &crate::config::Config,
 ) -> Vec<GavnoRenderElement> {
     let mut elements: Vec<GavnoRenderElement> = Vec::new();
     let Some(output_geo) = space.output_geometry(output) else {
@@ -180,7 +183,15 @@ pub fn output_elements(
     }
 
     elements.extend(crate::overlay::overlay_elements(overlay, renderer, output, output_geo, scale.x, time));
-    let scene = overview.scene(workspaces, space, output, time);
+    let shell_visible = !space.elements().any(|w| crate::window_mode::mode_state(w).mode == crate::window_mode::WindowMode::Fullscreen
+        && space.element_location(w).is_some_and(|p| output_geo.contains(p)));
+    let zone = layer_map_for_output(output).non_exclusive_zone();
+    let work_area = crate::dock::reserve(smithay::utils::Rectangle::new(zone.loc + output_geo.loc, zone.size), config.bar.enabled, config.dock.enabled, config.dock.autohide);
+    elements.extend(topbar.elements(renderer, output, output_geo.size.w, workspaces.get(output), time, shell_visible));
+    elements.extend(dock.elements(renderer, output, output_geo.size, pointer_pos - output_geo.loc.to_f64(), time, shell_visible));
+    overview.work_area = Some(work_area);
+    let mut scene = overview.scene(workspaces, space, output, time);
+    dock.minimize_scene(space, output, time, &mut scene);
     elements.extend(overview.chrome(renderer, workspaces, space, output));
     elements.extend(window_decor.elements(renderer, space, output, animations, time, scene.as_deref()));
     elements

@@ -202,14 +202,16 @@ impl Gavno {
             s.opacity.set(0.0);
             commit.then(|| s.windows.get(s.selected).cloned()).flatten()
         });
-        if let Some(w) = selected.filter(|w| w.alive() && self.space.element_location(w).is_some())
+        if let Some(w) = selected.filter(|w| w.alive() && (self.space.element_location(w).is_some() || self.workspaces.membership(w).is_some()))
         {
             self.focus_window(Some(&w));
         }
         self.queue_redraw_all();
     }
     pub fn prune_navigation(&mut self) {
-        let mapped: Vec<_> = self.space.elements().cloned().collect();
+        let mut mapped: Vec<_> = self.space.elements().cloned().collect();
+        for v in self.workspaces.all() { if v.window.alive() && !mapped.contains(&v.window) { mapped.push(v.window.clone()); } }
+        for w in &mapped { if !self.mru.contains(w) { self.mru.push(w.clone()); } }
         self.mru.retain(|w| w.alive() && mapped.contains(w));
         self.overlay.prune(&mapped, self.start_time.elapsed());
     }

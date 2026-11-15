@@ -1,0 +1,232 @@
+//! Icon theme lookup and bounded, size-specific premultiplied raster caches.
+use smithay::{
+    backend::{allocator::Fourcc, renderer::element::memory::MemoryRenderBuffer},
+    utils::Transform,
+};
+use std::{
+    collections::{HashMap, HashSet},
+    path::{Path, PathBuf},
+};
+
+/// Prefer the configured theme, its inherited themes, then hicolor and pixmaps.
+pub fn lookup(name: &str, theme: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
+    let absolute = Path::new(name);
+    if absolute.is_absolute() {
+        return absolute.is_file().then(|| absolute.to_owned());
+    }
+    if name.is_empty() || name.contains('/') || theme.contains('/') {
+        return None;
+    }
+    fn visit(theme: &str, dirs: &[PathBuf], seen: &mut HashSet<String>, themes: &mut Vec<String>) {
+        if themes.len() >= 24 || !seen.insert(theme.into()) || theme.contains('/') {
+            return;
+        }
+        themes.push(theme.into());
+        for dir in dirs {
+            if let Ok(index) =
+                std::fs::read_to_string(dir.join("icons").join(theme).join("index.theme"))
+            {
+                if let Some(inherits) = index.lines().find_map(|l| l.strip_prefix("Inherits=")) {
+                    for parent in inherits.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+                        visit(parent, dirs, seen, themes);
+                    }
+                }
+            }
+        }
+    }
+    let mut themes = Vec::new();
+    let mut seen = HashSet::new();
+    visit(theme, dirs, &mut seen, &mut themes);
+    visit("hicolor", dirs, &mut seen, &mut themes);
+    for theme in themes {
+        let mut sizes = vec![
+            "256x256".to_string(),
+            "128x128".into(),
+            "scalable".into(),
+            "512x512".into(),
+            "64x64".into(),
+            "48x48".into(),
+            "32x32".into(),
+            "symbolic".into(),
+        ];
+        for dir in dirs {
+            if let Ok(index) =
+                std::fs::read_to_string(dir.join("icons").join(&theme).join("index.theme"))
+            {
+                for subdir in index
+                    .lines()
+                    .filter_map(|l| l.strip_prefix("Directories="))
+                    .flat_map(|l| l.split(','))
+                {
+                    if !subdir.contains("..") && !subdir.starts_with('/') {
+                        sizes.push(subdir.trim().into());
+                    }
+                }
+            }
+        }
+        for size in sizes {
+            for dir in dirs {
+                for context in ["apps", "applications", ""] {
+                    let base = dir.join("icons").join(&theme).join(&size).join(context);
+                    for ext in ["png", "svg"] {
+                        let p = base.join(if name.ends_with(".png") || name.ends_with(".svg") {
+                            name.to_owned()
+                        } else {
+                            format!("{name}.{ext}")
+                        });
+                        if p.is_file() {
+                            return Some(p);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for dir in dirs {
+        for ext in ["png", "svg"] {
+            let p = dir.join("pixmaps").join(format!("{name}.{ext}"));
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
+#[derive(Default)]
+pub struct Icons {
+    cache: HashMap<(String, u32), Option<MemoryRenderBuffer>>,
+    paths: HashMap<String, Option<PathBuf>>,
+}
+impl Icons {
+    pub fn get(&mut self, name: &str, size: u32, theme: &str) -> Option<MemoryRenderBuffer> {
+        let size = size.clamp(1, 1024);
+        let key = (name.to_owned(), size);
+        if let Some(buffer) = self.cache.get(&key) {
+            return buffer.clone();
+        }
+        let path = self.paths.entry(name.into()).or_insert_with(|| {
+            let mut dirs = crate::desktop_entry::data_dirs();
+            if let Some(home) = std::env::var_os("HOME") {
+                dirs.insert(0, PathBuf::from(home).join(".icons").parent()?.to_owned());
+            }
+            // Legacy ~/.icons is searched as an icons root via ~/.
+            lookup(name, theme, &dirs)
+        });
+        let buffer = path.as_ref().and_then(|p| raster(p, size));
+        // Magnification uses a stable maximum raster, so this remains small.
+        if self.cache.len() > 512 {
+            self.cache.clear();
+        }
+        self.cache.insert(key, buffer.clone());
+        buffer
+    }
+}
+fn raster(path: &Path, size: u32) -> Option<MemoryRenderBuffer> {
+    let mut pixels = if path.extension().is_some_and(|e| e == "svg") {
+        let data = std::fs::read(path).ok()?;
+        if data.len() > 8 * 1024 * 1024 {
+            return None;
+        }
+        let tree = resvg::usvg::Tree::from_data(&data, &resvg::usvg::Options::default()).ok()?;
+        let mut pixmap = resvg::tiny_skia::Pixmap::new(size, size)?;
+        let s = (size as f32 / tree.size().width()).min(size as f32 / tree.size().height());
+        let t = resvg::tiny_skia::Transform::from_row(
+            s,
+            0.0,
+            0.0,
+            s,
+            (size as f32 - tree.size().width() * s) * 0.5,
+            (size as f32 - tree.size().height() * s) * 0.5,
+        );
+        resvg::render(&tree, t, &mut pixmap.as_mut());
+        pixmap.take()
+    } else {
+        let mut decoder = png::Decoder::new(std::fs::File::open(path).ok()?);
+        decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+        let mut reader = decoder.read_info().ok()?;
+        let (w, h) = (reader.info().width, reader.info().height);
+        if w == 0 || h == 0 || w > 4096 || h > 4096 {
+            return None;
+        }
+        let mut data = vec![0; reader.output_buffer_size()];
+        let info = reader.next_frame(&mut data).ok()?;
+        let channels = match info.color_type {
+            png::ColorType::Rgba => 4,
+            png::ColorType::Rgb => 3,
+            png::ColorType::GrayscaleAlpha => 2,
+            png::ColorType::Grayscale => 1,
+            _ => return None,
+        };
+        let factor = (size as f64 / w as f64).min(size as f64 / h as f64);
+        let dw = (w as f64 * factor).round().max(1.0) as u32;
+        let dh = (h as f64 * factor).round().max(1.0) as u32;
+        let mut pixels = vec![0; (size * size * 4) as usize];
+        for y in 0..dh {
+            for x in 0..dw {
+                let sx = (x as f64 / factor).floor().min((w - 1) as f64) as usize;
+                let sy = (y as f64 / factor).floor().min((h - 1) as f64) as usize;
+                let src = &data[(sy * w as usize + sx) * channels..];
+                let (r, g, b, a) = match channels {
+                    4 => (src[0], src[1], src[2], src[3]),
+                    3 => (src[0], src[1], src[2], 255),
+                    2 => (src[0], src[0], src[0], src[1]),
+                    _ => (src[0], src[0], src[0], 255),
+                };
+                let i = (((y + (size - dh) / 2) * size + x + (size - dw) / 2) * 4) as usize;
+                pixels[i..i + 4].copy_from_slice(&[
+                    (r as u16 * a as u16 / 255) as u8,
+                    (g as u16 * a as u16 / 255) as u8,
+                    (b as u16 * a as u16 / 255) as u8,
+                    a,
+                ]);
+            }
+        }
+        pixels
+    };
+    for p in pixels.chunks_exact_mut(4) {
+        p.swap(0, 2);
+    }
+    Some(MemoryRenderBuffer::from_slice(
+        &pixels,
+        Fourcc::Argb8888,
+        (size as i32, size as i32),
+        1,
+        Transform::Normal,
+        None,
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn theme_size_and_fallback_order() {
+        let root = std::env::temp_dir().join(format!("gavno-icons-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for p in [
+            "icons/test/128x128/apps/app.png",
+            "icons/test/scalable/apps/app.svg",
+            "icons/hicolor/256x256/apps/app.png",
+        ] {
+            let p = root.join(p);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, b"").unwrap();
+        }
+        assert_eq!(
+            lookup("app", "test", &[root.clone()]),
+            Some(root.join("icons/test/128x128/apps/app.png"))
+        );
+        std::fs::remove_file(root.join("icons/test/128x128/apps/app.png")).unwrap();
+        assert_eq!(
+            lookup("app", "test", &[root.clone()]),
+            Some(root.join("icons/test/scalable/apps/app.svg"))
+        );
+        assert_eq!(
+            lookup("app", "missing", &[root.clone()]),
+            Some(root.join("icons/hicolor/256x256/apps/app.png"))
+        );
+        assert!(lookup("../escape", "test", &[root.clone()]).is_none());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}

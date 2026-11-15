@@ -6,6 +6,10 @@
 
 mod anim;
 mod decor;
+mod desktop_entry;
+mod dock;
+mod icons;
+mod topbar;
 mod backend;
 mod config;
 mod cursor;

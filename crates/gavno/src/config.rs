@@ -27,6 +27,33 @@ pub struct Config {
     pub xkb_options: Option<String>,
     /// Gap between a new window and the work area edge, logical px.
     pub gap: i32,
+    pub dock: DockConfig,
+    pub bar: BarConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct DockConfig {
+    pub enabled: bool,
+    pub pinned: Vec<String>,
+    pub magnify: bool,
+    pub autohide: bool,
+    pub icon_theme: String,
+    #[serde(flatten)]
+    unknown: toml::Table,
+}
+impl Default for DockConfig {
+    fn default() -> Self { Self { enabled: true, pinned: vec!["foot".into(), "firefox".into()], magnify: true, autohide: false, icon_theme: "Adwaita".into(), unknown: Default::default() } }
+}
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct BarConfig {
+    pub enabled: bool,
+    #[serde(flatten)]
+    unknown: toml::Table,
+}
+impl Default for BarConfig {
+    fn default() -> Self { Self { enabled: true, unknown: Default::default() } }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -54,6 +81,8 @@ struct FileConfig {
     gap: Option<i64>,
     output: Output,
     keyboard: Keyboard,
+    dock: DockConfig,
+    bar: BarConfig,
     #[serde(flatten)]
     unknown: toml::Table,
 }
@@ -111,7 +140,7 @@ impl Config {
         // Capture unknown fields during deserialization, so this list cannot drift from the schema.
         let mut unknown = Vec::new();
         for (prefix, extra) in
-            [("", &file.unknown), ("output.", &file.output.unknown), ("keyboard.", &file.keyboard.unknown)]
+            [("", &file.unknown), ("output.", &file.output.unknown), ("keyboard.", &file.keyboard.unknown), ("dock.", &file.dock.unknown), ("bar.", &file.bar.unknown)]
         {
             unknown.extend(extra.keys().map(|key| format!("{prefix}{key}")));
         }
@@ -155,6 +184,8 @@ impl Config {
                     var("GAVNO_XKB_OPTIONS").or(file.keyboard.options).unwrap_or_else(|| "grp:alt_shift_toggle".into()),
                 ),
                 gap: gap.clamp(0, 64) as i32,
+                dock: file.dock,
+                bar: file.bar,
             },
             warnings,
         )
@@ -204,6 +235,8 @@ options = "caps:escape"
             xkb_variant: "".into(),
             xkb_options: Some("grp:alt_shift_toggle".into()),
             gap: 12,
+            dock: Default::default(),
+            bar: Default::default(),
         };
         assert_eq!(build(false, None, &[]), (expected.clone(), vec![]));
         let example = include_str!("../../../dist/config.toml");
@@ -230,6 +263,8 @@ options = "caps:escape"
             xkb_variant: "nodeadkeys".into(),
             xkb_options: Some("caps:escape".into()),
             gap: 20,
+            dock: Default::default(),
+            bar: Default::default(),
         };
         assert_eq!(build(false, Some(FULL), &[]), (expected, vec![]));
         let mut partial = build(false, None, &[]).0;
@@ -322,6 +357,13 @@ options = "caps:escape"
         assert_eq!(c.launcher, None);
         assert_eq!(c.xkb_options.as_deref(), Some(""));
         assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn dock_and_bar_sections() {
+        let (c,warnings) = build(false,Some("[dock]\npinned = ['foot', 'org.mozilla.firefox']\nmagnify = false\nautohide = true\nicon_theme = 'Papirus'\n[bar]\nenabled = false"),&[]);
+        assert!(warnings.is_empty()); assert_eq!(c.dock.pinned,["foot","org.mozilla.firefox"]);
+        assert!(!c.dock.magnify); assert!(c.dock.autohide); assert_eq!(c.dock.icon_theme,"Papirus"); assert!(!c.bar.enabled);
     }
 
     #[test]

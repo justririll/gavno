@@ -97,7 +97,9 @@ impl Gavno {
     pub fn work_area(&self, output: &Output) -> Rectangle<i32, Logical> {
         let geo = self.space.output_geometry(output).unwrap_or_default();
         let zone = layer_map_for_output(output).non_exclusive_zone();
-        Rectangle::new(zone.loc + geo.loc, zone.size)
+        crate::dock::reserve(Rectangle::new(zone.loc + geo.loc, zone.size),
+            self.greeter.is_none() && self.config.bar.enabled,
+            self.greeter.is_none() && self.config.dock.enabled, self.config.dock.autohide)
     }
 
     /// Re-arranges the layers of every output (outputs changed).

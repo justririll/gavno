@@ -41,3 +41,13 @@
 
 # XKB options; set to "" to disable them. Default: "grp:alt_shift_toggle".
 # options = "grp:alt_shift_toggle"
+
+# Built-in dock and top bar. Pin changes made in the dock menu last until exit.
+# [dock]
+# enabled = true
+# pinned = ["foot", "firefox"]
+# magnify = true
+# autohide = false
+# icon_theme = "Adwaita"
+# [bar]
+# enabled = true

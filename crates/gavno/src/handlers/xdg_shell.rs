@@ -143,6 +143,10 @@ impl XdgShellHandler for Gavno {
         }
     }
 
+    fn minimize_request(&mut self, surface: ToplevelSurface) {
+        if let Some(window) = self.window_for_surface(surface.wl_surface()) { self.minimize_window(&window); }
+    }
+
     fn maximize_request(&mut self, surface: ToplevelSurface) {
         self.request_window_mode(&surface, WindowMode::Maximized, None);
     }

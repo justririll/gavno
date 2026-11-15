@@ -177,7 +177,7 @@ fn screen(gv: &Gavno) -> Value {
                 .map(|output| output.name()));
             Some(json!({"id": id, "app_id": app_id, "title": title,
             "x": geo.loc.x, "y": geo.loc.y, "w": geo.size.w, "h": geo.size.h,
-            "focused": focused == Some(id), "output": output,
+            "focused": focused == Some(id), "output": output, "minimized": crate::window_mode::mode_state(window).minimized,
             "workspace": gv.workspaces.membership(window).map(|(_, i)| i).unwrap_or(0)}))
         })
         .collect();

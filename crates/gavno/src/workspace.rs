@@ -239,7 +239,7 @@ impl Gavno {
                 w.location = area.loc;
                 let owner = self.workspaces.ensure(output);
                 let active = owner.list.active;
-                self.space.map_element(w.window.clone(), w.location, false);
+                if !crate::window_mode::mode_state(&w.window).minimized { self.space.map_element(w.window.clone(), w.location, false); }
                 owner.list.items[active].windows.push(w);
             }
         }
@@ -344,9 +344,9 @@ impl Gavno {
         }
         o.list.active = index;
         for w in &o.list.items[index].windows {
-            self.space.map_element(w.window.clone(), w.location, false);
+            if !crate::window_mode::mode_state(&w.window).minimized { self.space.map_element(w.window.clone(), w.location, false); }
         }
-        let focus = o.list.items[index].windows.last().map(|w| w.window.clone());
+        let focus = o.list.items[index].windows.iter().rev().find(|w| !crate::window_mode::mode_state(&w.window).minimized).map(|w| w.window.clone());
         self.mru = self
             .workspaces
             .outputs
@@ -404,7 +404,7 @@ impl Gavno {
                 .last()
                 .map(|v| v.location)
                 .unwrap_or_default();
-            self.space.map_element(window.clone(), loc, false);
+            if !crate::window_mode::mode_state(window).minimized { self.space.map_element(window.clone(), loc, false); }
         }
         // Append the new trailing empty immediately; removal waits until motion settles.
         o.append_empty();

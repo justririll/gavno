@@ -167,6 +167,7 @@ impl WindowAnimations {
 /// A null-buffer commit often precedes destruction. Start closing while the
 /// last rendered elements are still cached; a later buffer can remap the surface.
 pub fn surface_commit(gv: &mut Gavno, window: &Window, has_buffer: bool) {
+    if crate::window_mode::mode_state(window).minimized { return; }
     let now = gv.start_time.elapsed();
     if !has_buffer {
         gv.window_animations.close(window, now);
