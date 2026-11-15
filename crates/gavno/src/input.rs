@@ -29,6 +29,7 @@ const BTN_RIGHT: u32 = 0x111;
 /// A compositor action bound to a key chord.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
+    Lock,
     Quit,
     Spawn(String),
     CloseWindow,
@@ -64,6 +65,8 @@ impl Gavno {
         if !matches!(&event, InputEvent::DeviceAdded { .. } | InputEvent::DeviceRemoved { .. }) {
             self.protocols.idle_policy.activity();
         }
+        if self.lock.internal() && !matches!(&event, InputEvent::Keyboard { .. } | InputEvent::PointerMotion { .. }
+            | InputEvent::PointerMotionAbsolute { .. } | InputEvent::PointerButton { .. }) { return; }
         match event {
             InputEvent::Keyboard { event, .. } => self.on_keyboard::<I>(event),
             InputEvent::PointerMotion { event, .. } => self.on_pointer_motion::<I>(event),
@@ -97,7 +100,7 @@ impl Gavno {
             serial,
             time,
             |gv, mods, handle| {
-                if gv.greeter.is_none()
+                if gv.greeter.is_none() && !gv.protocols.locks.locked
                     && gv.overlay.switcher_open()
                     && key_state == KeyState::Released
                     && !mods.alt
@@ -118,7 +121,7 @@ impl Gavno {
                         gv.suppressed_keys.swap_remove(i);
                         return FilterResult::Intercept(None);
                     }
-                    return FilterResult::Forward;
+                    return if gv.lock.internal() { FilterResult::Intercept(None) } else { FilterResult::Forward };
                 }
 
                 // VT switch keysyms come from the XKB keymap (Ctrl+Alt+F<N>).
@@ -127,6 +130,13 @@ impl Gavno {
                     gv.suppressed_keys.push(raw_code);
                     let vt = (modified - keysyms::KEY_XF86Switch_VT_1 + 1) as i32;
                     return FilterResult::Intercept(Some(Action::SwitchVt(vt)));
+                }
+
+                if gv.lock.internal() {
+                    let sym = handle.modified_sym();
+                    gv.suppressed_keys.push(raw_code);
+                    gv.lock.key(sym, sym.key_char(), mods);
+                    return FilterResult::Intercept(None);
                 }
 
                 // Greeter mode: every key goes to the login screen.
@@ -141,9 +151,17 @@ impl Gavno {
                 }
 
                 // The emergency chord and VT switching remain compositor-owned.
-                if mods.ctrl && mods.alt && handle.modified_sym().raw() == keysyms::KEY_Delete {
+                if !gv.protocols.locks.locked && mods.ctrl && mods.alt && handle.modified_sym().raw() == keysyms::KEY_Delete {
                     gv.suppressed_keys.push(raw_code);
                     return FilterResult::Intercept(Some(Action::Quit));
+                }
+                if !gv.protocols.locks.locked {
+                    if let Some(sym) = handle.raw_latin_sym_or_raw_current_sym() {
+                        if gv.bind_for(sym, mods) == Some(Action::Lock) {
+                            gv.suppressed_keys.push(raw_code);
+                            return FilterResult::Intercept(Some(Action::Lock));
+                        }
+                    }
                 }
                 if gv.protocols.locks.locked || gv.seat.keyboard_shortcuts_inhibited() {
                     return FilterResult::Forward;
@@ -199,7 +217,7 @@ impl Gavno {
         if let Some(Some(action)) = action {
             self.run_action(action);
         }
-        if self.greeter.is_some() {
+        if self.greeter.is_some() || self.lock.internal() {
             let caps = keyboard.modifier_state().caps_lock;
             let layout = keyboard.with_xkb_state(self, |ctx| {
                 let xkb = ctx.xkb().lock().unwrap();
@@ -208,6 +226,7 @@ impl Gavno {
             if let Some(g) = self.greeter.as_mut() {
                 g.set_modifiers(caps, &layout);
             }
+            if self.lock.internal() { self.lock.modifiers(caps, &layout); }
             self.queue_redraw_all();
         }
     }
@@ -234,6 +253,8 @@ impl Gavno {
         let main = self.config.mod_key.is_held(mods);
         let sym = Keysym::from(sym.raw()).raw();
 
+        if matches!(sym, keysyms::KEY_l | keysyms::KEY_L) && !mods.shift
+            && ((mods.ctrl && mods.alt) || (main && !mods.ctrl)) { return Some(Action::Lock); }
         if mods.ctrl && mods.alt && sym == keysyms::KEY_Delete {
             return Some(Action::Quit);
         }
@@ -294,7 +315,9 @@ impl Gavno {
     }
 
     pub fn run_action(&mut self, action: Action) {
+        if self.protocols.locks.locked && !matches!(action, Action::SwitchVt(_)) { return; }
         match action {
+            Action::Lock => { self.lock_session(); },
             Action::ToggleTiling => { if let Some(o) = self.active_output() { self.toggle_workspace_tiling(&o); } }
             Action::ToggleFloating => { if let Some(w) = self.focused_window() { self.toggle_floating(&w); } }
             Action::RotateSplit => self.rotate_tile(),
@@ -329,6 +352,12 @@ impl Gavno {
         let mut pos = current + event.delta();
         let proposed=pos;
         if let Some(bbox) = self.outputs_bbox() { pos = clamp_to(pos, bbox); }
+        if self.lock.internal() {
+            pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time: event.time_msec() });
+            pointer.frame(self);
+            self.lock_pointer(false);
+            return;
+        }
         self.pressure_motion(current,proposed,pos);
         let allowed = self.pointer_motion_allowed(pos);
         // Relative input belongs to the old focus and remains live while locked.
@@ -359,6 +388,13 @@ impl Gavno {
             return;
         };
         let pos = event.position_transformed(output_geo.size) + output_geo.loc.to_f64();
+        if self.lock.internal() {
+            let pointer = self.seat.get_pointer().unwrap();
+            pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time: event.time_msec() });
+            pointer.frame(self);
+            self.lock_pointer(false);
+            return;
+        }
         if !self.pointer_motion_allowed(pos) {
             return;
         }
@@ -390,6 +426,10 @@ impl Gavno {
         let button = event.button_code();
         let button_state = event.state();
 
+        if self.lock.internal() {
+            if button == BTN_LEFT && button_state == ButtonState::Pressed { self.lock_pointer(true); }
+            return;
+        }
         if self.protocols.locks.locked {
             match button_state {
                 ButtonState::Pressed if !self.pointer_buttons.contains(&button) => self.pointer_buttons.push(button),
@@ -607,6 +647,24 @@ fn clamp_to(pos: Point<f64, Logical>, rect: Rectangle<i32, Logical>) -> Point<f6
 #[cfg(test)]
 mod workspace_tests {
     use super::*;
+
+    #[test]
+    fn lock_chords_and_locked_action_gate() {
+        let mut h = crate::state::tests::Harness::new();
+        for mod_key in [crate::config::ModKey::Super, crate::config::ModKey::Alt] {
+            h.gv.config.mod_key = mod_key;
+            let mods = ModifiersState { logo: mod_key == crate::config::ModKey::Super, alt: mod_key == crate::config::ModKey::Alt, ..Default::default() };
+            assert_eq!(h.gv.bind_for(Keysym::from(keysyms::KEY_l), &mods), Some(Action::Lock));
+            let mods = ModifiersState { ctrl: true, alt: true, ..Default::default() };
+            assert_eq!(h.gv.bind_for(Keysym::from(keysyms::KEY_l), &mods), Some(Action::Lock));
+        }
+        h.gv.run_action(Action::Lock);
+        assert!(h.gv.protocols.locks.locked);
+        h.gv.run_action(Action::ToggleOverview);
+        assert!(!h.gv.overview.open());
+        h.gv.run_action(Action::Lock);
+        assert!(h.gv.protocols.locks.locked);
+    }
 
     #[test]
     fn hdr_shortcuts_follow_configured_modifier() {

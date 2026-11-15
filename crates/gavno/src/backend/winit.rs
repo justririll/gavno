@@ -115,6 +115,7 @@ fn render(gv: &mut Gavno) {
             &mut gv.cursor,
             time,
             gv.greeter.as_mut(),
+        &mut gv.lock,
             &mut gv.overlay,
             &mut gv.window_decor,
             &mut gv.window_animations,

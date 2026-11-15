@@ -73,7 +73,8 @@ pub struct Greeter {
     selected: usize,
     password: Secret,
     phase: Phase,
-    ipc: Ipc,
+    ipc: Option<Ipc>,
+    lock_tx: Option<std::sync::mpsc::Sender<Secret>>,
     message: Option<(String, MsgKind)>,
     caps_lock: bool,
     layout: String,
@@ -109,6 +110,14 @@ pub struct Greeter {
 
 impl Greeter {
     pub fn new(loop_handle: &LoopHandle<'static, Gavno>) -> Self {
+        Self::create(Some(Ipc::spawn(loop_handle)), None, load_users())
+    }
+
+    pub(crate) fn for_lock(tx: std::sync::mpsc::Sender<Secret>, user: User) -> Self {
+        Self::create(None, Some(tx), vec![user])
+    }
+
+    fn create(ipc: Option<Ipc>, lock_tx: Option<std::sync::mpsc::Sender<Secret>>, users: Vec<User>) -> Self {
         let now = LocalTime::now();
         let (lat, lon) = theme::location(now.utc_offset);
         let mut intro = Spring::new(0.0, SpringParams { k: 90.0, zeta: 0.9 });
@@ -118,16 +127,16 @@ impl Greeter {
             .split_whitespace()
             .map(str::to_owned)
             .collect();
-        let ipc = Ipc::spawn(loop_handle);
-        if ipc.demo {
+        if ipc.as_ref().is_some_and(|ipc| ipc.demo) {
             tracing::warn!("no GREETD_SOCK: demo mode, the password is \"gavno\"");
         }
         Self {
-            users: load_users(),
+            users,
             selected: 0,
             password: Secret::new(),
             phase: Phase::Input,
             ipc,
+            lock_tx,
             message: None,
             caps_lock: false,
             layout: "EN".into(),
@@ -162,6 +171,12 @@ impl Greeter {
         }
     }
 
+    pub(crate) fn lock_checking(&self) -> bool { self.phase == Phase::Checking }
+
+    pub(crate) fn lock_failed(&mut self) {
+        self.on_reply(Reply::Denied("Wrong password".into()));
+    }
+
     pub fn is_animating(&self) -> bool {
         self.intro.is_active()
             || self.shake.is_active()
@@ -169,7 +184,8 @@ impl Greeter {
             || self.msg.is_active()
             || self.dots.iter().any(Spring::is_active)
             || self.hover_springs.iter().any(Spring::is_active)
-            || matches!(self.phase, Phase::Checking | Phase::LoggingIn)
+            || self.phase == Phase::LoggingIn
+            || (self.lock_tx.is_none() && self.phase == Phase::Checking)
     }
 
     pub fn on_reply(&mut self, reply: Reply) {
@@ -265,10 +281,12 @@ impl Greeter {
             return;
         };
         self.phase = Phase::Checking;
-        self.ipc.send(Request::Login {
-            user: user.name.clone(),
-            password: self.password.take(),
-        });
+        if let Some(tx) = &self.lock_tx {
+            let _ = tx.send(self.password.take());
+            self.dots.clear();
+        } else if let Some(ipc) = &self.ipc {
+            ipc.send(Request::Login { user: user.name.clone(), password: self.password.take() });
+        }
     }
 
     pub fn pointer_motion(&mut self, pos: Point<f64, Logical>) -> bool {
@@ -289,7 +307,7 @@ impl Greeter {
         }
     }
 
-    fn hit(&self, pos: Point<f64, Logical>) -> Option<Hit> {
+    pub(crate) fn hit(&self, pos: Point<f64, Logical>) -> Option<Hit> {
         self.hits.iter().find(|(_, r)| r.contains(pos)).map(|(h, _)| *h)
     }
 
@@ -297,10 +315,11 @@ impl Greeter {
     fn advance_phase(&mut self) {
         if self.phase == Phase::LoggingIn && self.fade.value > 0.97 {
             self.phase = Phase::Starting;
-            self.ipc.send(Request::Start {
-                cmd: self.session_cmd.clone(),
-                env: vec![],
-            });
+            if let Some(ipc) = &self.ipc {
+                ipc.send(Request::Start { cmd: self.session_cmd.clone(), env: vec![] });
+            } else {
+                self.quit_requested = true;
+            }
         }
     }
 
@@ -369,7 +388,7 @@ impl Greeter {
         back.push(GavnoRenderElement::Shader(self.bg.element(
             &shaders.background,
             full,
-            1.0,
+            if self.lock_tx.is_some() { (intro * (1.0 - fade)).clamp(0.0, 1.0) as f32 } else { 1.0 },
             vec![
                 ("scale", vec![scale as f32]),
                 ("sky_top", pal.sky_top.to_vec()),
@@ -646,7 +665,7 @@ impl Greeter {
         }
 
         // Fade to the session's background color on success.
-        if fade > 0.001 {
+        if fade > 0.001 && self.lock_tx.is_none() {
             let c = crate::render::CLEAR_COLOR;
             back.push(GavnoRenderElement::Shader(shader::rrect(
                 &mut self.cover,
@@ -771,3 +790,47 @@ pub fn start(gv: &mut Gavno) {
     });
 }
 
+
+#[cfg(test)]
+mod lock_ui_tests {
+    use super::*;
+    #[test]
+    fn lock_ui_has_one_user_and_no_greetd_or_demo_backend() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut ui = Greeter::for_lock(tx, User { name: "test".into(), display: "Test User".into() });
+        assert!(ui.ipc.is_none()); assert_eq!(ui.users.len(), 1);
+        let mods = ModifiersState::default();
+        ui.key(Keysym::from(keysyms::KEY_Left), None, &mods);
+        assert_eq!(ui.selected, 0);
+        ui.key(Keysym::from(keysyms::KEY_a), Some('a'), &mods);
+        ui.key(Keysym::from(keysyms::KEY_Return), None, &mods);
+        assert_eq!(rx.try_recv().unwrap().as_str(), "a");
+        assert!(ui.password.is_empty()); assert!(ui.dots.is_empty());
+        assert_eq!(ui.phase, Phase::Checking);
+        ui.intro.jump(1.0);
+        assert!(!ui.is_animating(), "a blocked PAM worker must not request frames");
+        ui.key(Keysym::from(keysyms::KEY_a), Some('a'), &mods);
+        assert!(ui.password.is_empty());
+    }
+    #[test]
+    fn lock_error_springs_settle_and_success_completes_without_starting_a_session() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut ui = Greeter::for_lock(tx, User { name: "test".into(), display: "Test User".into() });
+        ui.intro.jump(1.0);
+        ui.lock_failed();
+        assert!(ui.is_animating());
+        assert_eq!(ui.message, Some(("Wrong password".into(), MsgKind::Error)));
+        for tick in 0..500 {
+            let now = Duration::from_millis(tick * 20);
+            ui.shake.advance(now); ui.msg.advance(now);
+        }
+        assert!(!ui.is_animating());
+        ui.on_reply(Reply::Authenticated);
+        for tick in 0..500 {
+            ui.fade.advance(Duration::from_millis(10000 + tick * 20));
+            ui.advance_phase();
+        }
+        assert!(ui.quit_requested); assert_eq!(ui.phase, Phase::Starting);
+        assert!(!ui.is_animating());
+    }
+}

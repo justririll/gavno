@@ -33,6 +33,18 @@ pub struct Config {
     pub dock: DockConfig,
     pub bar: BarConfig,
     pub tiling: TilingConfig,
+    pub lock: LockConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct LockConfig {
+    pub after_idle_secs: u32,
+    #[serde(flatten)]
+    unknown: toml::Table,
+}
+impl Default for LockConfig {
+    fn default() -> Self { Self { after_idle_secs: 300, unknown: Default::default() } }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -96,6 +108,7 @@ struct FileConfig {
     dock: DockConfig,
     bar: BarConfig,
     tiling: TilingConfig,
+    lock: LockConfig,
     #[serde(flatten)]
     unknown: toml::Table,
 }
@@ -156,7 +169,7 @@ impl Config {
         // Capture unknown fields during deserialization, so this list cannot drift from the schema.
         let mut unknown = Vec::new();
         for (prefix, extra) in
-            [("", &file.unknown), ("output.", &file.output.unknown), ("keyboard.", &file.keyboard.unknown), ("dock.", &file.dock.unknown), ("bar.", &file.bar.unknown), ("tiling.", &file.tiling.unknown)]
+            [("", &file.unknown), ("output.", &file.output.unknown), ("keyboard.", &file.keyboard.unknown), ("dock.", &file.dock.unknown), ("bar.", &file.bar.unknown), ("tiling.", &file.tiling.unknown), ("lock.", &file.lock.unknown)]
         {
             unknown.extend(extra.keys().map(|key| format!("{prefix}{key}")));
         }
@@ -219,6 +232,7 @@ impl Config {
                 dock: file.dock,
                 bar: file.bar,
                 tiling: file.tiling,
+                lock: file.lock,
             },
             warnings,
         )
@@ -274,6 +288,7 @@ options = "caps:escape"
             dock: Default::default(),
             bar: Default::default(),
             tiling: Default::default(),
+            lock: Default::default(),
         };
         assert_eq!(build(false, None, &[]), (expected.clone(), vec![]));
         let example = include_str!("../../../dist/config.toml");
@@ -306,6 +321,7 @@ options = "caps:escape"
             dock: Default::default(),
             bar: Default::default(),
             tiling: Default::default(),
+            lock: Default::default(),
         };
         assert_eq!(build(false, Some(FULL), &[]), (expected, vec![]));
         let mut partial = build(false, None, &[]).0;
@@ -430,6 +446,20 @@ options = "caps:escape"
         assert_eq!(c.output_mode.unwrap().width, 1920);
         assert_eq!(c.sdr_white_nits, 80.0);
         assert_eq!(warnings.len(), 1);
+    }
+
+    #[test]
+    fn lock_configuration() {
+        assert_eq!(build(false, None, &[]).0.lock.after_idle_secs, 300);
+        for seconds in [0, 1, 300, u32::MAX] {
+            let (c, warnings) = build(false, Some(&format!("[lock]\nafter_idle_secs = {seconds}")), &[]);
+            assert_eq!(c.lock.after_idle_secs, seconds); assert!(warnings.is_empty());
+        }
+        for raw in ["-1", "4294967296", "'never'"] {
+            let (c, warnings) = build(false, Some(&format!("[lock]\nafter_idle_secs = {raw}")), &[]);
+            assert_eq!(c.lock.after_idle_secs, 300); assert_eq!(warnings.len(), 1);
+        }
+        assert_eq!(build(false, Some("[lock]\nwrong = true"), &[]).1, ["unknown config keys ignored: lock.wrong"]);
     }
 
     #[test]

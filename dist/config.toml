@@ -62,3 +62,6 @@
 
 # [tiling]
 # default = false
+
+# [lock]
+# after_idle_secs = 300 # 0 disables automatic locking; idle inhibitors are respected.

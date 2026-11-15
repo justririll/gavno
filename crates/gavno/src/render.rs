@@ -105,6 +105,7 @@ pub fn output_elements(
     cursor: &mut CursorCache,
     time: Duration,
     greeter: Option<&mut crate::greeter::Greeter>,
+    lock: &mut crate::lock::Lock,
     overlay: &mut crate::overlay::Overlay,
     window_decor: &mut crate::decor::WindowDecor,
     animations: &mut crate::anim::WindowAnimations,
@@ -124,15 +125,31 @@ pub fn output_elements(
     // Locked sessions expose only locker surfaces; the normal clear color is
     // the fail-closed fallback when the locker has no buffer or has crashed.
     if locks.locked {
-        if let Some(surface) = locks.surface(output) {
-            elements.extend(render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<_>>(
-                renderer, surface, (0, 0), scale, 1.0, Kind::Unspecified,
-            ).into_iter().map(GavnoRenderElement::Surface));
+        if lock.internal() {
+            // Use only the compositor's trusted cursor while clients have no input.
+            if output_geo.to_f64().contains(pointer_pos) {
+                let int_scale = output.current_scale().integer_scale().max(1) as u32;
+                let (buffer, hotspot) = cursor.get("default", int_scale, time);
+                let loc = (pointer_pos - output_geo.loc.to_f64() - hotspot).to_physical(scale);
+                if let Ok(cursor) = MemoryRenderBufferRenderElement::from_buffer(
+                    renderer, loc, &buffer, None, None, None, Kind::Cursor,
+                ) { elements.push(GavnoRenderElement::Memory(cursor)); }
+            }
+            elements.extend(lock.elements(renderer, output_geo.size, scale.x, time));
+            // Desktop pixels are permitted only after local PAM success. Input
+            // remains blocked until the fade completes on the event loop.
+            if !lock.desktop_visible() { return elements; }
+        } else {
+            if let Some(surface) = locks.surface(output) {
+                elements.extend(render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<_>>(
+                    renderer, surface, (0, 0), scale, 1.0, Kind::Unspecified,
+                ).into_iter().map(GavnoRenderElement::Surface));
+            }
+            return elements;
         }
-        return elements;
     }
 
-    if output_geo.to_f64().contains(pointer_pos) {
+    if !locks.locked && output_geo.to_f64().contains(pointer_pos) {
         if let CursorImageStatus::Surface(surface) = cursor_status {
             if !surface.alive() {
                 *cursor_status = CursorImageStatus::default_named();

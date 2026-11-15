@@ -128,6 +128,7 @@ pub fn init(gv: &mut Gavno) -> io::Result<()> {
 }
 
 fn screen(gv: &Gavno) -> Value {
+    if gv.protocols.locks.locked { return json!({"locked": true}); }
     let focused = gv.focused_window().as_ref().and_then(window_id);
     let outputs: Vec<_> = gv
         .space
@@ -186,6 +187,7 @@ fn screen(gv: &Gavno) -> Value {
 }
 
 fn dispatch(gv: &mut Gavno, method: &str, params: &Value) -> Result<Value, String> {
+    if gv.protocols.locks.locked && method != "screen" { return Err("session locked".into()); }
     if method == "screen" {
         return Ok(screen(gv));
     }
@@ -348,6 +350,17 @@ mod tests {
         assert!(bind(&path).is_err());
         assert_eq!(fs::read_to_string(&path).unwrap(), "keep");
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn locked_ipc_has_no_desktop_information_or_side_effects() {
+        let mut h = crate::state::tests::Harness::new();
+        let window = h.window(); h.gv.map_new_window(window.clone());
+        h.gv.protocols.locks.locked = true;
+        assert_eq!(dispatch(&mut h.gv, "screen", &json!({})).unwrap(), json!({"locked": true}));
+        for method in ["focus", "close", "move", "raise", "set_hdr", "workspace", "move_to_workspace", "togglefloating", "unknown"] {
+            assert_eq!(dispatch(&mut h.gv, method, &json!({})), Err("session locked".into()));
+        }
     }
 
     #[test]

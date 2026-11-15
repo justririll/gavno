@@ -38,6 +38,10 @@ install -D -m 755 target/release/gavno /usr/local/bin/gavno
 install -D -m 755 dist/gavno-session /usr/local/bin/gavno-session
 install -D -m 644 dist/wayland-sessions/gavno.desktop /usr/share/wayland-sessions/gavno.desktop
 
+if [ ! -e /etc/pam.d/gavno-lock ]; then
+    install -D -m 644 dist/pam.d/gavno-lock /etc/pam.d/gavno-lock
+fi
+
 if [ "$TEST" = 0 ]; then
     mkdir -p /etc/greetd
     if [ -e /etc/greetd/config.toml ] && ! cmp -s dist/greetd/config.toml /etc/greetd/config.toml; then

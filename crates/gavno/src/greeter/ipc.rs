@@ -12,6 +12,7 @@ use std::{
 };
 
 use serde_json::{json, Value};
+use zeroize::Zeroize;
 use smithay::reexports::calloop::{channel, LoopHandle};
 
 use crate::Gavno;
@@ -21,13 +22,18 @@ pub struct Secret(String);
 
 impl Secret {
     pub fn new() -> Self {
-        Secret(String::new())
+        Secret(String::with_capacity(2048))
     }
     pub fn push(&mut self, c: char) {
-        self.0.push(c);
+        // Reserve once: editing never leaves old password allocations behind.
+        if self.0.len() + c.len_utf8() <= 2048 { self.0.push(c); }
     }
     pub fn pop(&mut self) {
-        self.0.pop();
+        if let Some((end, _)) = self.0.char_indices().next_back() {
+            // Safety: only the removed UTF-8 character is wiped before truncation.
+            unsafe { self.0.as_mut_vec()[end..].zeroize(); }
+            self.0.truncate(end);
+        }
     }
     pub fn clear(&mut self) {
         wipe(&mut self.0);
@@ -39,8 +45,9 @@ impl Secret {
         self.0.is_empty()
     }
     pub fn take(&mut self) -> Secret {
-        Secret(std::mem::take(&mut self.0))
+        std::mem::replace(self, Self::new())
     }
+    pub(crate) fn as_str(&self) -> &str { &self.0 }
 }
 
 impl Drop for Secret {
@@ -50,9 +57,8 @@ impl Drop for Secret {
 }
 
 fn wipe(s: &mut String) {
-    // Safety: zero bytes are valid UTF-8 and the string is cleared right after.
-    unsafe { s.as_mut_vec().fill(0) };
-    s.clear();
+    // zeroize wipes the allocation (including spare capacity) before clearing.
+    s.zeroize();
 }
 
 pub enum Request {
@@ -228,4 +234,33 @@ fn read_frame(conn: &mut UnixStream) -> std::io::Result<Value> {
     let mut buf = vec![0u8; u32::from_ne_bytes(len) as usize];
     conn.read_exact(&mut buf)?;
     serde_json::from_slice(&buf).map_err(std::io::Error::other)
+}
+
+#[cfg(test)]
+mod secret_tests {
+    use super::*;
+    #[test]
+    fn edits_and_clear_wipe_the_live_allocation() {
+        let mut secret = Secret::new();
+        secret.push('a'); secret.push('🔒');
+        let pointer = secret.0.as_ptr();
+        secret.pop();
+        assert_eq!(secret.as_str(), "a");
+        // The allocation is still live; these bytes were initialized and then wiped.
+        assert_eq!(unsafe { std::slice::from_raw_parts(pointer.add(1), 4) }, [0; 4]);
+        secret.clear();
+        assert_eq!(unsafe { *pointer }, 0);
+        assert!(secret.is_empty());
+    }
+    #[test]
+    fn take_transfers_ownership_and_growth_never_reallocates() {
+        let mut secret = Secret::new();
+        let pointer = secret.0.as_ptr();
+        for _ in 0..1024 { secret.push('🔒'); }
+        assert_eq!(secret.0.as_ptr(), pointer); assert_eq!(secret.len(), 512);
+        let mut owned = secret.take();
+        assert!(secret.is_empty()); assert_eq!(owned.0.as_ptr(), pointer);
+        owned.clear();
+        assert!(unsafe { std::slice::from_raw_parts(pointer, 2048) }.iter().all(|byte| *byte == 0));
+    }
 }

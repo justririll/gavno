@@ -88,6 +88,7 @@ pub struct Gavno {
     pub startup_cmd: Option<String>,
     /// Set in `--greeter` mode: GAVNO is the login screen.
     pub greeter: Option<crate::greeter::Greeter>,
+    pub lock: crate::lock::Lock,
 }
 
 impl Gavno {
@@ -174,6 +175,7 @@ impl Gavno {
             modules: Vec::new(),
             startup_cmd: None,
             greeter: None,
+            lock: Default::default(),
         }
     }
 
@@ -225,6 +227,7 @@ impl Gavno {
         self.update_shortcut_inhibitors(focus.as_ref());
         self.refresh_constraints(focus.as_ref());
         self.refresh_lock();
+        self.refresh_internal_lock();
         self.refresh_shell();
         self.finish_dock_launches();
         self.refresh_idle();
@@ -241,7 +244,7 @@ impl Gavno {
     /// True while something animates and needs the next frame drawn.
     pub fn is_animating(&self) -> bool {
         if self.protocols.locks.locked {
-            return false;
+            return self.lock.is_animating();
         }
         match self.greeter.as_ref() {
             Some(g) => g.is_animating(),

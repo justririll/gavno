@@ -63,7 +63,9 @@ impl Gavno {
             })
         });
         self.protocols.idle.set_is_inhibited(inhibited);
-        if self.protocols.idle_policy.take_activity() {
+        let activity = self.protocols.idle_policy.take_activity();
+        self.refresh_lock_idle(activity, inhibited);
+        if activity {
             self.protocols.idle.notify_activity(&self.seat);
         }
     }

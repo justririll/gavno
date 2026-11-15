@@ -36,6 +36,16 @@ pub struct Locks {
     pub surfaces: Vec<(Output, LockSurface)>,
 }
 impl Locks {
+    pub(crate) fn internal(outputs: impl Iterator<Item = Output>) -> Self {
+        Self { locked: true, pending: outputs.collect(), ..Default::default() }
+    }
+    pub(crate) fn secured(&self) -> bool { self.locked && self.pending.is_empty() && !self.secured.is_empty() }
+    pub(crate) fn require_secure_frame(&mut self, outputs: impl Iterator<Item = Output>) {
+        self.pending = outputs.collect();
+        self.submitted.clear();
+        self.secured.clear();
+    }
+
     pub fn surface(&self, output: &Output) -> Option<&WlSurface> {
         self.surfaces
             .iter()
@@ -56,7 +66,7 @@ impl Locks {
         }
     }
     pub fn outputs_added(&mut self, outputs: impl Iterator<Item = Output>) {
-        if !self.locked || self.confirmed {
+        if !self.locked {
             return;
         }
         for output in outputs {
@@ -93,6 +103,33 @@ impl SessionLockHandler for Gavno {
             pending: self.space.outputs().cloned().collect(),
             ..Default::default()
         };
+        self.secure_lock_input();
+        self.protocols.locks.confirm();
+        self.queue_redraw_all();
+    }
+    fn unlock(&mut self) {
+        if self.lock.internal() { return; }
+        self.protocols.locks = Locks::default();
+        self.focus_topmost();
+        self.queue_redraw_all();
+    }
+    fn new_surface(&mut self, surface: LockSurface, output: WlOutput) {
+        let Some(output) = Output::from_resource(&output) else {
+            return;
+        };
+        let Some(geo) = self.space.output_geometry(&output) else {
+            return;
+        };
+        surface.with_pending_state(|s| {
+            s.size = Some((geo.size.w.max(1) as u32, geo.size.h.max(1) as u32).into())
+        });
+        surface.send_configure();
+        self.protocols.locks.surfaces.push((output, surface));
+        self.queue_redraw_all();
+    }
+}
+impl Gavno {
+    pub(crate) fn secure_lock_input(&mut self) {
         let serial = SERIAL_COUNTER.next_serial();
         if let Some(keyboard) = self.seat.get_keyboard() {
             keyboard.unset_grab(self);
@@ -114,30 +151,7 @@ impl SessionLockHandler for Gavno {
             pointer.frame(self);
         }
         self.cursor_status = smithay::input::pointer::CursorImageStatus::default_named();
-        self.protocols.locks.confirm();
-        self.queue_redraw_all();
     }
-    fn unlock(&mut self) {
-        self.protocols.locks = Locks::default();
-        self.focus_topmost();
-        self.queue_redraw_all();
-    }
-    fn new_surface(&mut self, surface: LockSurface, output: WlOutput) {
-        let Some(output) = Output::from_resource(&output) else {
-            return;
-        };
-        let Some(geo) = self.space.output_geometry(&output) else {
-            return;
-        };
-        surface.with_pending_state(|s| {
-            s.size = Some((geo.size.w.max(1) as u32, geo.size.h.max(1) as u32).into())
-        });
-        surface.send_configure();
-        self.protocols.locks.surfaces.push((output, surface));
-        self.queue_redraw_all();
-    }
-}
-impl Gavno {
     pub fn lock_surface_under(
         &self,
         pos: Point<f64, Logical>,

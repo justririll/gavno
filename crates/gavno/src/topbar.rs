@@ -614,7 +614,7 @@ impl Gavno {
                 self.topbar.menu = None;
                 match action {
                     PowerAction::Logout => self.quit(),
-                    PowerAction::Lock => power_command("loginctl", "lock-session"),
+                    PowerAction::Lock => { self.lock_session(); },
                     PowerAction::Suspend => power_command("systemctl", "suspend"),
                     PowerAction::Restart => power_command("systemctl", "reboot"),
                     PowerAction::Shutdown => power_command("systemctl", "poweroff"),
