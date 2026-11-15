@@ -98,7 +98,7 @@ impl Config {
     }
 
     /// Pure merge: defaults < file < environment. Empty environment values are unset.
-    fn build(nested: bool, text: Option<&str>, env: impl Fn(&str) -> Option<String>) -> (Self, Vec<String>) {
+    pub(crate) fn build(nested: bool, text: Option<&str>, env: impl Fn(&str) -> Option<String>) -> (Self, Vec<String>) {
         let mut warnings = Vec::new();
         let mut file: FileConfig = text
             .map(|text| toml::from_str::<toml::Table>(text).and_then(toml::Table::try_into))

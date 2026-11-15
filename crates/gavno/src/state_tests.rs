@@ -54,7 +54,7 @@ impl Harness {
     pub fn new() -> Self {
         let mut event_loop = EventLoop::try_new().unwrap();
         let display = Display::new().unwrap();
-        let mut gv = Gavno::new(&mut event_loop, display, Config::from_env(true));
+        let mut gv = Gavno::new(&mut event_loop, display, Config::build(true, None, |_| None).0);
         let (server_socket, client_socket) = UnixStream::pair().unwrap();
         client_socket.set_nonblocking(true).unwrap();
         gv.display_handle
