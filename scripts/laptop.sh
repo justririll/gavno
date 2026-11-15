@@ -5,6 +5,7 @@
 #   scripts/laptop.sh run [cmd]      build + start ds on tty7 (optionally run cmd inside)
 #   scripts/laptop.sh stop           stop ds (SIGTERM) and go back to tty1
 #   scripts/laptop.sh log            follow the ds journal
+# DS_ARGS adds ds flags, e.g. DS_ARGS=--greeter scripts/laptop.sh run
 set -eu
 HOST=${DS_HOST:-root@192.168.31.235}
 DIR=/home/kirill/Projects/ds
@@ -36,7 +37,7 @@ run)
             -p KillSignal=SIGTERM -p TimeoutStopSec=5 \
             -E XDG_SESSION_TYPE=wayland -E XDG_SESSION_CLASS=user -E XDG_SEAT=seat0 -E XDG_VTNR=$VT \
             -E RUST_LOG=\${RUST_LOG:-info} -E RUST_BACKTRACE=1 \
-            $DIR/target/debug/ds --tty ${1:+-c '$*'}
+            $DIR/target/debug/ds --tty ${DS_ARGS:-} ${1:+-c '$*'}
         sleep 0.5; chvt $VT"
     ;;
 stop) ssh "$HOST" "systemctl stop $UNIT; chvt 1" ;;

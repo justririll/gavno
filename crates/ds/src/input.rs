@@ -75,6 +75,17 @@ impl Ds {
                     return FilterResult::Intercept(Some(Action::SwitchVt(vt)));
                 }
 
+                // Greeter mode: every key goes to the login screen.
+                if ds.greeter.is_some() {
+                    let sym = handle.modified_sym();
+                    let mods = *mods;
+                    ds.suppressed_keys.push(raw_code);
+                    if let Some(g) = ds.greeter.as_mut() {
+                        g.key(sym, sym.key_char(), &mods);
+                    }
+                    return FilterResult::Intercept(None);
+                }
+
                 // Binds match the latin layout, so they work with ru active too.
                 let Some(sym) = handle.raw_latin_sym_or_raw_current_sym() else {
                     return FilterResult::Forward;
@@ -97,6 +108,34 @@ impl Ds {
         if let Some(Some(action)) = action {
             self.run_action(action);
         }
+        if self.greeter.is_some() {
+            let caps = keyboard.modifier_state().caps_lock;
+            let layout = keyboard.with_xkb_state(self, |ctx| {
+                let xkb = ctx.xkb().lock().unwrap();
+                xkb.layout_name(xkb.active_layout()).to_owned()
+            });
+            if let Some(g) = self.greeter.as_mut() {
+                g.set_modifiers(caps, &layout);
+            }
+            self.queue_redraw_all();
+        }
+    }
+
+    /// Pointer hover/click on the login screen, in output-local coordinates.
+    fn greeter_pointer(&mut self, click: bool) {
+        let pos = self.pointer_location();
+        let Some(origin) = self.active_output().and_then(|o| self.space.output_geometry(&o)).map(|g| g.loc) else {
+            return;
+        };
+        let local = pos - origin.to_f64();
+        if let Some(g) = self.greeter.as_mut() {
+            if click {
+                g.click(local);
+            } else {
+                g.pointer_motion(local);
+            }
+        }
+        self.queue_redraw_all();
     }
 
     /// The core binds (KooL Hyprland-Dots subset). Modules see keys first.
@@ -154,6 +193,9 @@ impl Ds {
             },
         );
         pointer.frame(self);
+        if self.greeter.is_some() {
+            self.greeter_pointer(false);
+        }
         self.queue_redraw_all();
     }
 
@@ -187,6 +229,13 @@ impl Ds {
         let serial = SERIAL_COUNTER.next_serial();
         let button = event.button_code();
         let button_state = event.state();
+
+        if self.greeter.is_some() {
+            if button_state == ButtonState::Pressed {
+                self.greeter_pointer(true);
+            }
+            return;
+        }
 
         if button_state == ButtonState::Pressed && !pointer.is_grabbed() {
             let pos = pointer.current_location();

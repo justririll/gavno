@@ -48,6 +48,7 @@ render_elements! {
     Space = SpaceRenderElements<GlesRenderer, WaylandSurfaceRenderElement<GlesRenderer>>,
     Surface = WaylandSurfaceRenderElement<GlesRenderer>,
     Memory = MemoryRenderBufferRenderElement<GlesRenderer>,
+    Shader = smithay::backend::renderer::gles::element::PixelShaderElement,
 }
 
 /// Dmabuf feedback for one output: what to prefer for composition and what
@@ -101,6 +102,7 @@ pub fn output_elements(
     cursor_status: &mut CursorImageStatus,
     cursor: &mut CursorCache,
     time: Duration,
+    greeter: Option<&mut crate::greeter::Greeter>,
 ) -> Vec<DsRenderElement> {
     let mut elements: Vec<DsRenderElement> = Vec::new();
     let Some(output_geo) = space.output_geometry(output) else {
@@ -151,6 +153,12 @@ pub fn output_elements(
                 }
             }
         }
+    }
+
+    if let Some(greeter) = greeter {
+        let size = output_geo.size;
+        elements.extend(greeter.elements(renderer, size, scale.x, time));
+        return elements;
     }
 
     if let Ok(space_elements) = space_render_elements(renderer, [space], output, 1.0) {

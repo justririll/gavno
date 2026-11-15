@@ -37,3 +37,11 @@ pub fn switch_vt(ds: &mut Ds, vt: i32) {
         data.switch_vt(vt);
     }
 }
+
+/// Renders the first output offscreen and reads it back as RGBA.
+pub fn screenshot(ds: &mut Ds) -> Option<(u32, u32, Vec<u8>)> {
+    match &ds.backend {
+        Backend::Udev(_) => udev::screenshot(ds),
+        _ => None,
+    }
+}

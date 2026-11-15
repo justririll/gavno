@@ -114,6 +114,7 @@ fn render(ds: &mut Ds) {
             &mut ds.cursor_status,
             &mut ds.cursor,
             time,
+            ds.greeter.as_mut(),
         );
         data.damage_tracker
             .render_output(renderer, &mut framebuffer, age, &elements, render::CLEAR_COLOR)
@@ -127,6 +128,9 @@ fn render(ds: &mut Ds) {
                 }
             }
             render::post_render(ds, &output, &states, None);
+            if ds.is_animating() {
+                ds.queue_redraw_all();
+            }
         }
         Err(err) => tracing::warn!(?err, "winit render failed"),
     }

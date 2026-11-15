@@ -7,12 +7,15 @@
 mod backend;
 mod config;
 mod cursor;
+mod debug;
+mod greeter;
 mod grabs;
 mod handlers;
 mod input;
 mod module;
 mod render;
 mod state;
+mod ui;
 
 use smithay::reexports::{calloop::EventLoop, wayland_server::Display};
 
@@ -24,13 +27,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
     let mut backend_choice = None;
     let mut startup_cmd: Option<String> = None;
+    let mut greeter_mode = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--winit" => backend_choice = Some(BackendChoice::Winit),
             "--tty" => backend_choice = Some(BackendChoice::Tty),
+            "--greeter" => greeter_mode = true,
             "-c" | "--command" => startup_cmd = args.next(),
             "-h" | "--help" => {
-                println!("usage: ds [--tty | --winit] [-c <command>]");
+                println!("usage: ds [--tty | --winit] [--greeter] [-c <command>]");
                 return Ok(());
             }
             other => {
@@ -57,6 +62,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         BackendChoice::Winit => backend::winit::init(&mut event_loop, &mut state)?,
         BackendChoice::Tty => backend::udev::init(&mut event_loop, &mut state)?,
     }
+
+    if greeter_mode {
+        greeter::start(&mut state);
+    }
+    debug::install_screenshot_signal(&state.loop_handle);
 
     // Clients we start must talk to us, never to a parent session.
     std::env::set_var("WAYLAND_DISPLAY", &state.socket_name);

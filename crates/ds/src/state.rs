@@ -66,6 +66,8 @@ pub struct Ds {
     pub modules: Vec<Box<dyn Module>>,
     /// `-c <command>`, run once the first output exists.
     pub startup_cmd: Option<String>,
+    /// Set in `--greeter` mode: ds is the login screen.
+    pub greeter: Option<crate::greeter::Greeter>,
 }
 
 impl Ds {
@@ -130,6 +132,7 @@ impl Ds {
             backend: Backend::None,
             modules: Vec::new(),
             startup_cmd: None,
+            greeter: None,
         }
     }
 
@@ -173,6 +176,11 @@ impl Ds {
     /// vblank. Cheap to call often: repeated calls coalesce.
     pub fn queue_redraw_all(&mut self) {
         crate::backend::queue_redraw_all(self);
+    }
+
+    /// True while something animates and needs the next frame drawn.
+    pub fn is_animating(&self) -> bool {
+        self.greeter.as_ref().is_some_and(|g| g.is_animating())
     }
 
     pub fn pointer_location(&self) -> Point<f64, Logical> {

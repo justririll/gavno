@@ -559,6 +559,7 @@ fn render_surface(ds: &mut Ds, crtc: crtc::Handle) {
         &mut ds.cursor_status,
         &mut ds.cursor,
         time,
+        ds.greeter.as_mut(),
     );
     let result = surface
         .drm_output
@@ -603,6 +604,9 @@ fn render_surface(ds: &mut Ds, crtc: crtc::Handle) {
 
     let feedback = surface.feedback.clone();
     render::post_render(ds, &output, &states, feedback.as_ref());
+    if ds.is_animating() {
+        queue_redraw(ds, crtc);
+    }
 }
 
 fn on_timer(ds: &mut Ds, crtc: crtc::Handle) {
@@ -701,4 +705,42 @@ fn on_session_activate(ds: &mut Ds) {
         device_changed(ds, node);
     }
     ds.queue_redraw_all();
+}
+
+pub fn screenshot(ds: &mut Ds) -> Option<(u32, u32, Vec<u8>)> {
+    use smithay::backend::renderer::{damage::OutputDamageTracker, Bind, ExportMem, Offscreen};
+    use smithay::backend::renderer::gles::GlesTexture;
+    use smithay::utils::{Buffer as BufferCoord, Rectangle, Size};
+
+    let pointer_pos = ds.pointer_location();
+    let time = ds.start_time.elapsed();
+    let Backend::Udev(data) = &mut ds.backend else { return None };
+    let gpu = data.gpu.as_mut()?;
+    let output = gpu.surfaces.values().next()?.output.clone();
+    let mode = output.current_mode()?;
+    let scale = output.current_scale().fractional_scale();
+    let elements = render::output_elements(
+        &mut gpu.renderer,
+        &ds.space,
+        &output,
+        pointer_pos,
+        &mut ds.cursor_status,
+        &mut ds.cursor,
+        time,
+        ds.greeter.as_mut(),
+    );
+    let size: Size<i32, BufferCoord> = (mode.size.w, mode.size.h).into();
+    let mut texture: GlesTexture = gpu.renderer.create_buffer(Fourcc::Abgr8888, size).ok()?;
+    let mapping = {
+        let mut fb = gpu.renderer.bind(&mut texture).ok()?;
+        let mut damage = OutputDamageTracker::new(mode.size, scale, Transform::Normal);
+        damage
+            .render_output(&mut gpu.renderer, &mut fb, 0, &elements, render::CLEAR_COLOR)
+            .ok()?;
+        gpu.renderer
+            .copy_framebuffer(&fb, Rectangle::from_size(size), Fourcc::Abgr8888)
+            .ok()?
+    };
+    let bytes = gpu.renderer.map_texture(&mapping).ok()?.to_vec();
+    Some((mode.size.w as u32, mode.size.h as u32, bytes))
 }

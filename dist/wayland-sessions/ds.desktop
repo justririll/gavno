@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=ds
+Comment=ds Wayland compositor
+Exec=/usr/local/bin/ds-session
+Type=Application
+DesktopNames=ds
