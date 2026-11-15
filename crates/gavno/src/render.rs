@@ -18,7 +18,7 @@ use smithay::{
         },
     },
     desktop::{
-        space::{space_render_elements, SpaceRenderElements},
+        space::SpaceRenderElements,
         utils::{
             send_frames_surface_tree, surface_presentation_feedback_flags_from_states,
             surface_primary_scanout_output, update_surface_primary_scanout_output,
@@ -48,6 +48,7 @@ render_elements! {
     Space = SpaceRenderElements<GlesRenderer, WaylandSurfaceRenderElement<GlesRenderer>>,
     Surface = WaylandSurfaceRenderElement<GlesRenderer>,
     Memory = MemoryRenderBufferRenderElement<GlesRenderer>,
+    Window = crate::decor::WindowElement,
     Shader = smithay::backend::renderer::gles::element::PixelShaderElement,
 }
 
@@ -104,6 +105,8 @@ pub fn output_elements(
     time: Duration,
     greeter: Option<&mut crate::greeter::Greeter>,
     overlay: &mut crate::overlay::Overlay,
+    window_decor: &mut crate::decor::WindowDecor,
+    animations: &mut crate::anim::WindowAnimations,
 ) -> Vec<GavnoRenderElement> {
     let mut elements: Vec<GavnoRenderElement> = Vec::new();
     let Some(output_geo) = space.output_geometry(output) else {
@@ -163,10 +166,7 @@ pub fn output_elements(
     }
 
     elements.extend(crate::overlay::overlay_elements(overlay, renderer, output, output_geo, scale.x, time));
-
-    if let Ok(space_elements) = space_render_elements(renderer, [space], output, 1.0) {
-        elements.extend(space_elements.into_iter().map(GavnoRenderElement::Space));
-    }
+    elements.extend(window_decor.elements(renderer, space, output, animations, time));
     elements
 }
 

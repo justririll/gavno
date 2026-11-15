@@ -47,6 +47,7 @@ impl PointerGrab<Gavno> for MoveSurfaceGrab {
         // While the grab is active, no client has pointer focus
         handle.motion(data, None, event);
 
+        data.window_animations.cancel(&self.window);
         let delta = event.location - self.start_data.location;
         if !self.window.alive() {
             return;

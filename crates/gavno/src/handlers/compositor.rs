@@ -34,6 +34,8 @@ impl CompositorHandler for Gavno {
             }
             if let Some(window) = self.window_for_surface(&root) {
                 window.on_commit();
+                let has_buffer = with_renderer_surface_state(&root, |s| s.buffer().is_some()).unwrap_or(false);
+                crate::anim::surface_commit(self, &window, has_buffer);
             }
 
             // First buffer of a new toplevel: place and show it.

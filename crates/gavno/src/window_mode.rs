@@ -154,6 +154,9 @@ impl Gavno {
             if let Some(loc) = loc {
                 self.space.map_element(window.clone(), loc, false);
             }
+            if let Some(from) = current {
+                crate::anim::animate_geometry(self, window, from);
+            }
             toplevel.send_pending_configure();
         } else if toplevel.is_initial_configure_sent() {
             toplevel.send_pending_configure();

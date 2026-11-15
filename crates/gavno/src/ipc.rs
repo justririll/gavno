@@ -216,6 +216,8 @@ fn dispatch(gv: &mut Gavno, method: &str, params: &Value) -> Result<Value, Strin
             .send_close(),
         "raise" => gv.space.raise_element(&window, false),
         "move" => {
+            let from = gv.space.element_location(&window)
+                .map(|loc| smithay::utils::Rectangle::new(loc, window.geometry().size));
             let (x, y, w, h) = movement.unwrap();
             if w.is_some() || h.is_some() {
                 let size = window.geometry().size;
@@ -226,7 +228,10 @@ fn dispatch(gv: &mut Gavno, method: &str, params: &Value) -> Result<Value, Strin
                 });
                 toplevel.send_pending_configure();
             }
-            gv.space.map_element(window, (x, y), false);
+            gv.space.map_element(window.clone(), (x, y), false);
+            if let Some(from) = from {
+                crate::anim::animate_geometry(gv, &window, from);
+            }
         }
         _ => unreachable!(),
     }

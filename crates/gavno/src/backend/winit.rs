@@ -116,6 +116,8 @@ fn render(gv: &mut Gavno) {
             time,
             gv.greeter.as_mut(),
             &mut gv.overlay,
+            &mut gv.window_decor,
+            &mut gv.window_animations,
         );
         data.damage_tracker
             .render_output(renderer, &mut framebuffer, age, &elements, render::CLEAR_COLOR)

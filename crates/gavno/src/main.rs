@@ -4,6 +4,8 @@
 //! running on a TTY and a winit backend for running nested during development.
 //! Rendering is on demand: when nothing changes, GAVNO does not draw.
 
+mod anim;
+mod decor;
 mod backend;
 mod config;
 mod cursor;
