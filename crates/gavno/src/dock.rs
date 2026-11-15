@@ -414,8 +414,9 @@ impl Dock {
                     ((x * c.scale).round(), (rect.loc.y * c.scale).round()),
                     &buffer,
                     None,
-                    None,
-                    Some((sz, sz).into()),
+                    // An explicit src is required: a size alone crops the buffer.
+                    Some(Rectangle::from_size((px as f64, px as f64).into())),
+                    Some((sz.round() as i32, sz.round() as i32).into()),
                     Kind::Unspecified,
                 ) {
                     c.elements.push(GavnoRenderElement::Memory(e));

@@ -556,7 +556,7 @@ impl Gavno {
             }
             BarAction::Layout => {
                 if let Some(keyboard) = self.seat.get_keyboard() {
-                    keyboard.with_xkb_state(self, |ctx| ctx.cycle_next_layout());
+                    keyboard.with_xkb_state(self, |mut ctx| ctx.cycle_next_layout());
                 }
             }
             BarAction::PowerMenu => {
