@@ -380,7 +380,7 @@ pub fn overlay_elements(
     out
 }
 
-fn window_labels(w: &Window) -> (String, String) {
+pub(crate) fn window_labels(w: &Window) -> (String, String) {
     let Some(t) = w.toplevel() else {
         return ("Window".into(), String::new());
     };
@@ -397,7 +397,7 @@ fn window_labels(w: &Window) -> (String, String) {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn push_text(
+pub(crate) fn push_text(
     text: &mut TextRenderer,
     renderer: &mut GlesRenderer,
     out: &mut Vec<GavnoRenderElement>,

@@ -50,6 +50,10 @@ pub struct Gavno {
     /// Toplevels that exist but have not committed a buffer yet.
     pub unmapped: Vec<Window>,
     pub mru: Vec<Window>,
+    pub workspaces: crate::workspace::Workspaces,
+    pub overview: crate::overview::Overview,
+    pub gestures: crate::gesture::Gestures,
+    pub pointer_gestures: smithay::wayland::pointer_gestures::PointerGesturesState,
     pub overlay: crate::overlay::Overlay,
     pub popups: PopupManager,
 
@@ -71,6 +75,7 @@ pub struct Gavno {
     pub cursor: crate::render::CursorCache,
     /// Keys whose press was a compositor bind; their release is not forwarded.
     pub suppressed_keys: Vec<u32>,
+    pub desktop_keys: Vec<u32>,
 
     pub backend: Backend,
     pub modules: Vec<Box<dyn Module>>,
@@ -122,7 +127,7 @@ impl Gavno {
             start_time: Instant::now(),
             clock,
             socket_name,
-            display_handle: dh,
+            display_handle: dh.clone(),
             loop_handle: event_loop.handle(),
             loop_signal: event_loop.get_signal(),
             config,
@@ -132,6 +137,10 @@ impl Gavno {
             window_decor: Default::default(),
             unmapped: Vec::new(),
             mru: Vec::new(),
+            workspaces: Default::default(),
+            overview: Default::default(),
+            gestures: Default::default(),
+            pointer_gestures: smithay::wayland::pointer_gestures::PointerGesturesState::new::<Self>(&dh),
             overlay: crate::overlay::Overlay::default(),
             popups: PopupManager::default(),
             compositor_state,
@@ -150,6 +159,7 @@ impl Gavno {
             cursor_status: CursorImageStatus::default_named(),
             cursor: crate::render::CursorCache::new(),
             suppressed_keys: Vec::new(),
+            desktop_keys: Vec::new(),
             backend: Backend::None,
             modules: Vec::new(),
             startup_cmd: None,
@@ -195,6 +205,8 @@ impl Gavno {
     /// Runs once per event loop iteration, after all events were dispatched.
     pub fn on_loop_idle(&mut self) {
         self.space.refresh();
+        self.refresh_workspaces();
+        self.refresh_desktop_pointer();
         self.prune_navigation();
         let focus = self.seat.get_keyboard().and_then(|k| k.current_focus());
         self.update_shortcut_inhibitors(focus.as_ref());
@@ -218,7 +230,8 @@ impl Gavno {
         }
         match self.greeter.as_ref() {
             Some(g) => g.is_animating(),
-            None => self.window_animations.is_animating() || self.overlay.is_animating(),
+            None => self.window_animations.is_animating() || self.overlay.is_animating()
+                || self.workspaces.active() || self.overview.progress.is_active(),
         }
     }
 
@@ -232,6 +245,7 @@ impl Gavno {
         if let Some(hit) = self.layer_hit(pos, &[Layer::Overlay, Layer::Top]) {
             return Some((hit.surface, hit.surface_loc));
         }
+        if self.desktop_transform_at(pos) { return None; }
         if let Some(found) = self.space.element_under(pos).and_then(|(window, location)| {
             window
                 .surface_under(pos - location.to_f64(), WindowSurfaceType::ALL)
@@ -246,6 +260,7 @@ impl Gavno {
     pub fn window_for_surface(&self, surface: &WlSurface) -> Option<Window> {
         self.space
             .elements()
+            .chain(self.workspaces.all().map(|v| &v.window))
             .find(|w| w.toplevel().is_some_and(|t| t.wl_surface() == surface))
             .cloned()
     }
@@ -279,6 +294,10 @@ impl Gavno {
         if self.protocols.locks.locked { return; }
         let serial = SERIAL_COUNTER.next_serial();
         if let Some(window) = window {
+            if let Some((output, index)) = self.workspaces.membership(window) {
+                if self.workspaces.get(&output).is_some_and(|o| o.list.active != index) { self.switch_workspace(&output, index); }
+            }
+            self.workspace_focus(window);
             crate::handlers::xdg_activation::clear_urgency(window);
             self.space.raise_element(window, true);
             crate::snap::touch_mru(&mut self.mru, window);
@@ -335,6 +354,13 @@ impl Gavno {
             .unwrap_or_default();
         let urgent = crate::handlers::xdg_activation::is_urgent(&window);
         self.space.map_element(window.clone(), loc, !urgent && !self.protocols.locks.locked);
+        if self.greeter.is_none() {
+            if let Some(output) = &output {
+                let owner = self.workspaces.ensure(output);
+                owner.list.items[owner.list.active].windows.push(crate::workspace::OwnedWindow { window: window.clone(), location: loc });
+                owner.append_empty();
+            }
+        }
         self.window_animations.open(&window, self.start_time.elapsed());
         if !urgent { self.focus_window(Some(&window)); }
         self.dispatch_modules(|m, gv| {

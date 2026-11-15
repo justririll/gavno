@@ -68,6 +68,7 @@ impl SeatHandler for Gavno {
     }
 }
 delegate_seat!(Gavno);
+smithay::delegate_pointer_gestures!(Gavno);
 
 impl SelectionHandler for Gavno {
     type SelectionUserData = ();

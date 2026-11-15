@@ -46,8 +46,9 @@ impl XdgShellHandler for Gavno {
             .retain(|w| w.toplevel().is_some_and(|t| t.wl_surface() != surface.wl_surface()));
         if let Some(window) = self.window_for_surface(surface.wl_surface()) {
             let was_focused = self.focused_window().as_ref() == Some(&window);
-            self.window_animations.close(&window, self.start_time.elapsed());
+            if self.space.element_location(&window).is_some() { self.window_animations.close(&window, self.start_time.elapsed()); }
             self.space.unmap_elem(&window);
+            self.workspace_forget(&window);
             self.dispatch_modules(|m, gv| {
                 m.window_unmapped(gv, &window);
                 crate::module::Handled::No

@@ -136,19 +136,23 @@ fn screen(gv: &Gavno) -> Value {
             let geo = gv.space.output_geometry(output)?;
             Some(
                 json!({"name": output.name(), "x": geo.loc.x, "y": geo.loc.y,
-            "w": geo.size.w, "h": geo.size.h, "scale": output.current_scale().fractional_scale()}),
+            "w": geo.size.w, "h": geo.size.h, "scale": output.current_scale().fractional_scale(),
+            "workspace": gv.workspaces.get(output).map(|o| o.list.active).unwrap_or(0),
+            "workspaces": gv.workspaces.get(output).map(|o| o.list.items.len()).unwrap_or(1)}),
             )
         })
         .collect();
     let windows: Vec<_> = gv
         .space
         .elements()
-        .rev()
+        .chain(gv.workspaces.all().map(|v| &v.window).filter(|w| gv.space.element_location(w).is_none()))
+        .collect::<Vec<_>>().into_iter().rev()
         .filter(|w| w.alive())
         .filter_map(|window| {
             let id = window_id(window)?;
             let toplevel = window.toplevel()?;
-            let geo = gv.space.element_geometry(window)?;
+            let loc = gv.space.element_location(window).or_else(|| gv.workspaces.location(window))?;
+            let geo = smithay::utils::Rectangle::new(loc, window.geometry().size);
             let (app_id, title) = with_states(toplevel.wl_surface(), |states| {
                 let attributes = states
                     .data_map
@@ -162,7 +166,7 @@ fn screen(gv: &Gavno) -> Value {
                 )
             });
             // Derive from current geometry: Space's output membership refreshes on idle.
-            let output = gv
+            let output = gv.workspaces.membership(window).map(|(o, _)| o.name()).or_else(|| gv
                 .space
                 .outputs()
                 .find(|output| {
@@ -170,10 +174,11 @@ fn screen(gv: &Gavno) -> Value {
                         .output_geometry(output)
                         .is_some_and(|area| area.overlaps(geo))
                 })
-                .map(|output| output.name());
+                .map(|output| output.name()));
             Some(json!({"id": id, "app_id": app_id, "title": title,
             "x": geo.loc.x, "y": geo.loc.y, "w": geo.size.w, "h": geo.size.h,
-            "focused": focused == Some(id), "output": output}))
+            "focused": focused == Some(id), "output": output,
+            "workspace": gv.workspaces.membership(window).map(|(_, i)| i).unwrap_or(0)}))
         })
         .collect();
     json!({"outputs": outputs, "windows": windows, "focused": focused})
@@ -183,7 +188,21 @@ fn dispatch(gv: &mut Gavno, method: &str, params: &Value) -> Result<Value, Strin
     if method == "screen" {
         return Ok(screen(gv));
     }
-    if !matches!(method, "focus" | "close" | "move" | "raise") {
+    if method == "workspace" {
+        let output = if let Some(name) = params.get("output").and_then(Value::as_str) {
+            gv.space.outputs().find(|o| o.name() == name).cloned()
+        } else { gv.active_output() }.ok_or("unknown output")?;
+        if params.get("workspace").is_some() {
+            let index = protocol::integer(params, "workspace")?;
+            if index < 0 || gv.workspaces.ensure(&output).list.items.len() <= index as usize { return Err("workspace index out of range".into()); }
+            audit(method, params).map_err(|e| format!("cannot append agent audit log: {e}"))?;
+            gv.switch_workspace(&output, index as usize);
+        }
+        let o = gv.workspaces.ensure(&output);
+        return Ok(json!({"output": output.name(), "workspace": o.list.active, "count": o.list.items.len(),
+            "ids": o.list.items.iter().map(|w| w.id).collect::<Vec<_>>()}));
+    }
+    if !matches!(method, "focus" | "close" | "move" | "raise" | "move_to_workspace") {
         return Err(format!("unknown method: {method}"));
     }
     let id = params
@@ -201,20 +220,29 @@ fn dispatch(gv: &mut Gavno, method: &str, params: &Value) -> Result<Value, Strin
     } else {
         None
     };
+    let workspace_target = if method == "move_to_workspace" {
+        let index = protocol::integer(params, "workspace")?;
+        if index < 0 { return Err("workspace index out of range".into()); }
+        Some(index as usize)
+    } else { None };
     audit(method, params).map_err(|e| format!("cannot append agent audit log: {e}"))?;
     let window = gv
         .space
         .elements()
+        .chain(gv.workspaces.all().map(|v| &v.window))
         .find(|w| window_id(w) == Some(id) && w.alive())
         .cloned()
         .ok_or_else(|| format!("unknown window id: {id}"))?;
     match method {
+        "move_to_workspace" => {
+            if !gv.move_to_workspace(&window, workspace_target.unwrap_or(0)) { return Err("workspace index out of range".into()); }
+        }
         "focus" => gv.focus_window(Some(&window)),
         "close" => window
             .toplevel()
             .ok_or("window has no toplevel")?
             .send_close(),
-        "raise" => gv.space.raise_element(&window, false),
+        "raise" => { if gv.space.element_location(&window).is_some() { gv.space.raise_element(&window, false); } gv.workspace_focus(&window); },
         "move" => {
             let from = gv.space.element_location(&window)
                 .map(|loc| smithay::utils::Rectangle::new(loc, window.geometry().size));
@@ -228,7 +256,13 @@ fn dispatch(gv: &mut Gavno, method: &str, params: &Value) -> Result<Value, Strin
                 });
                 toplevel.send_pending_configure();
             }
-            gv.space.map_element(window.clone(), (x, y), false);
+            if gv.space.element_location(&window).is_some() {
+                gv.space.map_element(window.clone(), (x, y), false);
+            } else {
+                for o in &mut gv.workspaces.outputs { for ws in &mut o.list.items {
+                    if let Some(v) = ws.windows.iter_mut().find(|v| v.window == window) { v.location = (x, y).into(); }
+                } }
+            }
             if let Some(from) = from {
                 crate::anim::animate_geometry(gv, &window, from);
             }
@@ -323,4 +357,25 @@ mod tests {
         assert_eq!(serde_json::from_str::<Value>(fields[2]).unwrap(), params);
         fs::remove_dir_all(root).unwrap();
     }
+    #[test]
+    fn screen_includes_hidden_windows_and_zero_based_workspace_indices() {
+        let mut h = crate::state::tests::Harness::new();
+        let o = smithay::output::Output::new("test".into(), smithay::output::PhysicalProperties {
+            size: (0, 0).into(), subpixel: smithay::output::Subpixel::Unknown, make: "test".into(), model: "test".into(),
+        });
+        o.change_current_state(Some(smithay::output::Mode { size: (1600, 900).into(), refresh: 120_000 }), None, None, Some((0, 0).into()));
+        h.gv.space.map_output(&o, (0, 0));
+        let w = h.window(); h.gv.map_new_window(w.clone());
+        h.gv.space.map_element(w.clone(), (123, 234), false);
+        assert!(h.gv.move_to_workspace(&w, 1));
+        let result = screen(&h.gv);
+        assert_eq!(result["windows"].as_array().unwrap().len(), 1);
+        assert_eq!(result["windows"][0]["workspace"], 1);
+        assert_eq!(result["windows"][0]["x"], 123);
+        assert_eq!(result["windows"][0]["focused"], false);
+        assert_eq!(result["outputs"][0]["workspace"], 0);
+        assert_eq!(dispatch(&mut h.gv, "workspace", &json!({})).unwrap()["count"], 3);
+        assert!(dispatch(&mut h.gv, "workspace", &json!({"workspace": -1})).is_err());
+    }
+
 }

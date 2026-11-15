@@ -227,7 +227,7 @@ fn configure_input_device(device: &mut libinput::Device) {
         let _ = device.config_tap_set_drag_enabled(true);
         let _ = device.config_tap_set_drag_lock_enabled(false);
         let _ = device.config_dwt_set_enabled(true);
-        let _ = device.config_scroll_set_natural_scroll_enabled(true);
+        let _ = device.config_scroll_set_natural_scroll_enabled(std::env::var("GAVNO_NATURAL_SCROLL").as_deref() != Ok("0"));
         let methods = device.config_click_methods();
         if methods.contains(&libinput::ClickMethod::Clickfinger) {
             let _ = device.config_click_set_method(libinput::ClickMethod::Clickfinger);
@@ -566,6 +566,8 @@ fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
         &mut gv.window_decor,
         &mut gv.window_animations,
         &gv.protocols.locks,
+        &mut gv.workspaces,
+        &mut gv.overview,
     );
     let result = surface
         .drm_output
@@ -753,6 +755,8 @@ pub fn screenshot(gv: &mut Gavno) -> Option<(u32, u32, Vec<u8>)> {
         &mut gv.window_decor,
         &mut gv.window_animations,
         &gv.protocols.locks,
+        &mut gv.workspaces,
+        &mut gv.overview,
     );
     let size: Size<i32, BufferCoord> = (mode.size.w, mode.size.h).into();
     let mut texture: GlesTexture = gpu.renderer.create_buffer(Fourcc::Abgr8888, size).ok()?;
