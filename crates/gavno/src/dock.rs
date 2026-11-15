@@ -23,7 +23,7 @@ use smithay::{
     },
     utils::{IsAlive, Logical, Point, Rectangle},
 };
-use std::time::Duration;
+use std::{collections::HashSet, time::Duration};
 
 pub const DOCK_BASE: f64 = 46.0;
 pub const DOCK_MAG: f64 = 1.72;
@@ -84,6 +84,11 @@ pub fn item_order(pinned: &[String], running: &[String]) -> Vec<ItemKey> {
     out.extend(extras.into_iter().map(ItemKey::App));
     out
 }
+/// Pinned ids whose desktop entry resolves. A pin without an entry belongs to
+/// an app that is not installed, so it is skipped instead of drawing a placeholder.
+fn resolvable_pins(pinned: &[String], mut resolved: impl FnMut(&str) -> bool) -> Vec<String> {
+    pinned.iter().filter(|id| resolved(id)).cloned().collect()
+}
 #[derive(Clone)]
 struct App {
     id: String,
@@ -140,6 +145,8 @@ pub struct Dock {
     minimized: Vec<MinimizeMotion>,
     now: Duration,
     buttons: Vec<u32>,
+    /// Pinned ids already reported as unresolved, so each logs only once.
+    skipped: HashSet<String>,
     pub changed: bool,
 }
 impl Default for Dock {
@@ -158,6 +165,7 @@ impl Default for Dock {
             minimized: Vec::new(),
             now: Duration::ZERO,
             buttons: Vec::new(),
+            skipped: HashSet::new(),
             changed: false,
         }
     }
@@ -184,6 +192,16 @@ impl Dock {
                 .collect();
             self.initialized = true;
         }
+        // Pins for apps that are not installed are skipped rather than shown as a letter.
+        let pinned = {
+            let entries = &mut self.entries;
+            resolvable_pins(&self.pinned, |id| entries.resolve(id).is_some())
+        };
+        for id in self.pinned.iter().filter(|id| !pinned.contains(*id)) {
+            if self.skipped.insert(id.clone()) {
+                tracing::debug!(app=%id, "pinned dock app has no desktop entry; skipping");
+            }
+        }
         let mut running = Vec::new();
         let mut windows = Vec::new();
         for w in workspaces.all().map(|v| &v.window).chain(space.elements()) {
@@ -208,7 +226,7 @@ impl Dock {
                 .position(|k| k == &ItemKey::App(id.clone()))
                 .unwrap_or(usize::MAX)
         });
-        let order = item_order(&self.pinned, &running);
+        let order = item_order(&pinned, &running);
         let apps = order
             .iter()
             .filter_map(|key| {
@@ -1050,5 +1068,30 @@ mod tests {
             vec![ItemKey::App("c".into())]
         );
         assert_eq!(item_order(&p, &[]).len(), 2);
+    }
+    #[test]
+    fn pinned_missing_desktop_entries_are_skipped() {
+        let p = vec![
+            "foot".to_string(),
+            "firefox".to_string(),
+            "org.example.Missing".to_string(),
+        ];
+        let resolved = ["foot", "org.example.Missing"];
+        let pins = resolvable_pins(&p, |id| resolved.contains(&id));
+        assert_eq!(
+            pins,
+            vec!["foot".to_string(), "org.example.Missing".to_string()]
+        );
+        // A running app without an entry is still shown, after the pinned group.
+        assert_eq!(
+            item_order(&pins, &["firefox".to_string()]),
+            vec![
+                ItemKey::App("foot".into()),
+                ItemKey::App("org.example.Missing".into()),
+                ItemKey::Separator,
+                ItemKey::App("firefox".into()),
+            ]
+        );
+        assert!(resolvable_pins(&p, |_| false).is_empty());
     }
 }

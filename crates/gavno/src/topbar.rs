@@ -1,5 +1,6 @@
 //! Built-in panel, shared cached drawing primitives, and visible-only one-shot timers.
 use crate::{
+    icons::Icons,
     render::GavnoRenderElement,
     ui::{
         shader::{self, ShaderBox, Shaders},
@@ -29,6 +30,13 @@ use std::{
 pub const PANEL: i32 = 30;
 pub const GLASS: [f32; 4] = [0.055, 0.065, 0.09, 0.90];
 pub const LINE: [f32; 4] = [1.0, 1.0, 1.0, 0.14];
+/// The UI font has no power glyph, so the bar draws a themed icon instead.
+const POWER_ICONS: [&str; 3] = [
+    "system-shutdown-symbolic",
+    "system-shutdown",
+    "system-log-out",
+];
+const POWER_ICON: i32 = 16;
 
 pub fn next_minute(now: Duration) -> Duration {
     Duration::from_secs(60) - Duration::from_nanos((now.as_nanos() % 60_000_000_000) as u64)
@@ -272,6 +280,8 @@ pub struct TopBar {
     clock: String,
     battery: Option<Battery>,
     accent: [f32; 4],
+    icons: Icons,
+    icon_theme: String,
     pub menu: Option<Output>,
     clock_timer: Option<RegistrationToken>,
     battery_timer: Option<RegistrationToken>,
@@ -287,6 +297,8 @@ impl Default for TopBar {
             clock: clock_label(),
             battery: None,
             accent: [0.95, 0.64, 0.42, 1.0],
+            icons: Default::default(),
+            icon_theme: crate::config::DockConfig::default().icon_theme,
             menu: None,
             clock_timer: None,
             battery_timer: None,
@@ -411,7 +423,29 @@ impl TopBar {
             .map(|b| format!("{}{}%", if b.charging { "+ " } else { "" }, b.percent))
             .unwrap_or_else(|| "AC".into());
         c.label(renderer, &battery, width - 120, 7, 75, 12.5);
-        c.label(renderer, "⏻", width - 29, 6, 25, 16.0);
+        let px = (POWER_ICON as f64 * c.scale).ceil() as u32;
+        let power = POWER_ICONS
+            .iter()
+            .find_map(|name| self.icons.get_tinted(name, px, &self.icon_theme));
+        let x = width - 29;
+        let y = (PANEL - POWER_ICON) / 2;
+        match power {
+            Some(buffer) => {
+                if let Ok(e) = MemoryRenderBufferRenderElement::from_buffer(
+                    renderer,
+                    ((x as f64 * c.scale).round(), (y as f64 * c.scale).round()),
+                    &buffer,
+                    None,
+                    // An explicit src is required: a size alone crops the buffer.
+                    Some(Rectangle::from_size((px as f64, px as f64).into())),
+                    Some((POWER_ICON, POWER_ICON).into()),
+                    Kind::Unspecified,
+                ) {
+                    c.elements.push(GavnoRenderElement::Memory(e));
+                }
+            }
+            None => c.label(renderer, "Power", width - 38, 9, 36, 12.5),
+        }
         v.hits.push((
             Rectangle::new(
                 ((width - 185) as f64, 0.0).into(),
@@ -485,6 +519,7 @@ impl Gavno {
         self.topbar.title = title;
         self.topbar.layout = layout;
         self.topbar.enabled = self.config.bar.enabled;
+        self.topbar.icon_theme = self.config.dock.icon_theme.clone();
         self.topbar.views.retain(|v| outputs.contains(&v.output));
         let visible = outputs.iter().any(|o| self.shell_visible(o));
         if !visible {

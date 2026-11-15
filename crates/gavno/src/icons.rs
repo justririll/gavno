@@ -95,13 +95,26 @@ pub fn lookup(name: &str, theme: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
 
 #[derive(Default)]
 pub struct Icons {
-    cache: HashMap<(String, u32), Option<MemoryRenderBuffer>>,
+    cache: HashMap<(String, u32, bool), Option<MemoryRenderBuffer>>,
     paths: HashMap<String, Option<PathBuf>>,
 }
 impl Icons {
     pub fn get(&mut self, name: &str, size: u32, theme: &str) -> Option<MemoryRenderBuffer> {
+        self.load(name, size, theme, false)
+    }
+    /// Symbolic icons are dark-on-transparent; bars ask for premultiplied white.
+    pub fn get_tinted(&mut self, name: &str, size: u32, theme: &str) -> Option<MemoryRenderBuffer> {
+        self.load(name, size, theme, true)
+    }
+    fn load(
+        &mut self,
+        name: &str,
+        size: u32,
+        theme: &str,
+        tint: bool,
+    ) -> Option<MemoryRenderBuffer> {
         let size = size.clamp(1, 1024);
-        let key = (name.to_owned(), size);
+        let key = (name.to_owned(), size, tint);
         if let Some(buffer) = self.cache.get(&key) {
             return buffer.clone();
         }
@@ -113,7 +126,7 @@ impl Icons {
             // Legacy ~/.icons is searched as an icons root via ~/.
             lookup(name, theme, &dirs)
         });
-        let buffer = path.as_ref().and_then(|p| raster(p, size));
+        let buffer = path.as_ref().and_then(|p| raster(p, size, tint));
         // Magnification uses a stable maximum raster, so this remains small.
         if self.cache.len() > 512 {
             self.cache.clear();
@@ -122,7 +135,14 @@ impl Icons {
         buffer
     }
 }
-fn raster(path: &Path, size: u32) -> Option<MemoryRenderBuffer> {
+/// Replace premultiplied RGBA color with white while keeping the original alpha.
+fn tint_white(pixels: &mut [u8]) {
+    for p in pixels.chunks_exact_mut(4) {
+        let alpha = p[3];
+        p[..3].fill(alpha);
+    }
+}
+fn raster(path: &Path, size: u32, tint: bool) -> Option<MemoryRenderBuffer> {
     let mut pixels = if path.extension().is_some_and(|e| e == "svg") {
         let data = std::fs::read(path).ok()?;
         if data.len() > 8 * 1024 * 1024 {
@@ -184,6 +204,9 @@ fn raster(path: &Path, size: u32) -> Option<MemoryRenderBuffer> {
         }
         pixels
     };
+    if tint {
+        tint_white(&mut pixels);
+    }
     for p in pixels.chunks_exact_mut(4) {
         p.swap(0, 2);
     }
@@ -228,5 +251,18 @@ mod tests {
         );
         assert!(lookup("../escape", "test", &[root.clone()]).is_none());
         std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn white_tint_keeps_alpha_and_premultiplies() {
+        let mut pixels = [
+            10, 20, 30, 255, // opaque colored pixel
+            1, 2, 3, 128, // translucent colored pixel
+            7, 8, 9, 0, // fully transparent pixel
+        ];
+        tint_white(&mut pixels);
+        assert_eq!(
+            pixels,
+            [255, 255, 255, 255, 128, 128, 128, 128, 0, 0, 0, 0]
+        );
     }
 }
