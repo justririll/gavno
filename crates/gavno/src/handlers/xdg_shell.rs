@@ -84,18 +84,14 @@ impl XdgShellHandler for Gavno {
             let Some(window) = self.window_for_surface(wl_surface) else {
                 return;
             };
-            if crate::window_mode::mode_state(&window).mode != WindowMode::Floating {
+            if crate::window_mode::mode_state(&window).mode == WindowMode::Fullscreen {
                 return;
             }
             let Some(initial_window_location) = self.space.element_location(&window) else {
                 return;
             };
 
-            let grab = MoveSurfaceGrab {
-                start_data,
-                window,
-                initial_window_location,
-            };
+            let grab = MoveSurfaceGrab::start(start_data, window, initial_window_location);
 
             pointer.set_grab(self, grab, serial, Focus::Clear);
         }

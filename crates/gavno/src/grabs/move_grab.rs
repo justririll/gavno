@@ -1,20 +1,39 @@
-use crate::Gavno;
+use crate::{
+    window_mode::{mode_state, WindowMode},
+    Gavno,
+};
 use smithay::{
     desktop::Window,
     input::pointer::{
         AxisFrame, ButtonEvent, GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent,
-        GesturePinchEndEvent, GesturePinchUpdateEvent, GestureSwipeBeginEvent, GestureSwipeEndEvent,
-        GestureSwipeUpdateEvent, GrabStartData as PointerGrabStartData, MotionEvent, PointerGrab,
-        PointerInnerHandle, RelativeMotionEvent,
+        GesturePinchEndEvent, GesturePinchUpdateEvent, GestureSwipeBeginEvent,
+        GestureSwipeEndEvent, GestureSwipeUpdateEvent, GrabStartData as PointerGrabStartData,
+        MotionEvent, PointerGrab, PointerInnerHandle, RelativeMotionEvent,
     },
     reexports::wayland_server::protocol::wl_surface::WlSurface,
-    utils::{Logical, Point},
+    utils::{IsAlive, Logical, Point, Rectangle},
 };
 
 pub struct MoveSurfaceGrab {
     pub start_data: PointerGrabStartData<Gavno>,
     pub window: Window,
     pub initial_window_location: Point<i32, Logical>,
+    moved: bool,
+}
+
+impl MoveSurfaceGrab {
+    pub fn start(
+        start_data: PointerGrabStartData<Gavno>,
+        window: Window,
+        initial_window_location: Point<i32, Logical>,
+    ) -> Self {
+        Self {
+            start_data,
+            window,
+            initial_window_location,
+            moved: false,
+        }
+    }
 }
 
 impl PointerGrab<Gavno> for MoveSurfaceGrab {
@@ -29,9 +48,31 @@ impl PointerGrab<Gavno> for MoveSurfaceGrab {
         handle.motion(data, None, event);
 
         let delta = event.location - self.start_data.location;
+        if !self.window.alive() {
+            return;
+        }
+        if !self.moved && delta.x.hypot(delta.y) < 4.0 {
+            return;
+        }
+        if !self.moved {
+            self.moved = true;
+            let state = mode_state(&self.window);
+            if matches!(state.mode, WindowMode::Maximized | WindowMode::Snapped(_)) {
+                let size = self.window.geometry().size;
+                let restored = state.restore.map(|r| r.size).unwrap_or(size);
+                self.initial_window_location = crate::snap::restored_drag_origin(
+                    self.start_data.location,
+                    Rectangle::new(self.initial_window_location, size),
+                    restored,
+                );
+                data.set_window_mode(&self.window, WindowMode::Floating, None);
+            }
+        }
         let new_location = self.initial_window_location.to_f64() + delta;
         data.space
             .map_element(self.window.clone(), new_location.to_i32_round(), true);
+        data.update_snap_preview(&self.window, event.location);
+        data.queue_redraw_all();
     }
 
     fn relative_motion(
@@ -52,8 +93,10 @@ impl PointerGrab<Gavno> for MoveSurfaceGrab {
     ) {
         handle.button(data, event);
 
-
         if handle.current_pressed().is_empty() {
+            if self.moved && self.window.alive() {
+                data.apply_drag_snap(&self.window, handle.current_location());
+            }
             // No more buttons are pressed, release the grab.
             handle.unset_grab(self, data, event.serial, event.time, true);
         }
@@ -148,5 +191,8 @@ impl PointerGrab<Gavno> for MoveSurfaceGrab {
         &self.start_data
     }
 
-    fn unset(&mut self, _data: &mut Gavno) {}
+    fn unset(&mut self, data: &mut Gavno) {
+        data.overlay.hide_preview(data.start_time.elapsed());
+        data.queue_redraw_all();
+    }
 }

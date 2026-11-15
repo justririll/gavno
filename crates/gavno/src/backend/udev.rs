@@ -562,6 +562,7 @@ fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
         &mut gv.cursor,
         time,
         gv.greeter.as_mut(),
+        &mut gv.overlay,
     );
     let result = surface
         .drm_output
@@ -730,6 +731,7 @@ pub fn screenshot(gv: &mut Gavno) -> Option<(u32, u32, Vec<u8>)> {
         &mut gv.cursor,
         time,
         gv.greeter.as_mut(),
+        &mut gv.overlay,
     );
     let size: Size<i32, BufferCoord> = (mode.size.w, mode.size.h).into();
     let mut texture: GlesTexture = gpu.renderer.create_buffer(Fourcc::Abgr8888, size).ok()?;

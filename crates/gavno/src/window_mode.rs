@@ -1,4 +1,4 @@
-//! Per-window floating / maximized / fullscreen bookkeeping.
+//! Per-window floating / snapped / maximized / fullscreen bookkeeping.
 //!
 //! The state lives in the window's user data. The pure part (what to
 //! remember and what to restore) is kept free of Smithay types beyond
@@ -13,13 +13,14 @@ use smithay::{
     utils::{Logical, Rectangle},
 };
 
-use crate::Gavno;
+use crate::{snap::Zone, Gavno};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum WindowMode {
     #[default]
     Floating,
     Maximized,
+    Snapped(Zone),
     Fullscreen,
 }
 
@@ -58,28 +59,51 @@ pub fn mode_state(window: &Window) -> ModeState {
     window
         .user_data()
         .get::<Mutex<ModeState>>()
-        .map(|m| *m.lock().unwrap())
+        .map(|m| *m.lock().unwrap_or_else(|e| e.into_inner()))
         .unwrap_or_default()
 }
 
 pub fn with_mode_state<T>(window: &Window, f: impl FnOnce(&mut ModeState) -> T) -> T {
-    window.user_data().insert_if_missing_threadsafe(|| Mutex::new(ModeState::default()));
-    let mut guard = window.user_data().get::<Mutex<ModeState>>().unwrap().lock().unwrap();
+    window
+        .user_data()
+        .insert_if_missing_threadsafe(|| Mutex::new(ModeState::default()));
+    let mut guard = window
+        .user_data()
+        .get::<Mutex<ModeState>>()
+        .unwrap()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     f(&mut guard)
 }
 
 impl Gavno {
-    /// The output a window is on, else the active one.
-    fn output_for_window(&self, window: &Window) -> Option<Output> {
+    /// Greatest output overlap; unmapped windows use the active output.
+    pub(crate) fn output_for_window(&self, window: &Window) -> Option<Output> {
+        let rect = self.window_rect(window);
         self.space
-            .outputs_for_element(window)
-            .into_iter()
-            .next()
-            .or_else(|| self.active_output())
+            .outputs()
+            .filter_map(|o| {
+                let intersection = self.space.output_geometry(o)?.intersection(rect?)?;
+                Some((
+                    o.clone(),
+                    i64::from(intersection.size.w) * i64::from(intersection.size.h),
+                ))
+            })
+            .max_by_key(|(_, area)| *area)
+            .map(|(o, _)| o)
+            .or_else(|| {
+                // Mapped windows can be moved under a pointer grab: avoid
+                // locking the pointer again if they are temporarily offscreen.
+                if rect.is_none() {
+                    self.active_output()
+                } else {
+                    self.space.outputs().next().cloned()
+                }
+            })
     }
 
     /// Moves `window` into `mode` on `output` (default: where it is now) and
-    /// sends the matching configure. Maximized fills the work area,
+    /// sends the matching configure. Snap/maximize use the gapped work area,
     /// fullscreen the whole output, floating restores the remembered geometry.
     pub fn set_window_mode(&mut self, window: &Window, mode: WindowMode, output: Option<Output>) {
         let Some(toplevel) = window.toplevel().cloned() else {
@@ -90,14 +114,23 @@ impl Gavno {
 
         let target: Option<Rectangle<i32, Logical>> = match mode {
             WindowMode::Floating => None,
-            WindowMode::Maximized => output.as_ref().map(|o| self.work_area(o)),
+            WindowMode::Maximized => output
+                .as_ref()
+                .map(|o| Zone::Maximized.rect(self.work_area(o), self.config.gap)),
+            WindowMode::Snapped(zone) => output
+                .as_ref()
+                .map(|o| zone.rect(self.work_area(o), self.config.gap)),
             WindowMode::Fullscreen => output.as_ref().and_then(|o| self.space.output_geometry(o)),
         };
 
-        let current = self
-            .space
-            .element_location(window)
-            .map(|loc| Rectangle::new(loc, window.geometry().size));
+        let current = self.space.element_location(window).map(|loc| {
+            Rectangle::new(
+                loc,
+                toplevel
+                    .with_pending_state(|s| s.size)
+                    .unwrap_or(window.geometry().size),
+            )
+        });
         let restore = with_mode_state(window, |s| match mode {
             WindowMode::Floating => s.leave(),
             _ => {
@@ -106,28 +139,12 @@ impl Gavno {
             }
         });
 
-        toplevel.with_pending_state(|state| {
-            match mode {
-                WindowMode::Floating => {
-                    state.states.unset(xdg_toplevel::State::Maximized);
-                    state.states.unset(xdg_toplevel::State::Fullscreen);
-                    state.fullscreen_output = None;
-                    // `None` lets the client pick its own size again.
-                    state.size = restore.map(|r| r.size);
-                }
-                WindowMode::Maximized => {
-                    state.states.set(xdg_toplevel::State::Maximized);
-                    state.states.unset(xdg_toplevel::State::Fullscreen);
-                    state.fullscreen_output = None;
-                    state.size = target.map(|t| t.size);
-                }
-                WindowMode::Fullscreen => {
-                    state.states.unset(xdg_toplevel::State::Maximized);
-                    state.states.set(xdg_toplevel::State::Fullscreen);
-                    state.size = target.map(|t| t.size);
-                }
-            }
-        });
+        let geometry = if mode == WindowMode::Floating {
+            restore
+        } else {
+            target
+        };
+        configure_mode(window, mode, geometry.map(|r| r.size));
 
         if mapped {
             let loc = match mode {
@@ -144,12 +161,30 @@ impl Gavno {
         self.queue_redraw_all();
     }
 
+    /// Assigns a slot without modifying the saved floating geometry.
+    pub(crate) fn configure_slot(
+        &mut self,
+        window: &Window,
+        rect: Rectangle<i32, Logical>,
+        mode: WindowMode,
+    ) {
+        configure_mode(window, mode, Some(rect.size));
+        self.space.map_element(window.clone(), rect.loc, false);
+        if let Some(t) = window.toplevel() {
+            t.send_pending_configure();
+        }
+    }
+
     /// Toggles `mode` for the focused window.
     pub fn toggle_window_mode(&mut self, mode: WindowMode) {
         let Some(window) = self.focused_window() else {
             return;
         };
-        let next = if mode_state(&window).mode == mode { WindowMode::Floating } else { mode };
+        let next = if mode_state(&window).mode == mode {
+            WindowMode::Floating
+        } else {
+            mode
+        };
         self.set_window_mode(&window, next, None);
     }
 
@@ -166,6 +201,49 @@ impl Gavno {
             self.set_window_mode(&window, mode, None);
         }
     }
+}
+
+fn configure_mode(
+    window: &Window,
+    mode: WindowMode,
+    size: Option<smithay::utils::Size<i32, Logical>>,
+) {
+    let Some(toplevel) = window.toplevel() else {
+        return;
+    };
+    toplevel.with_pending_state(|state| {
+        for flag in [
+            xdg_toplevel::State::Maximized,
+            xdg_toplevel::State::Fullscreen,
+            xdg_toplevel::State::TiledLeft,
+            xdg_toplevel::State::TiledRight,
+            xdg_toplevel::State::TiledTop,
+            xdg_toplevel::State::TiledBottom,
+        ] {
+            state.states.unset(flag);
+        }
+        state.fullscreen_output = None;
+        match mode {
+            WindowMode::Maximized | WindowMode::Snapped(Zone::Maximized) => {
+                state.states.set(xdg_toplevel::State::Maximized);
+            }
+            WindowMode::Fullscreen => {
+                state.states.set(xdg_toplevel::State::Fullscreen);
+            }
+            WindowMode::Snapped(_) => {
+                for flag in [
+                    xdg_toplevel::State::TiledLeft,
+                    xdg_toplevel::State::TiledRight,
+                    xdg_toplevel::State::TiledTop,
+                    xdg_toplevel::State::TiledBottom,
+                ] {
+                    state.states.set(flag);
+                }
+            }
+            WindowMode::Floating => {}
+        }
+        state.size = size;
+    });
 }
 
 #[cfg(test)]
@@ -201,6 +279,20 @@ mod tests {
         s.enter(WindowMode::Maximized, Some(rect(5, 5, 50, 50)));
         s.enter(WindowMode::Maximized, Some(rect(0, 0, 1920, 1080)));
         assert_eq!(s.leave(), Some(rect(5, 5, 50, 50)));
+    }
+
+    #[test]
+    fn snapped_modes_keep_floating_restore_through_maximize() {
+        let mut s = ModeState::default();
+        let original = rect(30, 40, 640, 480);
+        s.enter(WindowMode::Snapped(Zone::Left), Some(original));
+        s.enter(
+            WindowMode::Snapped(Zone::BottomLeft),
+            Some(rect(0, 0, 800, 450)),
+        );
+        s.enter(WindowMode::Maximized, Some(rect(0, 0, 800, 900)));
+        assert_eq!(s.leave(), Some(original));
+        assert_eq!(s.leave(), None);
     }
 
     #[test]

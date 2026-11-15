@@ -103,6 +103,7 @@ pub fn output_elements(
     cursor: &mut CursorCache,
     time: Duration,
     greeter: Option<&mut crate::greeter::Greeter>,
+    overlay: &mut crate::overlay::Overlay,
 ) -> Vec<GavnoRenderElement> {
     let mut elements: Vec<GavnoRenderElement> = Vec::new();
     let Some(output_geo) = space.output_geometry(output) else {
@@ -160,6 +161,8 @@ pub fn output_elements(
         elements.extend(greeter.elements(renderer, size, scale.x, time));
         return elements;
     }
+
+    elements.extend(crate::overlay::overlay_elements(overlay, renderer, output, output_geo, scale.x, time));
 
     if let Ok(space_elements) = space_render_elements(renderer, [space], output, 1.0) {
         elements.extend(space_elements.into_iter().map(GavnoRenderElement::Space));

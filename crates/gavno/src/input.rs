@@ -15,6 +15,7 @@ use smithay::{
 use crate::{
     grabs::{resize_grab::ResizeEdge, MoveSurfaceGrab, ResizeSurfaceGrab},
     module::Handled,
+    snap::Direction,
     state::spawn_shell,
     window_mode::{mode_state, WindowMode},
     Gavno,
@@ -33,6 +34,12 @@ pub enum Action {
     SwitchVt(i32),
     ToggleMaximize,
     ToggleFullscreen,
+    Snap(Direction),
+    FocusDirection(Direction),
+    Swap(Direction),
+    Resize(Direction),
+    SwitcherCycle(bool),
+    SwitcherFinish(bool),
 }
 
 impl Gavno {
@@ -62,6 +69,13 @@ impl Gavno {
             serial,
             time,
             |gv, mods, handle| {
+                if gv.greeter.is_none()
+                    && gv.overlay.switcher_open()
+                    && key_state == KeyState::Released
+                    && !mods.alt
+                {
+                    gv.switcher_finish(true);
+                }
                 if key_state == KeyState::Released {
                     // Swallow the release of a key whose press was a bind.
                     if let Some(i) = gv.suppressed_keys.iter().position(|k| *k == raw_code) {
@@ -88,6 +102,19 @@ impl Gavno {
                         g.key(sym, sym.key_char(), &mods);
                     }
                     return FilterResult::Intercept(None);
+                }
+
+                if gv.overlay.switcher_open() {
+                    let sym = handle.modified_sym().raw();
+                    let action = match sym {
+                        keysyms::KEY_Tab | keysyms::KEY_ISO_Left_Tab => Some(Action::SwitcherCycle(mods.shift)),
+                        keysyms::KEY_Escape => Some(Action::SwitcherFinish(false)),
+                        _ => None,
+                    };
+                    if !gv.suppressed_keys.contains(&raw_code) {
+                        gv.suppressed_keys.push(raw_code);
+                    }
+                    return FilterResult::Intercept(action);
                 }
 
                 // Binds match the latin layout, so they work with ru active too.
@@ -150,8 +177,34 @@ impl Gavno {
         if mods.ctrl && mods.alt && sym == keysyms::KEY_Delete {
             return Some(Action::Quit);
         }
+        if mods.alt && !mods.ctrl && !mods.logo
+            && matches!(sym, keysyms::KEY_Tab | keysyms::KEY_ISO_Left_Tab)
+        {
+            return Some(Action::SwitcherCycle(mods.shift));
+        }
         if !main {
             return None;
+        }
+        let direction = match sym {
+            keysyms::KEY_Left => Some(Direction::Left),
+            keysyms::KEY_Right => Some(Direction::Right),
+            keysyms::KEY_Up => Some(Direction::Up),
+            keysyms::KEY_Down => Some(Direction::Down),
+            _ => None,
+        };
+        if let Some(dir) = direction {
+            return Some(if mods.ctrl {
+                Action::Snap(dir)
+            } else if mods.shift {
+                Action::Resize(dir)
+            // With Alt as Mod in nested mode, Super is the extra modifier.
+            } else if (mods.alt && self.config.mod_key == crate::config::ModKey::Super)
+                || (mods.logo && self.config.mod_key == crate::config::ModKey::Alt)
+            {
+                Action::Swap(dir)
+            } else {
+                Action::FocusDirection(dir)
+            });
         }
         match sym {
             keysyms::KEY_Return | keysyms::KEY_KP_Enter => Some(Action::Spawn(self.config.terminal.clone())),
@@ -170,6 +223,12 @@ impl Gavno {
             Action::CloseWindow => self.close_focused(),
             Action::ToggleMaximize => self.toggle_window_mode(WindowMode::Maximized),
             Action::ToggleFullscreen => self.toggle_window_mode(WindowMode::Fullscreen),
+            Action::Snap(dir) => self.snap_direction(dir),
+            Action::FocusDirection(dir) => self.focus_direction(dir),
+            Action::Swap(dir) => self.swap_direction(dir),
+            Action::Resize(dir) => self.resize_direction(dir),
+            Action::SwitcherCycle(backwards) => self.switcher_cycle(backwards),
+            Action::SwitcherFinish(commit) => self.switcher_finish(commit),
             Action::SwitchVt(vt) => crate::backend::switch_vt(self, vt),
         }
     }
@@ -259,8 +318,11 @@ impl Gavno {
                             self.focus_window(Some(&window));
                         }
                         let mod_held = self.config.mod_key.is_held(&keyboard.modifier_state());
-                        let floating = mode_state(&window).mode == WindowMode::Floating;
-                        if mod_held && floating && (button == BTN_LEFT || button == BTN_RIGHT) {
+                        let mode = mode_state(&window).mode;
+                        if mod_held
+                            && ((button == BTN_LEFT && mode != WindowMode::Fullscreen)
+                                || (button == BTN_RIGHT && mode == WindowMode::Floating))
+                        {
                             // Mod+drag: the press goes to the grab, not to the client.
                             let start_data = GrabStartData {
                                 focus: None,
@@ -268,11 +330,7 @@ impl Gavno {
                                 location: pos,
                             };
                             if button == BTN_LEFT {
-                                let grab = MoveSurfaceGrab {
-                                    start_data,
-                                    window,
-                                    initial_window_location: loc,
-                                };
+                                let grab = MoveSurfaceGrab::start(start_data, window, loc);
                                 pointer.set_grab(self, grab, serial, Focus::Clear);
                             } else {
                                 self.start_mod_resize(window, loc, pos, start_data, serial);

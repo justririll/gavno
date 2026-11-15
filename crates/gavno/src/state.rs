@@ -43,6 +43,8 @@ pub struct Gavno {
     pub space: Space<Window>,
     /// Toplevels that exist but have not committed a buffer yet.
     pub unmapped: Vec<Window>,
+    pub mru: Vec<Window>,
+    pub overlay: crate::overlay::Overlay,
     pub popups: PopupManager,
 
     pub compositor_state: CompositorState,
@@ -117,6 +119,8 @@ impl Gavno {
             ipc: crate::ipc::IpcState::default(),
             space: Space::default(),
             unmapped: Vec::new(),
+            mru: Vec::new(),
+            overlay: crate::overlay::Overlay::default(),
             popups: PopupManager::default(),
             compositor_state,
             xdg_shell_state,
@@ -173,6 +177,7 @@ impl Gavno {
     /// Runs once per event loop iteration, after all events were dispatched.
     pub fn on_loop_idle(&mut self) {
         self.space.refresh();
+        self.prune_navigation();
         self.popups.cleanup();
         let _ = self.display_handle.flush_clients();
     }
@@ -185,7 +190,7 @@ impl Gavno {
 
     /// True while something animates and needs the next frame drawn.
     pub fn is_animating(&self) -> bool {
-        self.greeter.as_ref().is_some_and(|g| g.is_animating())
+        self.greeter.as_ref().is_some_and(|g| g.is_animating()) || self.overlay.is_animating()
     }
 
     pub fn pointer_location(&self) -> Point<f64, Logical> {
@@ -244,6 +249,7 @@ impl Gavno {
         let serial = SERIAL_COUNTER.next_serial();
         if let Some(window) = window {
             self.space.raise_element(window, true);
+            crate::snap::touch_mru(&mut self.mru, window);
         } else {
             for w in self.space.elements() {
                 w.set_activated(false);
@@ -276,7 +282,8 @@ impl Gavno {
             .as_ref()
             .map(|o| match mode {
                 // Asked for maximize/fullscreen before its first buffer.
-                crate::window_mode::WindowMode::Maximized => self.work_area(o).loc,
+                crate::window_mode::WindowMode::Maximized => crate::snap::Zone::Maximized.rect(self.work_area(o), self.config.gap).loc,
+                crate::window_mode::WindowMode::Snapped(zone) => zone.rect(self.work_area(o), self.config.gap).loc,
                 crate::window_mode::WindowMode::Fullscreen => {
                     self.space.output_geometry(o).unwrap_or_default().loc
                 }

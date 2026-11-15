@@ -14,6 +14,8 @@ mod handlers;
 mod input;
 mod ipc;
 mod module;
+mod overlay;
+mod snap;
 mod render;
 mod state;
 mod ui;
