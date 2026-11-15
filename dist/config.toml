@@ -1,0 +1,43 @@
+# GAVNO configuration file.
+#
+# GAVNO looks for this file at $GAVNO_CONFIG if that variable is set, otherwise
+# at $XDG_CONFIG_HOME/gavno/config.toml, otherwise at
+# $HOME/.config/gavno/config.toml.
+#
+# Every key is optional: omitted keys keep the built-in default shown below.
+# Uncomment a setting to override its default.
+# The GAVNO_* environment variables (GAVNO_MOD, GAVNO_TERMINAL, GAVNO_LAUNCHER,
+# GAVNO_SCALE, GAVNO_XKB_LAYOUT, GAVNO_XKB_VARIANT, GAVNO_XKB_OPTIONS) take
+# precedence over this file. Unknown keys are ignored with a warning, and a
+# malformed file is ignored as a whole; GAVNO still starts.
+
+# Modifier for compositor key bindings: "super" or "alt".
+# Default: "super"; when running nested (--winit) the default is "alt",
+# because the host compositor keeps Super for itself.
+# mod_key = "super"
+
+# Terminal started by Mod+Return.
+# terminal = "foot"
+
+# Launcher started by Mod+D. Default: none (binding disabled).
+# Uncomment to enable it with fuzzel.
+# launcher = "fuzzel"
+
+# Gap between a new window and the work area edge, in logical pixels.
+# Values outside 0..=64 are clamped. Default: 12.
+# gap = 12
+
+# [output]
+# Scale for built-in panels (eDP). External outputs always use 1.0.
+# Values outside 0.5..=4.0 are clamped. Default: 1.75.
+# internal_scale = 1.75
+
+# [keyboard]
+# XKB layout(s) passed to the seat keyboard. Default: "us,ru".
+# layout = "us,ru"
+
+# XKB variant(s), one per layout, or "" for none. Default: "".
+# variant = ""
+
+# XKB options; set to "" to disable them. Default: "grp:alt_shift_toggle".
+# options = "grp:alt_shift_toggle"

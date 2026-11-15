@@ -62,7 +62,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut event_loop: EventLoop<'static, Gavno> = EventLoop::try_new()?;
     let display: Display<Gavno> = Display::new()?;
-    let config = config::Config::from_env(backend_choice == BackendChoice::Winit);
+    let config = config::Config::load(backend_choice == BackendChoice::Winit);
     let mut state = Gavno::new(&mut event_loop, display, config);
 
     match backend_choice {
