@@ -22,10 +22,12 @@ use smithay::{
         selection::{data_device::DataDeviceState, primary_selection::PrimarySelectionState},
         shell::{wlr_layer::WlrLayerShellState, xdg::XdgShellState},
         shm::ShmState,
-        socket::ListeningSocketSource,
         viewporter::ViewporterState,
     },
 };
+
+#[cfg(not(test))]
+use smithay::wayland::socket::ListeningSocketSource;
 
 use crate::{backend::Backend, config::Config, module::Module};
 
@@ -156,10 +158,16 @@ impl Gavno {
     }
 
     fn init_wayland_listener(display: Display<Gavno>, event_loop: &mut EventLoop<'static, Gavno>) -> OsString {
+        #[cfg(not(test))]
         let listening_socket = ListeningSocketSource::new_auto().expect("no free wayland socket name");
+        #[cfg(not(test))]
         let socket_name = listening_socket.socket_name().to_os_string();
+        // Unit tests use in-process socket pairs without advertising a compositor.
+        #[cfg(test)]
+        let socket_name = OsString::new();
         let handle = event_loop.handle();
 
+        #[cfg(not(test))]
         handle
             .insert_source(listening_socket, |client_stream, _, state| {
                 if let Err(err) = state
@@ -205,6 +213,9 @@ impl Gavno {
 
     /// True while something animates and needs the next frame drawn.
     pub fn is_animating(&self) -> bool {
+        if self.protocols.locks.locked {
+            return false;
+        }
         match self.greeter.as_ref() {
             Some(g) => g.is_animating(),
             None => self.window_animations.is_animating() || self.overlay.is_animating(),
@@ -284,6 +295,7 @@ impl Gavno {
         let keyboard = self.seat.get_keyboard().unwrap();
         let surface = window.and_then(|w| w.toplevel()).map(|t| t.wl_surface().clone());
         if surface.is_none() {
+            self.window_decor.focus(None);
             self.update_shortcut_inhibitors(None);
             self.refresh_constraints(None);
         }
@@ -376,3 +388,7 @@ impl ClientData for ClientState {
     fn initialized(&self, _client_id: ClientId) {}
     fn disconnected(&self, _client_id: ClientId, _reason: DisconnectReason) {}
 }
+
+#[cfg(test)]
+#[path = "state_tests.rs"]
+pub(crate) mod tests;

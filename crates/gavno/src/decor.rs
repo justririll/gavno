@@ -548,7 +548,7 @@ impl WindowDecor {
         animations: &mut WindowAnimations,
         time: Duration,
     ) -> Vec<GavnoRenderElement> {
-        animations.advance(time);
+        animations.advance(time, space);
         self.caches.retain(|c| {
             (animations.motion(&c.window).is_some() || space.element_location(&c.window).is_some())
                 && space.outputs().any(|o| o == &c.output)
@@ -835,6 +835,22 @@ impl WindowDecor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn clearing_keyboard_focus_clears_decoration_and_window_reference() {
+        let mut h = crate::state::tests::Harness::new();
+        let window = h.window();
+        h.gv.map_new_window(window.clone());
+        assert_eq!(h.gv.window_decor.focused.as_ref(), Some(&window));
+        h.gv.focus_window(None);
+        assert!(h.gv.seat.get_keyboard().unwrap().current_focus().is_none());
+        assert!(h.gv.window_decor.focused.is_none());
+
+        h.gv.focus_window(Some(&window));
+        h.gv.space.unmap_elem(&window);
+        h.gv.focus_topmost();
+        assert!(h.gv.seat.get_keyboard().unwrap().current_focus().is_none());
+        assert!(h.gv.window_decor.focused.is_none());
+    }
     #[test]
     fn radius_follows_mode() {
         assert_eq!(corner_radius(WindowMode::Floating), 12.0);

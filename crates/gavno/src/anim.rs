@@ -4,7 +4,7 @@ use crate::{
     Gavno,
 };
 use smithay::{
-    desktop::Window,
+    desktop::{Space, Window},
     utils::{Logical, Rectangle},
 };
 use std::time::Duration;
@@ -81,6 +81,16 @@ impl Motion {
             .map(|(a, b, p)| interpolate_rect(*a, *b, p.value))
             .unwrap_or(fallback)
     }
+    /// Keep scaling late client buffers until both the spring and configure have settled.
+    pub fn retire_geometry(&mut self, committed: Rect) {
+        if self
+            .geometry
+            .as_ref()
+            .is_some_and(|(_, target, progress)| !progress.is_active() && *target == committed)
+        {
+            self.geometry = None;
+        }
+    }
     pub fn active(&self) -> bool {
         self.visibility.is_active()
             || self
@@ -124,9 +134,22 @@ impl WindowAnimations {
             a.motion.cancel();
         }
     }
-    pub fn advance(&mut self, now: Duration) {
+    pub fn advance(&mut self, now: Duration, space: &Space<Window>) {
         for a in &mut self.entries {
             a.motion.advance(now);
+            if a.motion.geometry.is_none() {
+                continue;
+            }
+            if let Some(loc) = space.element_location(&a.window) {
+                // The client may choose a different buffer size from the configure.
+                let size = a
+                    .window
+                    .toplevel()
+                    .and_then(|t| t.current_state().size)
+                    .unwrap_or(a.window.geometry().size);
+                a.motion
+                    .retire_geometry(Rectangle::new(loc, size).to_f64());
+            }
         }
         self.entries.retain(|a| !a.motion.finished());
     }
@@ -248,6 +271,40 @@ mod tests {
         assert_eq!(m.rect(r(10.0, 100.0)), r(20.0, 200.0));
         m.retarget(r(10.0, 100.0), r(20.0, 200.0), Duration::from_millis(2400));
         assert!(!m.active());
+    }
+    #[test]
+    fn settled_override_retires_after_target_commit() {
+        let mut m = Motion::open(Duration::ZERO);
+        m.cancel();
+        let target = r(20.0, 200.0);
+        m.retarget(r(10.0, 100.0), target, Duration::ZERO);
+        m.retire_geometry(target);
+        assert!(
+            m.geometry.is_some(),
+            "an early commit must not stop the spring"
+        );
+        for i in 1..300 {
+            m.advance(Duration::from_millis(i * 8));
+        }
+        m.retire_geometry(r(10.0, 100.0));
+        assert_eq!(m.rect(r(10.0, 100.0)), target, "wait for the target buffer");
+        m.retire_geometry(target);
+        assert!(m.geometry.is_none());
+        assert_eq!(m.rect(r(30.0, 300.0)), r(30.0, 300.0));
+        assert!(!m.active());
+    }
+    #[test]
+    fn committed_override_retires_when_spring_settles() {
+        let mut m = Motion::open(Duration::ZERO);
+        m.cancel();
+        let target = r(20.0, 200.0);
+        m.retarget(r(10.0, 100.0), target, Duration::ZERO);
+        for i in 1..300 {
+            m.advance(Duration::from_millis(i * 8));
+            m.retire_geometry(target);
+        }
+        assert!(m.geometry.is_none());
+        assert_eq!(m.rect(r(30.0, 300.0)), r(30.0, 300.0));
     }
     #[test]
     fn overshoot_cannot_invert_small_client_rectangles() {

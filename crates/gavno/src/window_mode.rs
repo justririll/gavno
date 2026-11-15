@@ -171,6 +171,7 @@ impl Gavno {
         rect: Rectangle<i32, Logical>,
         mode: WindowMode,
     ) {
+        self.window_animations.cancel(window);
         configure_mode(window, mode, Some(rect.size));
         self.space.map_element(window.clone(), rect.loc, false);
         if let Some(t) = window.toplevel() {

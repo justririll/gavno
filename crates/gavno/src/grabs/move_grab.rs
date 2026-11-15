@@ -67,6 +67,7 @@ impl PointerGrab<Gavno> for MoveSurfaceGrab {
                     restored,
                 );
                 data.set_window_mode(&self.window, WindowMode::Floating, None);
+                data.window_animations.cancel(&self.window);
             }
         }
         let new_location = self.initial_window_location.to_f64() + delta;
