@@ -193,6 +193,15 @@ pub fn output_elements(
     let mut scene = overview.scene(workspaces, space, output, time);
     dock.minimize_scene(space, output, time, &mut scene);
     elements.extend(overview.chrome(renderer, workspaces, space, output));
+    if let Some((hover_output, split)) = &workspaces.splitter_hover {
+        if hover_output == output && !overview.visible() {
+            let mut rect = split.line();
+            rect.loc -= output_geo.loc;
+            workspaces.splitter_canvas.begin(renderer, scale.x);
+            workspaces.splitter_canvas.rect(rect, 1.0, topbar.accent(), 0.0, [0.0; 4]);
+            elements.extend(workspaces.splitter_canvas.finish());
+        }
+    }
     elements.extend(window_decor.elements(renderer, space, output, animations, time, scene.as_deref()));
     elements
 }

@@ -29,6 +29,7 @@ mod state;
 mod ui;
 mod window_mode;
 mod workspace;
+mod tiling;
 mod overview;
 mod gesture;
 mod xwayland;

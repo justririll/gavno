@@ -15,12 +15,15 @@ pub struct Workspace<T> {
     pub id: u64,
     /// Back to front; focusing also records the workspace's MRU.
     pub windows: Vec<T>,
+    pub tiling: bool,
+    pub tree: crate::tiling::Tree<Window>,
 }
 #[derive(Debug)]
 pub struct WorkspaceList<T> {
     pub items: Vec<Workspace<T>>,
     pub active: usize,
     next_id: u64,
+    default_tiling: bool,
 }
 impl<T> Default for WorkspaceList<T> {
     fn default() -> Self {
@@ -28,9 +31,12 @@ impl<T> Default for WorkspaceList<T> {
             items: vec![Workspace {
                 id: 0,
                 windows: Vec::new(),
+                tiling: false,
+                tree: Default::default(),
             }],
             active: 0,
             next_id: 1,
+            default_tiling: false,
         }
     }
 }
@@ -51,6 +57,8 @@ impl<T> WorkspaceList<T> {
             self.items.push(Workspace {
                 id: self.next_id,
                 windows: Vec::new(),
+                tiling: self.default_tiling,
+                tree: Default::default(),
             });
             self.next_id += 1;
         }
@@ -88,6 +96,8 @@ impl OutputWorkspaces {
             self.list.items.push(Workspace {
                 id,
                 windows: Vec::new(),
+                tiling: self.list.default_tiling,
+                tree: Default::default(),
             });
         }
     }
@@ -105,15 +115,22 @@ impl OutputWorkspaces {
 #[derive(Default)]
 pub struct Workspaces {
     pub outputs: Vec<OutputWorkspaces>,
+    pub default_tiling: bool,
+    pub moving_tile: Option<Window>,
+    pub splitter_hover: Option<(Output, crate::tiling::Splitter)>,
+    pub splitter_canvas: crate::topbar::Canvas,
 }
 impl Workspaces {
     pub fn ensure(&mut self, output: &Output) -> &mut OutputWorkspaces {
         if let Some(i) = self.outputs.iter().position(|w| &w.output == output) {
             return &mut self.outputs[i];
         }
+        let mut list = WorkspaceList::default();
+        list.default_tiling = self.default_tiling;
+        list.items[0].tiling = self.default_tiling;
         self.outputs.push(OutputWorkspaces {
             output: output.clone(),
-            list: Default::default(),
+            list,
             position: Spring::new(0.0, SpringParams::SMOOTH),
             held: false,
         });
@@ -248,6 +265,7 @@ impl Gavno {
             .space
             .elements()
             .filter_map(|w| {
+                if self.tiled(w) { return None; }
                 let (old, _) = self.workspaces.membership(w)?;
                 let loc = self.space.element_location(w)?;
                 let size = w.geometry().size;
@@ -290,6 +308,7 @@ impl Gavno {
         if changed {
             self.queue_redraw_all();
         }
+        self.reflow_tiling(true);
     }
     pub fn save_workspace_location(&mut self, window: &Window, location: Point<i32, Logical>) {
         for o in &mut self.workspaces.outputs {
@@ -305,8 +324,10 @@ impl Gavno {
         for o in &mut self.workspaces.outputs {
             for ws in &mut o.list.items {
                 ws.windows.retain(|w| &w.window != window);
+                ws.tree.remove(window);
             }
         }
+        self.reflow_tiling(true);
     }
     pub fn workspace_focus(&mut self, window: &Window) {
         for o in &mut self.workspaces.outputs {
@@ -362,6 +383,7 @@ impl Gavno {
                     .map(|v| v.window.clone())
             })
             .collect();
+        self.reflow_tiling(true);
         self.clear_desktop_pointer();
         self.focus_window(focus.as_ref());
         self.queue_redraw_all();
@@ -416,6 +438,7 @@ impl Gavno {
         }
         // Append the new trailing empty immediately; removal waits until motion settles.
         o.append_empty();
+        self.reflow_tiling(true);
         self.clear_desktop_pointer();
         if was_focused {
             self.focus_topmost();

@@ -124,6 +124,12 @@ impl XdgShellHandler for Gavno {
             let Some(initial_window_location) = self.space.element_location(&window) else {
                 return;
             };
+            if self.tiled(&window) {
+                if let Some(grab) = crate::grabs::tiling_grab::SplitterGrab::for_tile(self,start_data,&window,edges.into()) {
+                    pointer.set_grab(self,grab,serial,Focus::Clear);
+                }
+                return;
+            }
             let initial_window_size = window.geometry().size;
 
             surface.with_pending_state(|state| {

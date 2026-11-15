@@ -37,6 +37,7 @@ default": see `terminal` and `launcher` below.
 | `terminal` | string | `"foot"` | `GAVNO_TERMINAL` |
 | `launcher` | string | unset, Mod+D disabled | `GAVNO_LAUNCHER` |
 | `gap` | integer, logical px | `12` | none |
+| `[tiling] default` | boolean | `false` | none |
 | `[output] internal_scale` | float | `1.75` | `GAVNO_SCALE` |
 | `[output] mode` | string, `WIDTHxHEIGHT[@HZ]` | preferred mode, highest refresh among preferred modes | `GAVNO_OUTPUT_MODE` |
 | `[output] hdr` | boolean | `false` | `GAVNO_HDR` (`true`/`false` or `1`/`0`) |
@@ -58,6 +59,12 @@ used verbatim when non-empty.
 
 `gap` is the distance between a new window and the work area edge. There is no
 environment override.
+
+Set `[tiling] default = true` to create workspaces in tiling mode. Existing
+workspaces keep their mode when another workspace is toggled. Mod+T,
+Mod+Alt+Space, or the mode chip next to the workspace dots toggles the current
+workspace. Floating geometry is restored when returning to floating mode.
+Both outer and inner tiling gaps use `gap`.
 
 `[output] internal_scale` applies to built-in panels (eDP) only; external
 outputs always use a scale of 1.0.

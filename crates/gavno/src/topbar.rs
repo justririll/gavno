@@ -259,6 +259,7 @@ pub enum PowerAction {
 }
 #[derive(Clone)]
 pub enum BarAction {
+    Tiling,
     Workspace(usize),
     Layout,
     PowerMenu,
@@ -307,6 +308,7 @@ impl Default for TopBar {
     }
 }
 impl TopBar {
+    pub fn accent(&self) -> [f32; 4] { self.accent }
     fn update_clock(&mut self) {
         self.clock = clock_label();
         let t = theme::LocalTime::now();
@@ -407,6 +409,11 @@ impl TopBar {
             ));
             x += w + 5;
         }
+        let tiling = owner.is_some_and(|o| o.list.items[active].tiling);
+        c.rect(Rectangle::new((x + 5, 4).into(), (66, 22).into()), 6.0, [1.0, 1.0, 1.0, 0.07], 0.0, LINE);
+        c.label(renderer, if tiling { "Tiling" } else { "Floating" }, x + 11, 7, 55, 11.5);
+        v.hits.push((Rectangle::new(((x + 5) as f64, 0.0).into(), (66.0, PANEL as f64).into()), BarAction::Tiling));
+        x += 76;
         c.label(
             renderer,
             &self.title,
@@ -586,6 +593,7 @@ impl Gavno {
     }
     pub fn bar_action(&mut self, output: &Output, action: BarAction) {
         match action {
+            BarAction::Tiling => self.toggle_workspace_tiling(output),
             BarAction::Workspace(i) => {
                 self.switch_workspace(output, i);
             }

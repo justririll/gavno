@@ -216,6 +216,7 @@ impl Gavno {
         self.overlay.prune(&mapped, self.start_time.elapsed());
     }
     pub fn update_snap_preview(&mut self, window: &Window, pos: Point<f64, Logical>) {
+        if self.tiling_workspace(window) { return; }
         let target = self.space.outputs().find_map(|o| {
             let geo = self.space.output_geometry(o)?;
             let zone = crate::snap::zone_at(pos, geo)?;
@@ -235,6 +236,7 @@ impl Gavno {
         self.queue_redraw_all();
     }
     pub fn apply_drag_snap(&mut self, window: &Window, pos: Point<f64, Logical>) {
+        if self.tiling_workspace(window) { return; }
         let target = self.space.outputs().find_map(|o| {
             crate::snap::zone_at(pos, self.space.output_geometry(o)?).map(|z| (o.clone(), z))
         });

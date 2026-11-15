@@ -29,6 +29,10 @@ pub struct ModeState {
     pub mode: WindowMode,
     /// Minimized windows retain their mode, geometry, and workspace ownership.
     pub minimized: bool,
+    /// Explicit floating override on a tiling workspace.
+    pub tile_floating: bool,
+    /// Original floating geometry, independent of maximize/fullscreen restores.
+    pub tile_restore: Option<Rectangle<i32, Logical>>,
     /// Floating geometry to go back to. `None` while floating, or when the
     /// window was never floating (it asked for maximize before its first map).
     pub restore: Option<Rectangle<i32, Logical>>,
@@ -111,6 +115,7 @@ impl Gavno {
     /// sends the matching configure. Snap/maximize use the gapped work area,
     /// fullscreen the whole output, floating restores the remembered geometry.
     pub fn set_window_mode(&mut self, window: &Window, mode: WindowMode, output: Option<Output>) {
+        if matches!(mode, WindowMode::Snapped(_)) && self.tiling_workspace(window) { return; }
         let Some(toplevel) = window.toplevel().cloned() else {
             return;
         };
@@ -169,6 +174,7 @@ impl Gavno {
         } else if toplevel.is_initial_configure_sent() {
             toplevel.send_pending_configure();
         }
+        self.reflow_tiling(true);
         self.queue_redraw_all();
     }
 
@@ -216,6 +222,7 @@ impl Gavno {
         for (window, mode) in fixed {
             self.set_window_mode(&window, mode, None);
         }
+        self.reflow_tiling(true);
     }
 }
 

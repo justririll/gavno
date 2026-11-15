@@ -39,6 +39,9 @@ pub enum Action {
     SdrWhite(i32),
     ToggleMaximize,
     ToggleFullscreen,
+    ToggleTiling,
+    ToggleFloating,
+    RotateSplit,
     Snap(Direction),
     FocusDirection(Direction),
     Swap(Direction),
@@ -268,6 +271,9 @@ impl Gavno {
             });
         }
         match sym {
+            keysyms::KEY_t | keysyms::KEY_T if !mods.ctrl && !mods.shift => Some(Action::ToggleTiling),
+            keysyms::KEY_space if !mods.ctrl && !mods.shift => Some(if (mods.alt && self.config.mod_key == crate::config::ModKey::Super) || (mods.logo && self.config.mod_key == crate::config::ModKey::Alt) { Action::ToggleTiling } else { Action::ToggleFloating }),
+            keysyms::KEY_i | keysyms::KEY_I if mods.shift && !mods.ctrl => Some(Action::RotateSplit),
             keysyms::KEY_h | keysyms::KEY_H if mods.shift && !mods.ctrl => Some(Action::ToggleHdr),
             keysyms::KEY_F2 if mods.shift && !mods.ctrl => Some(Action::SdrWhite(-10)),
             keysyms::KEY_F3 if mods.shift && !mods.ctrl => Some(Action::SdrWhite(10)),
@@ -283,6 +289,9 @@ impl Gavno {
 
     pub fn run_action(&mut self, action: Action) {
         match action {
+            Action::ToggleTiling => { if let Some(o) = self.active_output() { self.toggle_workspace_tiling(&o); } }
+            Action::ToggleFloating => { if let Some(w) = self.focused_window() { self.toggle_floating(&w); } }
+            Action::RotateSplit => self.rotate_tile(),
             Action::ToggleHdr => crate::backend::udev::toggle_hdr(self),
             Action::SdrWhite(delta) => crate::backend::udev::adjust_sdr_white(self, delta as f32),
             Action::Workspace(index) => { if let Some(output) = self.active_output() { self.switch_workspace(&output, index); } }
@@ -327,6 +336,7 @@ impl Gavno {
         if self.greeter.is_some() {
             self.greeter_pointer(false);
         }
+        self.refresh_splitter_cursor();
         self.queue_redraw_all();
     }
 
@@ -356,6 +366,7 @@ impl Gavno {
         );
         pointer.frame(self);
         if let Some((surface, _)) = under { self.new_constraint(&surface, &pointer); }
+        self.refresh_splitter_cursor();
         self.queue_redraw_all();
     }
 
@@ -399,6 +410,17 @@ impl Gavno {
         if self.shell_button(button, button_state == ButtonState::Pressed) { return; }
         if self.overview_button(button, button_state == ButtonState::Pressed) { return; }
         if self.desktop_transform_at(pointer.current_location()) && self.layer_hit(pointer.current_location(), &[Layer::Overlay, Layer::Top]).is_none() { return; }
+        if button_state == ButtonState::Pressed && button == BTN_LEFT && !pointer.is_grabbed() {
+            if let Some((output, splitter)) = self.splitter_at(pointer.current_location()) {
+                let start = GrabStartData { focus: None, button, location: pointer.current_location() };
+                let grab = crate::grabs::tiling_grab::SplitterGrab::new(start, output, splitter);
+                pointer.set_grab(self, grab, serial, Focus::Clear);
+                self.pointer_buttons.push(button);
+                pointer.button(self, &ButtonEvent { button, state: button_state, serial, time: event.time_msec() });
+                pointer.frame(self);
+                return;
+            }
+        }
         if button_state == ButtonState::Pressed && !pointer.is_grabbed() {
             let pos = pointer.current_location();
             // A launcher holding exclusive keyboard focus keeps it on clicks elsewhere.
@@ -489,6 +511,12 @@ impl Gavno {
         edges |= if rel.x < size.w as f64 / 2.0 { ResizeEdge::LEFT } else { ResizeEdge::RIGHT };
         edges |= if rel.y < size.h as f64 / 2.0 { ResizeEdge::TOP } else { ResizeEdge::BOTTOM };
 
+        if self.tiled(&window) {
+            if let Some(grab) = crate::grabs::tiling_grab::SplitterGrab::for_tile(self,start_data,&window,edges) {
+                self.seat.get_pointer().unwrap().set_grab(self,grab,serial,Focus::Clear);
+            }
+            return;
+        }
         let Some(toplevel) = window.toplevel().cloned() else {
             return;
         };
@@ -575,6 +603,23 @@ mod workspace_tests {
         assert!(crate::backend::udev::set_hdr(&mut h.gv, "eDP-1", true).is_err());
     }
 
+    #[test]
+    fn tiling_shortcuts_follow_configured_modifier() {
+        let mut h=crate::state::tests::Harness::new();
+        for (key,mut mods) in [
+            (crate::config::ModKey::Super,ModifiersState { logo:true, ..Default::default() }),
+            (crate::config::ModKey::Alt,ModifiersState { alt:true, ..Default::default() }),
+        ] {
+            h.gv.config.mod_key=key;
+            assert_eq!(h.gv.bind_for(Keysym::from(keysyms::KEY_t),&mods),Some(Action::ToggleTiling));
+            assert_eq!(h.gv.bind_for(Keysym::from(keysyms::KEY_space),&mods),Some(Action::ToggleFloating));
+            mods.shift=true;
+            assert_eq!(h.gv.bind_for(Keysym::from(keysyms::KEY_I),&mods),Some(Action::RotateSplit));
+            mods.shift=false;
+            if key==crate::config::ModKey::Super { mods.alt=true; } else { mods.logo=true; }
+            assert_eq!(h.gv.bind_for(Keysym::from(keysyms::KEY_space),&mods),Some(Action::ToggleTiling));
+        }
+    }
     #[test]
     fn workspace_shortcuts_follow_configured_modifier() {
         let mut h = crate::state::tests::Harness::new();

@@ -219,6 +219,7 @@ impl Gavno {
         }
     }
     pub fn snap_direction(&mut self, dir: Direction) {
+        if self.focused_window().is_some_and(|w| self.tiling_workspace(&w)) { self.move_tile(dir); return; }
         let Some(w) = self.focused_window() else {
             return;
         };
@@ -254,6 +255,10 @@ impl Gavno {
         }
     }
     pub fn resize_direction(&mut self, dir: Direction) {
+        if let Some(w) = self.focused_window().filter(|w| self.tiled(w)) {
+            let delta = if matches!(dir, Direction::Left | Direction::Up) { -40 } else { 40 };
+            self.resize_tile(&w,dir,delta,true); return;
+        }
         let Some(w) = self.focused_window() else {
             return;
         };
@@ -277,6 +282,7 @@ impl Gavno {
         self.queue_redraw_all();
     }
     pub fn swap_direction(&mut self, dir: Direction) {
+        if self.focused_window().is_some_and(|w| self.tiling_workspace(&w)) { self.move_tile(dir); return; }
         let Some(w) = self.focused_window() else {
             return;
         };

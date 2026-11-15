@@ -1,3 +1,4 @@
+pub mod tiling_grab;
 pub mod move_grab;
 pub use move_grab::MoveSurfaceGrab;
 
@@ -10,7 +11,7 @@ impl crate::Gavno {
     pub(crate) fn end_window_grab(&mut self) {
         let Some(pointer) = self.seat.get_pointer() else { return };
         let window_grab = pointer.with_grab(|_, grab| {
-            grab.is::<MoveSurfaceGrab>() || grab.is::<ResizeSurfaceGrab>()
+            grab.is::<MoveSurfaceGrab>() || grab.is::<ResizeSurfaceGrab>() || grab.is::<tiling_grab::SplitterGrab>()
         }).unwrap_or(false);
         if window_grab {
             pointer.unset_grab(

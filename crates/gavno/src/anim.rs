@@ -134,6 +134,17 @@ impl WindowAnimations {
             a.motion.cancel();
         }
     }
+    /// Hold an interactive geometry until the matching client buffer arrives.
+    /// The override has no active spring, so a late client never keeps frames ticking.
+    pub fn geometry_immediate(&mut self, window: &Window, target: Rect) {
+        if self.motion(window).is_none() {
+            self.entries.push(WindowAnimation { window: window.clone(), motion: Motion::open(Duration::ZERO) });
+        }
+        if let Some(a) = self.entries.iter_mut().find(|a| &a.window == window) {
+            a.motion.cancel();
+            a.motion.geometry = Some((target, target, Spring::new(1.0, SpringParams::SNAPPY)));
+        }
+    }
     pub fn advance(&mut self, now: Duration, space: &Space<Window>) {
         for a in &mut self.entries {
             a.motion.advance(now);
@@ -142,11 +153,13 @@ impl WindowAnimations {
             }
             if let Some(loc) = space.element_location(&a.window) {
                 // The client may choose a different buffer size from the configure.
-                let size = a
-                    .window
-                    .toplevel()
-                    .and_then(|t| t.current_state().size)
-                    .unwrap_or(a.window.geometry().size);
+                let immediate = a.motion.geometry.as_ref().is_some_and(|(from, to, _)| from == to);
+                let size = if immediate {
+                    // Interactive tiles keep their exact slot even if a client chooses another size.
+                    a.window.geometry().size
+                } else {
+                    a.window.toplevel().and_then(|t| t.current_state().size).unwrap_or(a.window.geometry().size)
+                };
                 a.motion
                     .retire_geometry(Rectangle::new(loc, size).to_f64());
             }
@@ -211,6 +224,20 @@ mod tests {
     use super::*;
     fn r(x: f64, w: f64) -> Rect {
         Rectangle::new((x, 20.0).into(), (w, 100.0).into())
+    }
+    #[test]
+    fn immediate_geometry_scales_late_buffers_without_scheduling_frames() {
+        let mut h = crate::state::tests::Harness::new();
+        let w = h.window();
+        h.gv.map_new_window(w.clone());
+        let target = r(20.0, 500.0);
+        h.gv.window_animations.geometry_immediate(&w, target);
+        assert!(!h.gv.window_animations.is_animating());
+        for now in [Duration::ZERO, Duration::from_secs(10)] {
+            h.gv.window_animations.advance(now, &h.gv.space);
+            assert_eq!(h.gv.window_animations.motion(&w).unwrap().rect(r(0.0,1.0)), target);
+            assert!(!h.gv.window_animations.is_animating());
+        }
     }
     #[test]
     fn open_close_and_idle() {

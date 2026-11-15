@@ -32,6 +32,7 @@ pub struct Config {
     pub gap: i32,
     pub dock: DockConfig,
     pub bar: BarConfig,
+    pub tiling: TilingConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -57,6 +58,14 @@ pub struct BarConfig {
 }
 impl Default for BarConfig {
     fn default() -> Self { Self { enabled: true, unknown: Default::default() } }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct TilingConfig {
+    pub default: bool,
+    #[serde(flatten)]
+    unknown: toml::Table,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -86,6 +95,7 @@ struct FileConfig {
     keyboard: Keyboard,
     dock: DockConfig,
     bar: BarConfig,
+    tiling: TilingConfig,
     #[serde(flatten)]
     unknown: toml::Table,
 }
@@ -146,7 +156,7 @@ impl Config {
         // Capture unknown fields during deserialization, so this list cannot drift from the schema.
         let mut unknown = Vec::new();
         for (prefix, extra) in
-            [("", &file.unknown), ("output.", &file.output.unknown), ("keyboard.", &file.keyboard.unknown), ("dock.", &file.dock.unknown), ("bar.", &file.bar.unknown)]
+            [("", &file.unknown), ("output.", &file.output.unknown), ("keyboard.", &file.keyboard.unknown), ("dock.", &file.dock.unknown), ("bar.", &file.bar.unknown), ("tiling.", &file.tiling.unknown)]
         {
             unknown.extend(extra.keys().map(|key| format!("{prefix}{key}")));
         }
@@ -208,6 +218,7 @@ impl Config {
                 gap: gap.clamp(0, 64) as i32,
                 dock: file.dock,
                 bar: file.bar,
+                tiling: file.tiling,
             },
             warnings,
         )
@@ -262,6 +273,7 @@ options = "caps:escape"
             gap: 12,
             dock: Default::default(),
             bar: Default::default(),
+            tiling: Default::default(),
         };
         assert_eq!(build(false, None, &[]), (expected.clone(), vec![]));
         let example = include_str!("../../../dist/config.toml");
@@ -293,6 +305,7 @@ options = "caps:escape"
             gap: 20,
             dock: Default::default(),
             bar: Default::default(),
+            tiling: Default::default(),
         };
         assert_eq!(build(false, Some(FULL), &[]), (expected, vec![]));
         let mut partial = build(false, None, &[]).0;
@@ -393,6 +406,14 @@ options = "caps:escape"
         assert!(warnings.is_empty()); assert_eq!(c.dock.pinned,["foot","org.mozilla.firefox"]);
         assert!(!c.dock.magnify); assert!(c.dock.autohide); assert_eq!(c.dock.icon_theme,"Papirus"); assert!(!c.bar.enabled);
     }
+    #[test]
+    fn tiling_defaults_and_unknown_keys() {
+        let (c,warnings) = build(false, Some("[tiling]\ndefault = true"), &[]);
+        assert!(c.tiling.default); assert!(warnings.is_empty());
+        let (c,warnings) = build(false, Some("[tiling]\nunknown = true"), &[]);
+        assert!(!c.tiling.default); assert_eq!(warnings,["unknown config keys ignored: tiling.unknown"]);
+    }
+
     #[test]
     fn hdr_output_settings() {
         let (c, warnings) = build(false, Some("[output]\nmode = '2880x1620@120'\nhdr = true\nsdr_white_nits = 250"), &[]);

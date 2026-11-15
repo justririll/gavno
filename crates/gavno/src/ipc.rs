@@ -210,7 +210,7 @@ fn dispatch(gv: &mut Gavno, method: &str, params: &Value) -> Result<Value, Strin
         return Ok(json!({"output": output.name(), "workspace": o.list.active, "count": o.list.items.len(),
             "ids": o.list.items.iter().map(|w| w.id).collect::<Vec<_>>()}));
     }
-    if !matches!(method, "focus" | "close" | "move" | "raise" | "move_to_workspace") {
+    if !matches!(method, "focus" | "close" | "move" | "raise" | "move_to_workspace" | "togglefloating") {
         return Err(format!("unknown method: {method}"));
     }
     let id = params
@@ -242,6 +242,7 @@ fn dispatch(gv: &mut Gavno, method: &str, params: &Value) -> Result<Value, Strin
         .cloned()
         .ok_or_else(|| format!("unknown window id: {id}"))?;
     match method {
+        "togglefloating" => gv.toggle_floating(&window),
         "move_to_workspace" => {
             if !gv.move_to_workspace(&window, workspace_target.unwrap_or(0)) { return Err("workspace index out of range".into()); }
         }

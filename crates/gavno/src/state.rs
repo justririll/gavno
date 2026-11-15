@@ -91,6 +91,7 @@ pub struct Gavno {
 
 impl Gavno {
     pub fn new(event_loop: &mut EventLoop<'static, Self>, display: Display<Self>, config: Config) -> Self {
+        let tiling_default = config.tiling.default;
         let dh = display.handle();
         let clock = Clock::new();
 
@@ -141,7 +142,7 @@ impl Gavno {
             window_decor: Default::default(),
             unmapped: Vec::new(),
             mru: Vec::new(),
-            workspaces: Default::default(),
+            workspaces: crate::workspace::Workspaces { default_tiling: tiling_default, ..Default::default() },
             overview: Default::default(),
             dock: Default::default(),
             topbar: Default::default(),
@@ -214,6 +215,7 @@ impl Gavno {
         self.space.refresh();
         self.refresh_workspaces();
         self.refresh_desktop_pointer();
+        self.refresh_splitter_cursor();
         self.prune_navigation();
         let focus = self.seat.get_keyboard().and_then(|k| k.current_focus());
         self.update_shortcut_inhibitors(focus.as_ref());
@@ -257,6 +259,7 @@ impl Gavno {
             return Some((hit.surface, hit.surface_loc));
         }
         if self.desktop_transform_at(pos) { return None; }
+        if self.splitter_at(pos).is_some() { return None; }
         if let Some(found) = self.space.element_under(pos).and_then(|(window, location)| {
             window
                 .surface_under(pos - location.to_f64(), WindowSurfaceType::ALL)
@@ -312,6 +315,7 @@ impl Gavno {
             self.workspace_focus(window);
             crate::handlers::xdg_activation::clear_urgency(window);
             self.space.raise_element(window, true);
+            self.raise_tile_overlays();
             crate::snap::touch_mru(&mut self.mru, window);
         } else {
             for w in self.space.elements() {
@@ -373,6 +377,7 @@ impl Gavno {
                 owner.append_empty();
             }
         }
+        self.reflow_tiling(true);
         self.window_animations.open(&window, self.start_time.elapsed());
         if !urgent { self.focus_window(Some(&window)); }
         self.dispatch_modules(|m, gv| {

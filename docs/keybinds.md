@@ -154,3 +154,22 @@ switching goes to the login screen.
   HDR is enabled (80–400 nits, default 203).
 
 See [configuration](config.md) for mode selection, HDR requirements, and IPC.
+
+## Per-workspace tiling
+
+- Mod+T or Mod+Alt+Space: toggle floating/tiling for the current workspace.
+  With Alt as Mod in nested mode, use Alt+Super+Space for the second chord.
+- Mod+Space: toggle the focused window's floating override in a tiling workspace.
+- Mod+Shift+I: rotate the focused split; a lone tile remembers the flipped axis
+  for its next insertion.
+- Mod+arrows: focus a neighbouring window.
+- Mod+Ctrl+arrows: swap with the neighbouring tile; snapping is disabled in tiling.
+- Mod+Shift+arrows: move the splitter on that side by 40 logical pixels.
+- Drag a gap: resize only that divider. Mod+RMB moves the nearest horizontal
+  and vertical dividers. Ratios stop before any adjacent tile falls below 120 px.
+- Drag a tiled title bar onto another tile: swap their positions. Overview
+  thumbnail drops still move windows between workspaces.
+
+Maximized, fullscreen, and explicitly floating windows stay above tiles.
+Minimized windows leave the tree and rejoin when restored. New workspaces float
+unless `[tiling] default = true` is set. IPC `togglefloating` accepts a window `id`.

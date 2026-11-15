@@ -70,10 +70,11 @@ impl PointerGrab<Gavno> for MoveSurfaceGrab {
                 data.window_animations.cancel(&self.window);
             }
         }
+        if data.tiled(&self.window) { data.workspaces.moving_tile = Some(self.window.clone()); }
         let new_location = self.initial_window_location.to_f64() + delta;
         data.space
             .map_element(self.window.clone(), new_location.to_i32_round(), true);
-        data.update_snap_preview(&self.window, event.location);
+        if !data.tiling_workspace(&self.window) { data.update_snap_preview(&self.window, event.location); }
         data.queue_redraw_all();
     }
 
@@ -97,7 +98,8 @@ impl PointerGrab<Gavno> for MoveSurfaceGrab {
 
         if handle.current_pressed().is_empty() {
             if self.moved && self.window.alive() {
-                data.apply_drag_snap(&self.window, handle.current_location());
+                if data.tiled(&self.window) { data.drop_tile(&self.window,handle.current_location()); }
+                else if !data.tiling_workspace(&self.window) { data.apply_drag_snap(&self.window, handle.current_location()); }
             }
             // No more buttons are pressed, release the grab.
             handle.unset_grab(self, data, event.serial, event.time, true);
@@ -194,6 +196,8 @@ impl PointerGrab<Gavno> for MoveSurfaceGrab {
     }
 
     fn unset(&mut self, data: &mut Gavno) {
+        data.workspaces.moving_tile = None;
+        if data.tiled(&self.window) { data.drop_tile(&self.window,(-1e9,-1e9).into()); }
         data.overlay.hide_preview(data.start_time.elapsed());
         data.queue_redraw_all();
     }

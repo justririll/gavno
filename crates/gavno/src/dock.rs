@@ -937,6 +937,7 @@ impl Gavno {
         with_mode_state(window, |s| s.minimized = true);
         self.window_animations.cancel(window);
         self.space.unmap_elem(window);
+        self.reflow_tiling(true);
         self.focus_topmost();
         self.clear_desktop_pointer();
         self.queue_redraw_all();
@@ -982,6 +983,7 @@ impl Gavno {
         with_mode_state(window, |s| s.minimized = false);
         self.space.map_element(window.clone(), location, false);
         self.window_animations.cancel(window);
+        self.reflow_tiling(true);
         self.queue_redraw_all();
     }
 }

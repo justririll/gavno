@@ -59,7 +59,7 @@ Configuration: [docs/config.md](docs/config.md)
 
 - Dock and top bar.
 - 4-finger window gestures.
-- Dwindle tiling.
+- Remaining touchpad gestures and keyboard resize mode.
 - Screencopy.
 
 ## Window management IPC
