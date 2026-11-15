@@ -358,6 +358,7 @@ fn device_removed(ds: &mut Ds, node: DrmNode) {
     let gpu = data.gpu.take().unwrap();
     let global = data.dmabuf_global.take();
     for (_, surface) in gpu.surfaces {
+        crate::handlers::layer_shell::close_layers(&surface.output);
         ds.space.unmap_output(&surface.output);
         ds.display_handle.remove_global::<Ds>(surface.global);
     }
@@ -467,6 +468,7 @@ fn connector_disconnected(ds: &mut Ds, connector: connector::Info, crtc: crtc::H
         ds.loop_handle.remove(token);
     }
     info!(output = surface.output.name(), ?connector, "output disconnected");
+    crate::handlers::layer_shell::close_layers(&surface.output);
     ds.space.unmap_output(&surface.output);
     ds.display_handle.remove_global::<Ds>(surface.global);
     ds.queue_redraw_all();

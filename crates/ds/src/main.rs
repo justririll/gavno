@@ -13,6 +13,7 @@ mod input;
 mod module;
 mod render;
 mod state;
+mod window_mode;
 
 use smithay::reexports::{calloop::EventLoop, wayland_server::Display};
 

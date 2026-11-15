@@ -82,7 +82,7 @@ pub fn init(event_loop: &mut EventLoop<'static, Ds>, ds: &mut Ds) -> Result<(), 
                     None,
                 );
             }
-            ds.queue_redraw_all();
+            ds.arrange_layers_all();
         }
         WinitEvent::Input(event) => ds.process_input_event(event),
         WinitEvent::Redraw => render(ds),

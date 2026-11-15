@@ -8,10 +8,11 @@ use smithay::{
     reexports::{
         wayland_protocols::xdg::shell::server::xdg_toplevel,
         wayland_server::{
-            protocol::{wl_seat, wl_surface::WlSurface},
+            protocol::{wl_output, wl_seat, wl_surface::WlSurface},
             Resource,
         },
     },
+    output::Output,
     utils::{Rectangle, Serial},
     wayland::{
         compositor::with_states,
@@ -24,6 +25,7 @@ use smithay::{
 
 use crate::{
     grabs::{MoveSurfaceGrab, ResizeSurfaceGrab},
+    window_mode::WindowMode,
     Ds,
 };
 
@@ -80,6 +82,9 @@ impl XdgShellHandler for Ds {
             let Some(window) = self.window_for_surface(wl_surface) else {
                 return;
             };
+            if crate::window_mode::mode_state(&window).mode != WindowMode::Floating {
+                return;
+            }
             let Some(initial_window_location) = self.space.element_location(&window) else {
                 return;
             };
@@ -111,6 +116,9 @@ impl XdgShellHandler for Ds {
             let Some(window) = self.window_for_surface(wl_surface) else {
                 return;
             };
+            if crate::window_mode::mode_state(&window).mode != WindowMode::Floating {
+                return;
+            }
             let Some(initial_window_location) = self.space.element_location(&window) else {
                 return;
             };
@@ -131,6 +139,23 @@ impl XdgShellHandler for Ds {
 
             pointer.set_grab(self, grab, serial, Focus::Clear);
         }
+    }
+
+    fn maximize_request(&mut self, surface: ToplevelSurface) {
+        self.request_window_mode(&surface, WindowMode::Maximized, None);
+    }
+
+    fn unmaximize_request(&mut self, surface: ToplevelSurface) {
+        self.request_window_mode(&surface, WindowMode::Floating, None);
+    }
+
+    fn fullscreen_request(&mut self, surface: ToplevelSurface, wl_output: Option<wl_output::WlOutput>) {
+        let output = wl_output.as_ref().and_then(Output::from_resource);
+        self.request_window_mode(&surface, WindowMode::Fullscreen, output);
+    }
+
+    fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
+        self.request_window_mode(&surface, WindowMode::Floating, None);
     }
 
     fn grab(&mut self, _surface: PopupSurface, _seat: wl_seat::WlSeat, _serial: Serial) {
@@ -208,6 +233,26 @@ pub fn handle_commit(ds: &mut Ds, surface: &WlSurface) {
 }
 
 impl Ds {
+    /// A client asked for a mode change. Windows that are not mapped yet are
+    /// tracked too, so their first configure and placement honour it.
+    fn request_window_mode(&mut self, surface: &ToplevelSurface, mode: WindowMode, output: Option<Output>) {
+        let window = self
+            .window_for_surface(surface.wl_surface())
+            .or_else(|| {
+                self.unmapped
+                    .iter()
+                    .find(|w| w.toplevel().is_some_and(|t| t.wl_surface() == surface.wl_surface()))
+                    .cloned()
+            });
+        match window {
+            Some(window) => self.set_window_mode(&window, mode, output),
+            // Unknown surface: the protocol still wants a configure back.
+            None => {
+                surface.send_pending_configure();
+            }
+        }
+    }
+
     fn unconstrain_popup(&self, popup: &PopupSurface) {
         let Ok(root) = find_popup_root_surface(&PopupKind::Xdg(popup.clone())) else {
             return;

@@ -9,12 +9,14 @@ use smithay::{
     },
     reexports::wayland_protocols::xdg::shell::server::xdg_toplevel,
     utils::{Logical, Point, Rectangle, SERIAL_COUNTER},
+    wayland::shell::wlr_layer::Layer,
 };
 
 use crate::{
     grabs::{resize_grab::ResizeEdge, MoveSurfaceGrab, ResizeSurfaceGrab},
     module::Handled,
     state::spawn_shell,
+    window_mode::{mode_state, WindowMode},
     Ds,
 };
 
@@ -29,6 +31,8 @@ pub enum Action {
     CloseWindow,
     /// Switch to virtual terminal N (Ctrl+Alt+F<N>), TTY backend only.
     SwitchVt(i32),
+    ToggleMaximize,
+    ToggleFullscreen,
 }
 
 impl Ds {
@@ -114,6 +118,8 @@ impl Ds {
             keysyms::KEY_Return | keysyms::KEY_KP_Enter => Some(Action::Spawn(self.config.terminal.clone())),
             keysyms::KEY_q if !mods.shift => Some(Action::CloseWindow),
             keysyms::KEY_d => self.config.launcher.clone().map(Action::Spawn),
+            keysyms::KEY_f | keysyms::KEY_F if mods.ctrl && !mods.shift => Some(Action::ToggleMaximize),
+            keysyms::KEY_f | keysyms::KEY_F if mods.shift && !mods.ctrl => Some(Action::ToggleFullscreen),
             _ => None,
         }
     }
@@ -123,6 +129,8 @@ impl Ds {
             Action::Quit => self.quit(),
             Action::Spawn(cmd) => spawn_shell(&cmd),
             Action::CloseWindow => self.close_focused(),
+            Action::ToggleMaximize => self.toggle_window_mode(WindowMode::Maximized),
+            Action::ToggleFullscreen => self.toggle_window_mode(WindowMode::Fullscreen),
             Action::SwitchVt(vt) => crate::backend::switch_vt(self, vt),
         }
     }
@@ -190,44 +198,59 @@ impl Ds {
 
         if button_state == ButtonState::Pressed && !pointer.is_grabbed() {
             let pos = pointer.current_location();
-            let hit = self.space.element_under(pos).map(|(w, l)| (w.clone(), l));
-            match hit {
-                Some((window, loc)) => {
-                    self.focus_window(Some(&window));
-                    let mod_held = self.config.mod_key.is_held(&keyboard.modifier_state());
-                    if mod_held && (button == BTN_LEFT || button == BTN_RIGHT) {
-                        // Mod+drag: the press goes to the grab, not to the client.
-                        let start_data = GrabStartData {
-                            focus: None,
-                            button,
-                            location: pos,
-                        };
-                        if button == BTN_LEFT {
-                            let grab = MoveSurfaceGrab {
-                                start_data,
-                                window,
-                                initial_window_location: loc,
-                            };
-                            pointer.set_grab(self, grab, serial, Focus::Clear);
-                        } else {
-                            self.start_mod_resize(window, loc, pos, start_data, serial);
+            // A launcher holding exclusive keyboard focus keeps it on clicks elsewhere.
+            let keep_focus = self.exclusive_layer_focused();
+            if let Some(hit) = self.layer_hit(pos, &[Layer::Overlay, Layer::Top]) {
+                self.focus_layer(&hit.layer);
+            } else {
+                let hit = self.space.element_under(pos).map(|(w, l)| (w.clone(), l));
+                match hit {
+                    Some((window, loc)) => {
+                        if !keep_focus {
+                            self.focus_window(Some(&window));
                         }
-                        // Still tell the seat the button is down so the grab
-                        // sees the release.
-                        pointer.button(
-                            self,
-                            &ButtonEvent {
+                        let mod_held = self.config.mod_key.is_held(&keyboard.modifier_state());
+                        let floating = mode_state(&window).mode == WindowMode::Floating;
+                        if mod_held && floating && (button == BTN_LEFT || button == BTN_RIGHT) {
+                            // Mod+drag: the press goes to the grab, not to the client.
+                            let start_data = GrabStartData {
+                                focus: None,
                                 button,
-                                state: button_state,
-                                serial,
-                                time: event.time_msec(),
-                            },
-                        );
-                        pointer.frame(self);
-                        return;
+                                location: pos,
+                            };
+                            if button == BTN_LEFT {
+                                let grab = MoveSurfaceGrab {
+                                    start_data,
+                                    window,
+                                    initial_window_location: loc,
+                                };
+                                pointer.set_grab(self, grab, serial, Focus::Clear);
+                            } else {
+                                self.start_mod_resize(window, loc, pos, start_data, serial);
+                            }
+                            // Still tell the seat the button is down so the grab
+                            // sees the release.
+                            pointer.button(
+                                self,
+                                &ButtonEvent {
+                                    button,
+                                    state: button_state,
+                                    serial,
+                                    time: event.time_msec(),
+                                },
+                            );
+                            pointer.frame(self);
+                            return;
+                        }
+                    }
+                    None => {
+                        if let Some(hit) = self.layer_hit(pos, &[Layer::Bottom, Layer::Background]) {
+                            self.focus_layer(&hit.layer);
+                        } else if !keep_focus {
+                            self.focus_window(None);
+                        }
                     }
                 }
-                None => self.focus_window(None),
             }
         }
 

@@ -20,7 +20,7 @@ use smithay::{
         output::OutputManagerState,
         presentation::PresentationState,
         selection::{data_device::DataDeviceState, primary_selection::PrimarySelectionState},
-        shell::xdg::XdgShellState,
+        shell::{wlr_layer::WlrLayerShellState, xdg::XdgShellState},
         shm::ShmState,
         socket::ListeningSocketSource,
         viewporter::ViewporterState,
@@ -46,6 +46,7 @@ pub struct Ds {
 
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
+    pub layer_shell_state: WlrLayerShellState,
     pub shm_state: ShmState,
     pub dmabuf_state: DmabufState,
     pub output_manager_state: OutputManagerState,
@@ -75,6 +76,7 @@ impl Ds {
 
         let compositor_state = CompositorState::new::<Self>(&dh);
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
+        let layer_shell_state = WlrLayerShellState::new::<Self>(&dh);
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
         let dmabuf_state = DmabufState::new();
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&dh);
@@ -114,6 +116,7 @@ impl Ds {
             popups: PopupManager::default(),
             compositor_state,
             xdg_shell_state,
+            layer_shell_state,
             shm_state,
             dmabuf_state,
             output_manager_state,
@@ -180,11 +183,19 @@ impl Ds {
     }
 
     pub fn surface_under(&self, pos: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
-        self.space.element_under(pos).and_then(|(window, location)| {
+        use smithay::wayland::shell::wlr_layer::Layer;
+        if let Some(hit) = self.layer_hit(pos, &[Layer::Overlay, Layer::Top]) {
+            return Some((hit.surface, hit.surface_loc));
+        }
+        if let Some(found) = self.space.element_under(pos).and_then(|(window, location)| {
             window
                 .surface_under(pos - location.to_f64(), WindowSurfaceType::ALL)
                 .map(|(s, p)| (s, (p + location).to_f64()))
-        })
+        }) {
+            return Some(found);
+        }
+        self.layer_hit(pos, &[Layer::Bottom, Layer::Background])
+            .map(|hit| (hit.surface, hit.surface_loc))
     }
 
     pub fn window_for_surface(&self, surface: &WlSurface) -> Option<Window> {
@@ -249,14 +260,23 @@ impl Ds {
     /// active output, clamped to it, then focused.
     pub fn map_new_window(&mut self, window: Window) {
         let size = window.geometry().size;
-        let loc = self
-            .active_output()
-            .and_then(|o| self.space.output_geometry(&o))
-            .map(|area| {
-                let gap = self.config.gap;
-                let x = area.loc.x + ((area.size.w - size.w) / 2).max(gap);
-                let y = area.loc.y + ((area.size.h - size.h) / 2).max(gap);
-                Point::from((x, y))
+        let output = self.active_output();
+        let mode = crate::window_mode::mode_state(&window).mode;
+        let loc = output
+            .as_ref()
+            .map(|o| match mode {
+                // Asked for maximize/fullscreen before its first buffer.
+                crate::window_mode::WindowMode::Maximized => self.work_area(o).loc,
+                crate::window_mode::WindowMode::Fullscreen => {
+                    self.space.output_geometry(o).unwrap_or_default().loc
+                }
+                crate::window_mode::WindowMode::Floating => {
+                    let area = self.work_area(o);
+                    let gap = self.config.gap;
+                    let x = area.loc.x + ((area.size.w - size.w) / 2).max(gap);
+                    let y = area.loc.y + ((area.size.h - size.h) / 2).max(gap);
+                    Point::from((x, y))
+                }
             })
             .unwrap_or_default();
         self.space.map_element(window.clone(), loc, true);
@@ -269,6 +289,7 @@ impl Ds {
 
     /// Called by backends after a new output was mapped.
     pub fn output_added_hook(&mut self) {
+        self.arrange_layers_all();
         if let Some(cmd) = self.startup_cmd.take() {
             spawn_shell(&cmd);
         }
