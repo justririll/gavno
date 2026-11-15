@@ -22,7 +22,7 @@ pub struct ConnectorColor {
     sdr_bpc: u64,
     bt2020: u64,
     pub caps: Capabilities,
-    enabled: bool,
+    applied: AppliedColor,
 }
 
 impl ConnectorColor {
@@ -91,8 +91,17 @@ impl ConnectorColor {
             sdr_bpc,
             bt2020,
             caps,
-            enabled: false,
+            applied: AppliedColor::default(),
         })
+    }
+
+    /// Another DRM owner may have changed these properties while our VT was inactive.
+    pub fn invalidate(&mut self) {
+        self.applied = AppliedColor::default();
+    }
+
+    pub fn is_current(&self, hdr: bool) -> bool {
+        self.applied.0 == Some(hdr)
     }
 
     pub fn enable(&mut self) -> io::Result<()> {
@@ -101,19 +110,15 @@ impl ConnectorColor {
         req.add_property(self.connector, self.colorspace, Value::Unknown(self.bt2020));
         req.add_property(self.connector, self.bpc, Value::UnsignedRange(10));
         req.add_property(self.connector, self.metadata, blob);
-        let result = self.fd.atomic_commit(AtomicCommitFlags::ALLOW_MODESET, req);
+        let result = self.applied.reconcile(true, || {
+            self.fd.atomic_commit(AtomicCommitFlags::ALLOW_MODESET, req)
+        });
         // The committed property holds a kernel reference to the blob.
         let _ = self.fd.destroy_property_blob(u64::from(blob));
-        if result.is_ok() {
-            self.enabled = true;
-        }
         result
     }
 
     pub fn restore(&mut self) -> io::Result<()> {
-        if !self.enabled {
-            return Ok(());
-        }
         let mut req = AtomicModeReq::new();
         req.add_property(
             self.connector,
@@ -122,10 +127,9 @@ impl ConnectorColor {
         );
         req.add_property(self.connector, self.bpc, Value::UnsignedRange(self.sdr_bpc));
         req.add_property(self.connector, self.metadata, Value::Blob(0));
-        self.fd
-            .atomic_commit(AtomicCommitFlags::ALLOW_MODESET, req)?;
-        self.enabled = false;
-        Ok(())
+        self.applied.reconcile(false, || {
+            self.fd.atomic_commit(AtomicCommitFlags::ALLOW_MODESET, req)
+        })
     }
 }
 
@@ -134,5 +138,53 @@ impl Drop for ConnectorColor {
         if let Err(error) = self.restore() {
             tracing::warn!(%error, "could not restore SDR connector properties");
         }
+    }
+}
+
+/// Only commits made during this acquisition establish known connector state.
+#[derive(Default)]
+struct AppliedColor(Option<bool>);
+impl AppliedColor {
+    fn reconcile(&mut self, hdr: bool, commit: impl FnOnce() -> io::Result<()>) -> io::Result<()> {
+        if self.0 != Some(hdr) {
+            commit()?;
+            self.0 = Some(hdr);
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sdr_is_committed_on_acquisition_and_reactivation() {
+        // Model a previous DRM owner leaving PQ selected at startup.
+        let mut connector_hdr = true;
+        let mut applied = AppliedColor::default();
+        applied.reconcile(false, || { connector_hdr = false; Ok(()) }).unwrap();
+        assert!(!connector_hdr);
+        applied.reconcile(false, || panic!("known SDR needs no new commit")).unwrap();
+        // Another owner selects PQ while our VT is inactive.
+        connector_hdr = true;
+        applied = AppliedColor::default();
+        applied.reconcile(false, || { connector_hdr = false; Ok(()) }).unwrap();
+        assert!(!connector_hdr);
+        assert_eq!(applied.0, Some(false));
+    }
+
+    #[test]
+    fn failed_reconciliation_remains_unknown_and_hdr_is_reestablished() {
+        let mut applied = AppliedColor::default();
+        assert!(applied.reconcile(false, || Err(io::Error::other("KMS rejected"))).is_err());
+        assert_eq!(applied.0, None);
+        applied.reconcile(false, || Ok(())).unwrap();
+        applied.reconcile(true, || Ok(())).unwrap();
+        applied = AppliedColor::default();
+        let mut committed = false;
+        applied.reconcile(true, || { committed = true; Ok(()) }).unwrap();
+        assert!(committed);
+        assert_eq!(applied.0, Some(true));
     }
 }

@@ -367,6 +367,11 @@ impl Gavno {
         let button_state = event.state();
 
         if self.protocols.locks.locked {
+            match button_state {
+                ButtonState::Pressed if !self.pointer_buttons.contains(&button) => self.pointer_buttons.push(button),
+                ButtonState::Released => self.pointer_buttons.retain(|b| *b != button),
+                _ => {}
+            }
             self.refresh_lock();
             let under = self.lock_surface_under(pointer.current_location());
             pointer.motion(self, under, &MotionEvent { location: pointer.current_location(), serial, time: event.time_msec() });
@@ -383,6 +388,14 @@ impl Gavno {
         }
 
         self.gestures.super_tap.cancel();
+        // Balance presses already delivered to Smithay before desktop UI can
+        // consume their releases. Shell-only presses never enter this list.
+        if button_state == ButtonState::Released && self.pointer_buttons.contains(&button) {
+            self.pointer_buttons.retain(|b| *b != button);
+            pointer.button(self, &ButtonEvent { button, state: button_state, serial, time: event.time_msec() });
+            pointer.frame(self);
+            return;
+        }
         if self.shell_button(button, button_state == ButtonState::Pressed) { return; }
         if self.overview_button(button, button_state == ButtonState::Pressed) { return; }
         if self.desktop_transform_at(pointer.current_location()) && self.layer_hit(pointer.current_location(), &[Layer::Overlay, Layer::Top]).is_none() { return; }
@@ -417,6 +430,7 @@ impl Gavno {
                             } else {
                                 self.start_mod_resize(window, loc, pos, start_data, serial);
                             }
+                            self.pointer_buttons.push(button);
                             // Still tell the seat the button is down so the grab
                             // sees the release.
                             pointer.button(
@@ -444,6 +458,9 @@ impl Gavno {
         }
 
         self.record_activation_serial(pointer.current_focus(), serial);
+        if button_state == ButtonState::Pressed && !self.pointer_buttons.contains(&button) {
+            self.pointer_buttons.push(button);
+        }
         pointer.button(
             self,
             &ButtonEvent {
@@ -485,6 +502,7 @@ impl Gavno {
     }
 
     fn on_pointer_axis<I: InputBackend>(&mut self, event: I::PointerAxisEvent) {
+        self.gestures.super_tap.cancel();
         let source = event.source();
         let horizontal = event
             .amount(Axis::Horizontal)
@@ -580,3 +598,7 @@ mod workspace_tests {
         assert_eq!(h.gv.bind_for(Keysym::from(keysyms::KEY_F23), &copilot), Some(Action::ToggleOverview));
     }
 }
+
+#[cfg(test)]
+#[path = "input_review_tests.rs"]
+mod review_tests;

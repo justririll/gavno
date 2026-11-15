@@ -78,6 +78,8 @@ pub struct Gavno {
     /// Keys whose press was a compositor bind; their release is not forwarded.
     pub suppressed_keys: Vec<u32>,
     pub desktop_keys: Vec<u32>,
+    /// Buttons whose presses reached Smithay, including window manipulation grabs.
+    pub(crate) pointer_buttons: Vec<u32>,
 
     pub backend: Backend,
     pub modules: Vec<Box<dyn Module>>,
@@ -164,6 +166,7 @@ impl Gavno {
             cursor: crate::render::CursorCache::new(),
             suppressed_keys: Vec::new(),
             desktop_keys: Vec::new(),
+            pointer_buttons: Vec::new(),
             backend: Backend::None,
             modules: Vec::new(),
             startup_cmd: None,

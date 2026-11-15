@@ -203,12 +203,16 @@ impl Gavno {
     /// Re-applies the size of maximized/fullscreen windows after the work
     /// area or an output changed (a panel appeared, the output was resized).
     pub fn refit_fixed_windows(&mut self) {
-        let fixed: Vec<(Window, WindowMode)> = self
-            .space
-            .elements()
-            .map(|w| (w.clone(), mode_state(w).mode))
-            .filter(|(_, m)| *m != WindowMode::Floating)
-            .collect();
+        let mut windows: Vec<_> = self.space.elements().cloned().collect();
+        for owned in self.workspaces.all() {
+            if !windows.contains(&owned.window) {
+                windows.push(owned.window.clone());
+            }
+        }
+        let fixed = windows.into_iter().filter_map(|window| {
+            let mode = mode_state(&window).mode;
+            (mode != WindowMode::Floating).then_some((window, mode))
+        });
         for (window, mode) in fixed {
             self.set_window_mode(&window, mode, None);
         }
@@ -266,6 +270,53 @@ mod tests {
         Rectangle::new((x, y).into(), (w, h).into())
     }
 
+    #[test]
+    fn hidden_and_minimized_fixed_windows_refit_without_becoming_visible() {
+        let mut h = crate::state::tests::Harness::new();
+        let output = Output::new("test".into(), smithay::output::PhysicalProperties {
+            size: (0, 0).into(), subpixel: smithay::output::Subpixel::Unknown,
+            make: "test".into(), model: "test".into(),
+        });
+        output.change_current_state(Some(smithay::output::Mode {
+            size: (1600, 900).into(), refresh: 60000,
+        }), None, None, None);
+        h.gv.space.map_output(&output, (0, 0));
+        let mut windows = Vec::new();
+        for mode in [WindowMode::Maximized, WindowMode::Fullscreen, WindowMode::Snapped(Zone::Left)] {
+            let window = h.window();
+            h.gv.map_new_window(window.clone());
+            h.gv.set_window_mode(&window, mode, Some(output.clone()));
+            let restore = mode_state(&window).restore;
+            windows.push((window, mode, restore));
+        }
+        h.gv.minimize_window(&windows[1].0);
+        assert!(h.gv.switch_workspace(&output, 1));
+        output.change_current_state(Some(smithay::output::Mode {
+            size: (1920, 1080).into(), refresh: 60000,
+        }), None, None, Some((100, 50).into()));
+        h.gv.space.map_output(&output, (100, 50));
+        // Change shell reservations as well as output size while all windows are hidden.
+        h.gv.config.bar.enabled = false;
+        h.gv.config.dock.enabled = false;
+        h.gv.arrange_layers_all();
+        for (window, mode, restore) in &windows {
+            assert!(h.gv.space.element_location(window).is_none());
+            let expected = match mode {
+                WindowMode::Fullscreen => h.gv.space.output_geometry(&output).unwrap(),
+                WindowMode::Maximized => Zone::Maximized.rect(h.gv.work_area(&output), h.gv.config.gap),
+                WindowMode::Snapped(zone) => zone.rect(h.gv.work_area(&output), h.gv.config.gap),
+                _ => unreachable!(),
+            };
+            assert_eq!(h.gv.workspaces.location(window), Some(expected.loc));
+            assert_eq!(window.toplevel().unwrap().with_pending_state(|s| s.size), Some(expected.size));
+            assert_eq!(mode_state(window).restore, *restore);
+        }
+        assert!(h.gv.switch_workspace(&output, 0));
+        assert!(h.gv.space.element_location(&windows[0].0).is_some());
+        assert!(h.gv.space.element_location(&windows[1].0).is_none());
+        h.gv.focus_window(Some(&windows[1].0));
+        assert_eq!(h.gv.space.element_location(&windows[1].0), Some((100, 50).into()));
+    }
     #[test]
     fn maximize_then_restore() {
         let mut s = ModeState::default();
