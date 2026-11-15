@@ -1,0 +1,1542 @@
+<title>ds Compositor</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a laptop lid holding the live 1280x800 logical desktop (scaled to fit), a tuning rail beside it.
+   Identity: dusk wallpaper (indigo, violet, apricot glow), slate glass, one apricot accent for focus and snap. */
+:root{
+  --bg:#f2f1f6; --surface:#ffffff; --surface-2:#ebeaf2; --fg:#1a1b26; --muted:#5c6177; --line:#dddce7;
+  --accent:#b4531c; --accent-soft:rgba(180,83,28,.16); --accent-line:rgba(180,83,28,.55); --accent-ink:#ffffff;
+  --bezel:#17181f; --bezel-fg:#8b8fa3;
+  --win-bg:#fbfbfe; --win-head:#f0eff6; --win-fg:#1d1f2b; --win-muted:#6a6f84; --win-line:rgba(25,20,50,.13); --win-hover:rgba(25,20,50,.07);
+  --glass:rgba(255,255,255,.64); --glass-solid:#f5f4fa; --glass-line:rgba(255,255,255,.75); --glass-fg:#1d1f2b; --glass-muted:#5d6278;
+  --shadow:rgba(45,30,80,.32); --ov-dim:rgba(236,232,246,.28);
+  --wall-1:#e3dcf2; --wall-2:rgba(255,160,104,.66); --wall-3:rgba(136,114,230,.5); --wall-4:rgba(255,122,146,.38); --wall-5:#f8ece2;
+  --term-bg:#13141d; --term-head:#1a1c27; --term-fg:#d9dbe7; --term-dim:#7d8299; --term-ok:#8fd19e; --term-acc:#f2a46a;
+  --syn-kw:#a3489b; --syn-ty:#1f6fa8; --syn-num:#b4531c; --syn-cm:#8a8ea3; --syn-fn:#2d7d4f;
+  --ic-term:#262838; --ic-files:#3d7be0; --ic-editor:#7b5ce0; --ic-notes:#e0a23d; --ic-apps:#4e5873; --ic-trash:#8a8fa3; --ic-fg:#ffffff;
+  --font-ui:"Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono:"Geist Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0d0f17; --surface:#151824; --surface-2:#1c2030; --fg:#e7e8f1; --muted:#949ab0; --line:#272c3e;
+    --accent:#f2a46a; --accent-soft:rgba(242,164,106,.17); --accent-line:rgba(242,164,106,.6); --accent-ink:#1b1209;
+    --bezel:#06070b; --bezel-fg:#6f7489;
+    --win-bg:#1b1e2b; --win-head:#222636; --win-fg:#e4e6f0; --win-muted:#8d93aa; --win-line:rgba(255,255,255,.085); --win-hover:rgba(255,255,255,.07);
+    --glass:rgba(20,22,34,.56); --glass-solid:#1a1d2a; --glass-line:rgba(255,255,255,.09); --glass-fg:#e7e8f1; --glass-muted:#9aa0b6;
+    --shadow:rgba(0,0,0,.62); --ov-dim:rgba(8,9,16,.36);
+    --wall-1:#1d1e38; --wall-2:rgba(240,138,88,.56); --wall-3:rgba(116,86,206,.52); --wall-4:rgba(226,84,122,.34); --wall-5:#0e0f1e;
+    --syn-kw:#d68ad0; --syn-ty:#7fc0f0; --syn-num:#f2a46a; --syn-cm:#6d7290; --syn-fn:#8fd19e;
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0d0f17; --surface:#151824; --surface-2:#1c2030; --fg:#e7e8f1; --muted:#949ab0; --line:#272c3e;
+  --accent:#f2a46a; --accent-soft:rgba(242,164,106,.17); --accent-line:rgba(242,164,106,.6); --accent-ink:#1b1209;
+  --bezel:#06070b; --bezel-fg:#6f7489;
+  --win-bg:#1b1e2b; --win-head:#222636; --win-fg:#e4e6f0; --win-muted:#8d93aa; --win-line:rgba(255,255,255,.085); --win-hover:rgba(255,255,255,.07);
+  --glass:rgba(20,22,34,.56); --glass-solid:#1a1d2a; --glass-line:rgba(255,255,255,.09); --glass-fg:#e7e8f1; --glass-muted:#9aa0b6;
+  --shadow:rgba(0,0,0,.62); --ov-dim:rgba(8,9,16,.36);
+  --wall-1:#1d1e38; --wall-2:rgba(240,138,88,.56); --wall-3:rgba(116,86,206,.52); --wall-4:rgba(226,84,122,.34); --wall-5:#0e0f1e;
+  --syn-kw:#d68ad0; --syn-ty:#7fc0f0; --syn-num:#f2a46a; --syn-cm:#6d7290; --syn-fn:#8fd19e;
+  color-scheme:dark;
+}
+
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font-family:var(--font-ui);font-size:14px;line-height:1.5;
+  padding-left:max(16px, env(safe-area-inset-left, 0px));padding-right:max(16px, env(safe-area-inset-right, 0px));padding-block:20px 40px}
+button{font:inherit;color:inherit}
+.wrap{max-width:1500px;margin:0 auto;display:grid;gap:18px}
+
+/* ---------- page header ---------- */
+.top{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:12px 24px}
+.brand{display:flex;align-items:center;gap:14px;min-width:0}
+.mark{width:42px;height:42px;flex:none;position:relative}
+.mark i{position:absolute;border-radius:7px}
+.mark i:nth-child(1){left:0;top:0;width:26px;height:30px;background:var(--surface-2);border:1.5px solid var(--line)}
+.mark i:nth-child(2){right:0;bottom:0;width:26px;height:30px;background:var(--accent);box-shadow:0 6px 16px -6px var(--accent-line)}
+.brand h1{margin:0;font-size:22px;font-weight:650;letter-spacing:-.02em;line-height:1.15;text-wrap:balance}
+.brand p{margin:2px 0 0;color:var(--muted);font-size:13.5px;max-width:62ch}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{font:500 12px/1 var(--font-mono);padding:6px 9px;border-radius:999px;border:1px solid var(--line);color:var(--muted);background:var(--surface)}
+
+main{display:grid;grid-template-columns:minmax(0,1fr) 352px;gap:18px;align-items:start}
+@media (max-width:1060px){main{grid-template-columns:minmax(0,1fr)}}
+
+/* ---------- laptop lid ---------- */
+.lid{background:var(--bezel);border-radius:20px;padding:12px 12px 8px;box-shadow:0 30px 60px -30px var(--shadow)}
+.screen{position:relative;width:100%;aspect-ratio:16/10;overflow:hidden;border-radius:8px;background:var(--wall-5);touch-action:none;outline:none}
+.screen:focus-visible{box-shadow:0 0 0 2px var(--accent)}
+.lid-foot{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:8px 6px 0;font:500 11.5px/1.3 var(--font-mono);color:var(--bezel-fg)}
+.hint{margin:10px 2px 0;color:var(--muted);font-size:13px}
+.hint kbd{font:500 11.5px var(--font-mono);padding:1px 6px;border-radius:5px;border:1px solid var(--line);background:var(--surface)}
+
+/* ---------- the stage: 1280x800 logical pixels ---------- */
+#stage{position:absolute;left:0;top:0;width:1280px;height:800px;transform-origin:0 0;user-select:none;-webkit-user-select:none;
+  --r:12px;--bw:2px;font-family:var(--font-ui);color:var(--win-fg);
+  --wsh:0 0 0 0 transparent;--wsh-f:0 0 0 0 transparent}
+#stage.shadows{--wsh:0 22px 54px -18px var(--shadow),0 6px 16px -6px var(--shadow);--wsh-f:0 34px 80px -18px var(--shadow),0 10px 26px -8px var(--shadow)}
+
+.wall{position:absolute;inset:0;
+  background:
+    radial-gradient(70% 80% at 80% 14%, var(--wall-2), transparent 62%),
+    radial-gradient(60% 75% at 8% 92%, var(--wall-3), transparent 62%),
+    radial-gradient(50% 60% at 58% 78%, var(--wall-4), transparent 66%),
+    linear-gradient(158deg, var(--wall-1), var(--wall-5))}
+.backdrop{position:absolute;inset:-60px;z-index:0}
+.blur .backdrop .wall{filter:blur(26px) saturate(1.15)}
+.backdrop::after{content:"";position:absolute;inset:0;background:var(--ov-dim)}
+
+#wsLayer{position:absolute;inset:0;z-index:1}
+.ws{position:absolute;left:0;top:0;width:1280px;height:800px;overflow:hidden;transform-origin:50% 50%;will-change:transform;
+  box-shadow:0 30px 70px -20px var(--shadow)}
+
+/* windows */
+.win{position:absolute;left:0;top:0;transform-origin:0 0;will-change:transform;border-radius:var(--r);background:var(--win-bg);color:var(--win-fg);
+  box-shadow:0 0 0 1px var(--win-line),var(--wsh)}
+.win.focused{box-shadow:0 0 0 var(--bw) var(--accent),0 0 0 1px var(--win-line),var(--wsh-f)}
+.win.full{border-radius:0;box-shadow:none}
+.win.full .win-head{border-radius:0}.win.full .win-body{border-radius:0}
+.win.ghosted{opacity:.28!important}
+.win-head{position:relative;height:34px;display:flex;align-items:center;gap:8px;padding:0 7px 0 11px;background:var(--win-head);
+  border-radius:var(--r) var(--r) 0 0;border-bottom:1px solid var(--win-line);font:550 12.5px/1 var(--font-ui);cursor:default}
+.win-head .ic{width:18px;height:18px;border-radius:5px;display:grid;place-items:center;flex:none}
+.win-head .ic svg{width:12px;height:12px}
+.win-title{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.wb{width:22px;height:22px;border-radius:50%;border:0;background:var(--win-hover);display:grid;place-items:center;cursor:pointer;padding:0;color:var(--win-muted)}
+.wb:hover{background:var(--accent-soft);color:var(--win-fg)}
+.wb svg{width:10px;height:10px}
+.win-body{position:absolute;left:0;right:0;top:34px;bottom:0;overflow:hidden;border-radius:0 0 var(--r) var(--r)}
+.win-resize{position:absolute;right:0;bottom:0;width:18px;height:18px;cursor:nwse-resize;z-index:3}
+.tiled .win-resize{display:none}
+.app-term{background:var(--term-bg);color:var(--term-fg)}
+.app-term .win-head{background:var(--term-head);color:var(--term-fg);border-bottom-color:rgba(255,255,255,.06)}
+.app-term .wb{background:rgba(255,255,255,.08);color:var(--term-dim)}
+
+/* Windows 11-style snap layouts flyout on the maximize button */
+.fly{position:absolute;top:32px;right:4px;z-index:6;display:flex;gap:8px;padding:8px;border-radius:12px;background:var(--glass-solid);
+  border:1px solid var(--win-line);box-shadow:0 18px 40px -14px var(--shadow);opacity:0;transform:translateY(-4px) scale(.97);
+  transform-origin:100% 0;pointer-events:none;transition:opacity .14s,transform .18s cubic-bezier(.2,.9,.3,1.2)}
+.fly.show{opacity:1;transform:none;pointer-events:auto}
+.fl{width:76px;height:48px;display:grid;gap:3px}
+.fl.two{grid-template-columns:1fr 1fr}
+.fl.quad{grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr}
+.fl.tri{grid-template-columns:2fr 1fr}
+.fl i{border-radius:4px;background:var(--win-hover);border:1px solid var(--win-line);cursor:pointer}
+.fl i:hover{background:var(--accent);border-color:var(--accent)}
+
+.win-label{position:absolute;left:0;top:0;transform-origin:0 0;padding:5px 11px;border-radius:999px;background:var(--glass-solid);
+  color:var(--glass-fg);font:600 13px/1 var(--font-ui);white-space:nowrap;pointer-events:none;opacity:0;box-shadow:0 6px 20px -8px var(--shadow)}
+
+/* app bodies */
+.term{padding:10px 12px;font:12.5px/1.6 var(--font-mono);white-space:pre}
+.t-dim{color:var(--term-dim)}.t-ok{color:var(--term-ok)}.t-acc{color:var(--term-acc)}
+.caret{display:inline-block;width:8px;height:15px;background:var(--term-fg);vertical-align:-3px}
+.files{display:grid;grid-template-columns:132px 1fr;height:100%}
+.files aside{border-right:1px solid var(--win-line);padding:10px 8px;display:grid;align-content:start;gap:2px;font-size:12.5px;color:var(--win-muted)}
+.files aside span{padding:5px 8px;border-radius:6px}
+.files aside span.on{background:var(--accent-soft);color:var(--win-fg)}
+.files ul{list-style:none;margin:0;padding:8px 10px;font-size:12.5px}
+.files li{display:grid;grid-template-columns:20px 1fr auto;gap:8px;align-items:center;padding:6px 8px;border-radius:6px}
+.files li:nth-child(odd){background:var(--win-hover)}
+.files li b{font-weight:500}.files li em{font:normal 11.5px var(--font-mono);color:var(--win-muted);font-variant-numeric:tabular-nums}
+.files .fi{width:16px;height:13px;border-radius:3px;background:var(--ic-files);opacity:.85}
+.files .fi.doc{width:12px;height:15px;background:var(--win-muted);opacity:.5}
+.editor{display:grid;grid-template-rows:30px 1fr;height:100%}
+.tabs{display:flex;border-bottom:1px solid var(--win-line);font-size:12px}
+.tabs span{padding:7px 14px;color:var(--win-muted)}.tabs span.on{color:var(--win-fg);box-shadow:inset 0 -2px var(--accent)}
+.code{padding:10px 0;font:12.5px/1.65 var(--font-mono);white-space:pre;counter-reset:ln}
+.code div{counter-increment:ln;padding-right:12px}
+.code div::before{content:counter(ln);display:inline-block;width:40px;padding-right:14px;text-align:right;color:var(--syn-cm);opacity:.7}
+.kw{color:var(--syn-kw)}.ty{color:var(--syn-ty)}.nu{color:var(--syn-num)}.cm{color:var(--syn-cm);font-style:italic}.fn{color:var(--syn-fn)}
+.notes{padding:16px 18px;font-size:13px}
+.notes h3{margin:0 0 10px;font-size:16px;letter-spacing:-.01em}
+.notes label{display:flex;gap:9px;align-items:flex-start;padding:4px 0}
+.notes input{accent-color:var(--accent);margin-top:3px}
+.notes .done{color:var(--win-muted);text-decoration:line-through}
+
+/* snap preview & assist */
+.preview{position:absolute;left:0;top:0;transform-origin:0 0;border-radius:var(--r);background:var(--accent-soft);
+  border:2px solid var(--accent-line);pointer-events:none;display:none}
+.blur .preview{backdrop-filter:blur(14px) saturate(1.3)}
+.assist{position:absolute;border-radius:var(--r);background:var(--glass);border:1px solid var(--glass-line);padding:18px;display:flex;flex-direction:column;gap:14px;
+  opacity:0;transform:scale(.98);transition:opacity .18s,transform .24s cubic-bezier(.2,.9,.3,1.15);color:var(--glass-fg)}
+.blur .assist{backdrop-filter:blur(22px) saturate(1.4)}
+.noblur .assist{background:var(--glass-solid)}
+.assist.show{opacity:1;transform:none}
+.assist-title{font:600 14px var(--font-ui)}
+.assist-grid{display:flex;flex-wrap:wrap;gap:14px;align-content:flex-start}
+.assist-item{background:none;border:0;padding:6px;border-radius:12px;display:grid;gap:6px;justify-items:center;cursor:pointer;font-size:12.5px;color:var(--glass-fg)}
+.assist-item:hover{background:var(--accent-soft)}
+.assist-thumb{position:relative;overflow:hidden;border-radius:8px;box-shadow:0 8px 20px -10px var(--shadow)}
+
+/* top panel (layer-shell surface) */
+.panel{position:absolute;left:0;right:0;top:0;height:30px;z-index:10;display:grid;grid-template-columns:1fr auto 1fr;align-items:center;padding:0 8px;
+  font:550 12.5px/1 var(--font-ui);color:var(--glass-fg);background:var(--glass);border-bottom:1px solid var(--glass-line);transition:transform .28s cubic-bezier(.2,.8,.2,1)}
+.blur .panel{backdrop-filter:blur(20px) saturate(1.5)}
+.noblur .panel{background:var(--glass-solid)}
+.panel.hidden{transform:translateY(-32px)}
+.pl,.pr{display:flex;align-items:center;gap:10px}
+.pr{justify-content:flex-end}
+.pbtn{border:0;background:var(--win-hover);border-radius:999px;padding:5px 11px;cursor:pointer;font:inherit;color:inherit}
+.pbtn:hover,.pbtn.on{background:var(--accent-soft)}
+.dots{display:flex;align-items:center;gap:5px}
+.dot{height:7px;width:7px;border-radius:999px;background:var(--glass-fg);border:0;padding:0;cursor:pointer}
+.sys{display:flex;align-items:center;gap:6px;color:var(--glass-fg)}
+.sys svg{width:15px;height:15px}
+.mode{font:500 11.5px var(--font-mono)}
+
+/* overview chrome */
+#ovc{position:absolute;inset:0;z-index:5;pointer-events:none;opacity:0}
+#ovc.live{pointer-events:auto}
+#ovc.live > .ovhit{pointer-events:none}
+.search{position:absolute;left:50%;top:42px;width:360px;margin-left:-180px;height:34px;border-radius:17px;background:var(--glass);border:1px solid var(--glass-line);
+  display:flex;align-items:center;gap:8px;padding:0 14px;color:var(--glass-muted)}
+.blur .search,.blur .results,.blur .dk-row,.blur .switcher,.blur .toast,.blur .cheat{backdrop-filter:blur(22px) saturate(1.4)}
+.noblur .search,.noblur .results,.noblur .dk-row,.noblur .switcher,.noblur .toast,.noblur .cheat{background:var(--glass-solid)}
+.search svg{width:15px;height:15px;flex:none}
+.search input{flex:1;min-width:0;border:0;background:none;outline:none;font:500 13.5px var(--font-ui);color:var(--glass-fg)}
+.search input::placeholder{color:var(--glass-muted)}
+.results{position:absolute;left:50%;top:82px;width:360px;margin-left:-180px;z-index:2;border-radius:14px;background:var(--glass);border:1px solid var(--glass-line);padding:6px;display:grid;gap:2px;
+  box-shadow:0 20px 50px -20px var(--shadow)}
+.r-item{display:flex;align-items:center;gap:10px;padding:7px 10px;border:0;border-radius:9px;background:none;text-align:left;cursor:pointer;color:var(--glass-fg);font-size:13.5px}
+.r-item.sel,.r-item:hover{background:var(--accent-soft)}
+.r-item small{margin-left:auto;font:500 11px var(--font-mono);color:var(--glass-muted)}
+.r-empty{padding:8px 10px;color:var(--glass-muted);font-size:13px}
+.thumbs{position:absolute;left:0;right:0;top:90px;display:flex;justify-content:center;gap:10px}
+.thumb{position:relative;width:96px;height:60px;border-radius:8px;overflow:hidden;border:0;padding:0;cursor:pointer;box-shadow:0 0 0 1px var(--glass-line),0 8px 18px -10px var(--shadow)}
+.thumb.cur{box-shadow:0 0 0 2px var(--accent),0 8px 18px -10px var(--shadow)}
+.thumb.drop{box-shadow:0 0 0 2px var(--accent),0 0 0 6px var(--accent-soft)}
+.thumb i{position:absolute;border-radius:2px;background:var(--win-bg);opacity:.92;box-shadow:0 0 0 .5px var(--win-line)}
+.thumb i.f{box-shadow:0 0 0 1px var(--accent)}
+.thumb b{position:absolute;right:4px;bottom:3px;font:600 9px var(--font-mono);color:var(--glass-fg);background:var(--glass-solid);padding:1px 4px;border-radius:4px}
+#dock{position:absolute;left:50%;bottom:8px;z-index:9;transform:translateX(-50%);transition:transform .34s cubic-bezier(.2,.9,.25,1.05)}
+#dock.hid{transform:translate(-50%,calc(100% + 16px))}
+.dk-row{position:relative;display:flex;align-items:flex-end;gap:6px;height:64px;padding:0 9px 9px;border-radius:20px;background:var(--glass);border:1px solid var(--glass-line);box-shadow:0 18px 40px -18px var(--shadow)}
+.dk-item{position:relative;display:flex;flex-direction:column;align-items:center}
+.dk-ic{width:46px;height:46px;border:0;border-radius:12px;display:grid;place-items:center;color:var(--ic-fg);cursor:pointer;padding:0;box-shadow:0 5px 12px -5px var(--shadow)}
+.dk-ic svg{width:48%;height:48%}
+.dk-dot{position:absolute;bottom:-6px;width:4px;height:4px;border-radius:50%;background:var(--glass-fg);opacity:0;transition:opacity .2s}
+.dk-item.run .dk-dot{opacity:.85}
+.dk-tip{position:absolute;bottom:calc(100% + 12px);left:50%;transform:translate(-50%,4px);white-space:nowrap;padding:4px 10px;border-radius:8px;background:var(--glass-solid);color:var(--glass-fg);
+  font:550 12.5px var(--font-ui);opacity:0;pointer-events:none;transition:opacity .12s,transform .16s;box-shadow:0 8px 20px -10px var(--shadow)}
+.dk-item:hover .dk-tip{opacity:1;transform:translate(-50%,0)}
+.dk-sep{width:1px;align-self:stretch;margin:12px 3px 0;background:var(--win-line)}
+.dk-item.bounce .dk-ic{animation:dkBounce .95s cubic-bezier(.3,.7,.4,1)}
+@keyframes dkBounce{0%,36%,72%,100%{transform:none}18%{transform:translateY(-22px)}54%{transform:translateY(-10px)}}
+.dk-menu{position:absolute;z-index:30;transform:translateX(-50%);min-width:180px;padding:5px;border-radius:12px;background:var(--glass-solid);border:1px solid var(--win-line);
+  box-shadow:0 20px 44px -16px var(--shadow);display:grid;color:var(--glass-fg);animation:dkPop .16s cubic-bezier(.2,.9,.3,1.2)}
+@keyframes dkPop{from{opacity:0;transform:translateX(-50%) translateY(6px) scale(.97)}}
+.dk-mh{padding:5px 10px 4px;font:600 11.5px var(--font-ui);color:var(--glass-muted)}
+.dk-menu button{border:0;background:none;text-align:left;padding:6px 10px;border-radius:7px;cursor:pointer;font:500 13px var(--font-ui);color:inherit}
+.dk-menu button:hover{background:var(--accent-soft)}
+.app-ic{width:44px;height:44px;border-radius:12px;border:0;display:grid;place-items:center;cursor:pointer;color:var(--ic-fg);transition:transform .15s}
+.app-ic:hover{transform:translateY(-3px)}
+.app-ic svg{width:22px;height:22px}
+
+#ghostLayer{position:absolute;inset:0;z-index:6;pointer-events:none}
+.ghost{position:absolute;left:0;top:0;transform-origin:0 0;opacity:.95;filter:drop-shadow(0 16px 30px var(--shadow))}
+
+/* switcher, toast, cheat sheet */
+.switcher{position:absolute;left:50%;top:50%;z-index:20;transform:translate(-50%,-50%) scale(.96);opacity:0;pointer-events:none;
+  display:flex;gap:12px;padding:14px;border-radius:20px;background:var(--glass);border:1px solid var(--glass-line);box-shadow:0 30px 70px -24px var(--shadow);
+  transition:opacity .14s,transform .2s cubic-bezier(.2,.9,.3,1.2);color:var(--glass-fg)}
+.switcher.show{opacity:1;transform:translate(-50%,-50%)}
+.sw-item{display:grid;gap:8px;justify-items:center;padding:10px;border-radius:14px;font-size:12.5px;width:184px}
+.sw-item.sel{background:var(--accent-soft);box-shadow:inset 0 0 0 2px var(--accent)}
+.sw-box{position:relative;width:164px;height:104px;display:grid;place-items:center}
+.sw-box > div{position:relative;overflow:hidden;border-radius:6px;box-shadow:0 8px 20px -10px var(--shadow)}
+.toast{position:absolute;left:50%;bottom:80px;z-index:21;transform:translate(-50%,8px);opacity:0;pointer-events:none;display:flex;align-items:center;gap:10px;
+  padding:9px 16px;border-radius:999px;background:var(--glass);border:1px solid var(--glass-line);font:550 13.5px var(--font-ui);color:var(--glass-fg);
+  transition:opacity .16s,transform .22s cubic-bezier(.2,.9,.3,1.2);box-shadow:0 16px 40px -18px var(--shadow)}
+.toast.show{opacity:1;transform:translate(-50%,0)}
+.toast kbd,.cheat kbd{font:500 11.5px/1 var(--font-mono);padding:4px 7px;border-radius:6px;background:var(--win-hover);border:1px solid var(--glass-line)}
+.cheat{position:absolute;inset:70px 120px;z-index:19;border-radius:20px;background:var(--glass);border:1px solid var(--glass-line);padding:22px 26px;color:var(--glass-fg);
+  display:grid;grid-template-columns:repeat(3,1fr);gap:6px 26px;align-content:start;opacity:0;transform:scale(.98);pointer-events:none;transition:opacity .16s,transform .22s;
+  box-shadow:0 30px 70px -24px var(--shadow)}
+.cheat.show{opacity:1;transform:none;pointer-events:auto}
+.cheat h4{grid-column:1/-1;margin:0 0 6px;font-size:16px}
+.cheat div{display:flex;justify-content:space-between;gap:10px;font-size:12.5px;padding:4px 0;border-bottom:1px solid var(--glass-line)}
+.cheat span:last-child{display:flex;gap:3px;flex:none}
+
+/* ---------- rail ---------- */
+.rail{display:grid;gap:14px;min-width:0}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:14px 16px;display:grid;gap:12px;min-width:0}
+.card h2{margin:0;font-size:13px;font-weight:650;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+.meter{display:flex;align-items:baseline;gap:10px}
+.meter b{font:600 40px/1 var(--font-mono);font-variant-numeric:tabular-nums;letter-spacing:-.03em}
+.meter span{color:var(--muted);font-size:13px}
+.meter-note{margin:0;color:var(--muted);font-size:12.5px}
+.launch{display:flex;flex-wrap:wrap;gap:6px}
+.btn{border:1px solid var(--line);background:var(--surface-2);border-radius:9px;padding:6px 10px;cursor:pointer;font-size:13px;display:inline-flex;align-items:center;gap:6px}
+.btn:hover{border-color:var(--accent-line)}
+.btn:focus-visible,.krow:focus-visible,.seg button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.btn .sq{width:14px;height:14px;border-radius:4px;display:grid;place-items:center;color:var(--ic-fg)}
+.btn .sq svg{width:9px;height:9px}
+.kgroup{display:grid;gap:2px}
+.kgroup h3{margin:6px 0 2px;font-size:12px;font-weight:600;color:var(--muted)}
+.krow{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:5px 6px;margin:0 -6px;border-radius:8px;border:0;background:none;text-align:left;font-size:13px;cursor:pointer;width:calc(100% + 12px)}
+.krow:hover{background:var(--surface-2)}
+.krow.na{cursor:default;color:var(--muted)}
+.krow.na:hover{background:none}
+.keys{display:flex;gap:3px;flex:none}
+.keys kbd{font:500 11px/1 var(--font-mono);padding:4px 6px;border-radius:5px;border:1px solid var(--line);background:var(--surface-2);color:var(--fg)}
+.dropped{margin:0;font-size:12.5px;color:var(--muted)}
+.seg{display:flex;gap:4px;background:var(--surface-2);padding:3px;border-radius:10px}
+.seg button{flex:1;border:0;background:none;border-radius:7px;padding:6px 4px;cursor:pointer;font-size:12.5px}
+.seg button.on{background:var(--surface);box-shadow:0 1px 3px var(--shadow)}
+.ctl{display:grid;grid-template-columns:1fr auto;gap:4px 10px;align-items:center;font-size:13px}
+.ctl output{font:500 12px var(--font-mono);font-variant-numeric:tabular-nums;color:var(--muted)}
+.ctl input[type=range]{grid-column:1/-1;width:100%;accent-color:var(--accent)}
+.sw{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:13px;cursor:pointer}
+.sw input{appearance:none;-webkit-appearance:none;width:36px;height:20px;border-radius:999px;background:var(--line);position:relative;cursor:pointer;transition:background .15s;margin:0;flex:none}
+.sw input::after{content:"";position:absolute;left:2px;top:2px;width:16px;height:16px;border-radius:50%;background:var(--surface);transition:transform .18s cubic-bezier(.2,.9,.3,1.3)}
+.sw input:checked{background:var(--accent)}
+.sw input:checked::after{transform:translateX(16px)}
+.sw input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.curve{width:100%;height:96px;display:block;border-radius:8px;background:var(--surface-2)}
+.curve-cap{display:flex;justify-content:space-between;font:500 11.5px var(--font-mono);color:var(--muted)}
+pre.cfg{margin:0;padding:12px;border-radius:10px;background:var(--surface-2);font:12px/1.6 var(--font-mono);overflow-x:auto;white-space:pre}
+.cfg-row{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.gest{margin:0;padding-left:18px;display:grid;gap:6px;font-size:13px}
+.gest li::marker{color:var(--accent)}
+
+@media (prefers-reduced-motion: reduce){
+  .fly,.assist,.switcher,.toast,.cheat,.panel,.app-ic,#dock{transition:none}
+  .dk-item.bounce .dk-ic,.dk-menu{animation:none}
+}
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <div class="brand">
+      <div class="mark" aria-hidden="true"><i></i><i></i></div>
+      <div>
+        <h1>ds: live compositor mockup</h1>
+        <p>Windows-style snapping to edges, GNOME-style workspaces and overview, Hyprland-style dwindle tiling. Keybinds are taken from KooL Hyprland-Dots.</p>
+      </div>
+    </div>
+    <div class="chips"><span class="chip">wayland</span><span class="chip">rust + smithay</span><span class="chip">aarch64 · x elite</span></div>
+  </header>
+
+  <main>
+    <section>
+      <div class="lid">
+        <div class="screen" id="screen" tabindex="0" aria-label="ds compositor desktop">
+          <div id="stage" class="shadows blur">
+            <div class="backdrop" aria-hidden="true"><div class="wall"></div></div>
+            <div id="wsLayer"></div>
+            <div id="ovc">
+              <div class="search"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="7" cy="7" r="5"/><path d="M11 11l3.5 3.5"/></svg><input id="search" type="text" placeholder="Search apps" autocomplete="off" spellcheck="false"></div>
+              <div class="results" id="results" hidden></div>
+              <div class="thumbs" id="thumbs"></div>
+            </div>
+            <div id="ghostLayer"></div>
+            <div id="dock"><div class="dk-row" id="dockRow"></div></div>
+            <div class="panel" id="panel">
+              <div class="pl"><button class="pbtn" id="btnOv" type="button">Overview</button><div class="dots" id="dots"></div></div>
+              <div id="clock" style="font-variant-numeric:tabular-nums"></div>
+              <div class="pr">
+                <button class="pbtn mode" id="modeChip" type="button"></button>
+                <span class="sys" aria-label="Network and battery">
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M1.5 6a9.5 9.5 0 0 1 13 0M3.8 8.6a6.2 6.2 0 0 1 8.4 0M6.1 11.1a2.9 2.9 0 0 1 3.8 0"/><circle cx="8" cy="13.3" r=".9" fill="currentColor" stroke="none"/></svg>
+                  <svg viewBox="0 0 22 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1" y="3.5" width="17" height="9" rx="2.5"/><rect x="3" y="5.5" width="11.5" height="5" rx="1" fill="currentColor" stroke="none"/><path d="M19.8 6.5v3" stroke-linecap="round"/></svg>
+                  <span>87%</span>
+                </span>
+              </div>
+            </div>
+            <div class="switcher" id="switcher" aria-hidden="true"></div>
+            <div class="cheat" id="cheat" aria-hidden="true"></div>
+            <div class="toast" id="toast" aria-live="polite"></div>
+          </div>
+        </div>
+        <div class="lid-foot"><span>eDP-1 · 2880×1800 · 120 Hz · scale 1.75</span><span>mockup: 1280×800 logical pixels</span></div>
+      </div>
+      <p class="hint">Click the screen so the keys work. In a browser the system often grabs <kbd>Super</kbd>, so <kbd>Alt</kbd> works as <kbd>Super</kbd> here. Drag windows by the title bar to the edges, hover the maximize button, drag an empty area sideways or up. The dock magnifies under the pointer; the minimize button sends a window into its dock icon, and a click on the icon brings it back.</p>
+    </section>
+
+    <aside class="rail">
+      <div class="card">
+        <h2>Compositor frames</h2>
+        <div class="meter"><b id="fps">0</b><span>frames in the last second</span></div>
+        <p class="meter-note">Total rendered: <span id="ftotal">0</span>. Nothing is redrawn at rest: frames are produced only while something moves.</p>
+        <div class="launch" id="launch"></div>
+      </div>
+
+      <div class="card">
+        <h2>Keys</h2>
+        <div id="keys"></div>
+        <p class="dropped">Not taken from KooL: magnifier (Super+Alt+wheel), wallpapers and themes, waybar and rofi styles, emoji, calculator, music, window groups, transparency.</p>
+      </div>
+
+      <div class="card">
+        <h2>Gestures</h2>
+        <ul class="gest">
+          <li>Three fingers sideways: adjacent workspace, motion follows the fingers 1:1. Here that is dragging an empty area or horizontal touchpad scroll.</li>
+          <li>Three fingers up: overview, down: back. Release halfway and the spring finishes at the same speed.</li>
+          <li>In the overview, a window can be dragged onto a workspace thumbnail at the top or onto an adjacent workspace.</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <h2>Motion</h2>
+        <div class="seg" id="presets"><button type="button" data-p="soft">Soft</button><button type="button" data-p="crisp">Crisp</button><button type="button" data-p="bouncy">Bouncy</button></div>
+        <div class="ctl"><label for="k">Spring stiffness</label><output id="kOut"></output><input id="k" type="range" min="120" max="900" step="10"></div>
+        <div class="ctl"><label for="zeta">Damping</label><output id="zetaOut"></output><input id="zeta" type="range" min="0.4" max="1.2" step="0.01"></div>
+        <canvas class="curve" id="curve" aria-label="Spring response graph"></canvas>
+        <div class="curve-cap"><span>0 ms</span><span id="settle"></span><span>600 ms</span></div>
+        <label class="sw">Slow down 5x <input id="slow" type="checkbox"></label>
+      </div>
+
+      <div class="card">
+        <h2>Appearance</h2>
+        <div class="ctl"><label for="radius">Corner radius</label><output id="radiusOut"></output><input id="radius" type="range" min="0" max="22" step="1"></div>
+        <div class="ctl"><label for="gaps">Gaps between windows</label><output id="gapsOut"></output><input id="gaps" type="range" min="0" max="24" step="1"></div>
+        <div class="ctl"><label for="border">Active window border</label><output id="borderOut"></output><input id="border" type="range" min="0" max="4" step="1"></div>
+        <label class="sw">Glass blur <input id="blur" type="checkbox"></label>
+        <label class="sw">Shadows <input id="shadows" type="checkbox"></label>
+        <label class="sw">Dock magnification <input id="dockMag" type="checkbox"></label>
+        <label class="sw">Auto-hide dock <input id="dockHide" type="checkbox"></label>
+      </div>
+
+      <div class="card">
+        <div class="cfg-row"><h2>config.kdl</h2><button class="btn" id="copy" type="button">Copy</button></div>
+        <pre class="cfg" id="cfg"></pre>
+      </div>
+    </aside>
+  </main>
+</div>
+
+<script>
+(() => {
+'use strict';
+const W = 1280, H = 800, PANEL = 30, HEAD = 34;
+const OV_SCALE = 0.66, OV_SHIFT = 60, OV_SPACING = 0.72;
+const lerp = (a, b, t) => a + (b - a) * t;
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const $ = (s, r = document) => r.querySelector(s);
+
+const PRESETS = { soft: { k: 220, zeta: 0.92 }, crisp: { k: 560, zeta: 1.0 }, bouncy: { k: 380, zeta: 0.62 } };
+const cfg = { k: 420, zeta: 0.82, gaps: 10, radius: 12, border: 2, blur: true, shadows: true, slow: false, dockMag: true, dockHide: false };
+const DOCK_BASE = 46, DOCK_MAG = 1.72, DOCK_RANGE = 150, DOCK_H = 64, DOCK_M = 8;
+if (matchMedia('(prefers-reduced-motion: reduce)').matches) Object.assign(cfg, PRESETS.crisp);
+
+/* ---------------- springs + on-demand frame loop ---------------- */
+const active = new Set();
+let running = false, last = 0, frames = 0;
+const stamps = [];
+let gesture = null;
+
+class Spring {
+  constructor(v, prec = 0.1) { this.x = v; this.v = 0; this.t = v; this.p = prec; }
+  set(t) {
+    this.t = t;
+    if (Math.abs(this.x - t) < this.p && Math.abs(this.v) < this.p * 10) { this.x = t; this.v = 0; active.delete(this); wake(); return; }
+    active.add(this); wake();
+  }
+  jump(v) { this.x = this.t = v; this.v = 0; active.delete(this); wake(); }
+  step(dt) {
+    const k = cfg.k, c = 2 * cfg.zeta * Math.sqrt(k);
+    const n = Math.max(1, Math.ceil(dt * 240)), h = dt / n;
+    for (let i = 0; i < n; i++) { const a = -k * (this.x - this.t) - c * this.v; this.v += a * h; this.x += this.v * h; }
+    if (Math.abs(this.x - this.t) < this.p && Math.abs(this.v) < this.p * 10) { this.x = this.t; this.v = 0; return false; }
+    return true;
+  }
+}
+function wake() { if (running) return; running = true; last = performance.now(); requestAnimationFrame(frame); }
+function frame(now) {
+  let dt = Math.min((now - last) / 1000, 1 / 30); last = now;
+  if (cfg.slow) dt *= 0.2;
+  for (const s of [...active]) if (!s.step(dt)) active.delete(s);
+  render();
+  frames++; stamps.push(now);
+  if (active.size) requestAnimationFrame(frame);
+  else { running = false; onSettle(); }
+}
+function onSettle() { if (!gesture) normalize(); }
+
+/* ---------------- dom refs ---------------- */
+const screenEl = $('#screen'), stage = $('#stage'), wsLayer = $('#wsLayer'), ovc = $('#ovc');
+const search = $('#search'), results = $('#results'), thumbs = $('#thumbs');
+const ghostLayer = $('#ghostLayer'), panel = $('#panel'), dotsEl = $('#dots'), modeChip = $('#modeChip');
+const switcher = $('#switcher'), toast = $('#toast'), cheat = $('#cheat');
+let K = 1;
+new ResizeObserver(() => { K = screenEl.clientWidth / W; stage.style.transform = `scale(${K})`; }).observe(screenEl);
+
+/* ---------------- apps ---------------- */
+const ICON = {
+  term: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4.5l3.5 3.5L3 11.5M8.5 12H13"/></svg>',
+  files: '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M1.5 4a1.5 1.5 0 0 1 1.5-1.5h3.2l1.6 1.6H13A1.5 1.5 0 0 1 14.5 5.6V12A1.5 1.5 0 0 1 13 13.5H3A1.5 1.5 0 0 1 1.5 12z"/></svg>',
+  editor: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 3C4 3 4 4 4 5.5S3.5 8 2.5 8c1 0 1.5.9 1.5 2.5S4 13 5.5 13M10.5 3C12 3 12 4 12 5.5s.5 2.5 1.5 2.5c-1 0-1.5.9-1.5 2.5S12 13 10.5 13"/></svg>',
+  notes: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3.5 4.5h9M3.5 8h9M3.5 11.5h5.5"/></svg>',
+};
+const APPS = {
+  term: { name: 'Terminal', w: 560, h: 330, kw: 'terminal console shell kitty foot', color: 'var(--ic-term)' },
+  files: { name: 'Files', w: 520, h: 360, kw: 'files file manager folders', color: 'var(--ic-files)' },
+  editor: { name: 'Editor', w: 600, h: 430, kw: 'editor code text', color: 'var(--ic-editor)' },
+  notes: { name: 'Notes', w: 400, h: 400, kw: 'notes plan', color: 'var(--ic-notes)' },
+};
+const BODY = {
+  term: () => `<div class="term"><span class="t-acc">~/Projects/ds</span> <span class="t-dim">❯</span> cargo build --release
+<span class="t-dim">   Compiling smithay v0.7.0</span>
+<span class="t-dim">   Compiling ds v0.1.0 (~/Projects/ds)</span>
+<span class="t-ok">    Finished</span> \`release\` profile [optimized] in 41.87s
+<span class="t-acc">~/Projects/ds</span> <span class="t-dim">❯</span> ds --nested
+<span class="t-dim">[ds] backend winit · renderer gles2</span>
+<span class="t-dim">[ds] eDP-1 2880×1800 @ 120 Hz · scale 1.75</span>
+[ds] idle: 0 frames/s
+<span class="t-acc">~/Projects/ds</span> <span class="t-dim">❯</span> <span class="caret"></span></div>`,
+  files: () => `<div class="files"><aside><span>Home</span><span>Documents</span><span>Downloads</span><span class="on">Projects</span></aside><ul>
+<li><span class="fi"></span><b>src</b><em>12 files</em></li>
+<li><span class="fi"></span><b>shaders</b><em>4 files</em></li>
+<li><span class="fi"></span><b>design</b><em>1 file</em></li>
+<li><span class="fi doc"></span><b>Cargo.toml</b><em>1.2 KB</em></li>
+<li><span class="fi doc"></span><b>config.kdl</b><em>0.6 KB</em></li>
+<li><span class="fi doc"></span><b>README.md</b><em>3.4 KB</em></li></ul></div>`,
+  editor: () => `<div class="editor"><div class="tabs"><span class="on">spring.rs</span><span>layout.rs</span><span>snap.rs</span></div><div class="code"><div><span class="cm">/// Critically tuned spring, stepped at 240 Hz.</span></div><div><span class="kw">pub struct</span> <span class="ty">Spring</span> { value: <span class="ty">f64</span>, velocity: <span class="ty">f64</span>, target: <span class="ty">f64</span> }</div><div></div><div><span class="kw">impl</span> <span class="ty">Spring</span> {</div><div>    <span class="kw">pub fn</span> <span class="fn">step</span>(&amp;<span class="kw">mut</span> self, dt: <span class="ty">f64</span>, k: <span class="ty">f64</span>, zeta: <span class="ty">f64</span>) -&gt; <span class="ty">bool</span> {</div><div>        <span class="kw">let</span> c = <span class="nu">2.0</span> * zeta * k.<span class="fn">sqrt</span>();</div><div>        <span class="kw">let</span> a = -k * (self.value - self.target) - c * self.velocity;</div><div>        self.velocity += a * dt;</div><div>        self.value += self.velocity * dt;</div><div>        <span class="cm">// settled springs stop asking for frames</span></div><div>        (self.value - self.target).<span class="fn">abs</span>() &gt; <span class="nu">0.01</span></div><div>            || self.velocity.<span class="fn">abs</span>() &gt; <span class="nu">0.01</span></div><div>    }</div><div>}</div></div></div>`,
+  notes: () => `<div class="notes"><h3>ds plan</h3>
+<label><input type="checkbox" checked><span class="done">Concept: snapping, workspaces, tiling</span></label>
+<label><input type="checkbox" checked><span class="done">KooL keybinds without the extras</span></label>
+<label><input type="checkbox"><span>Look and animation mockup</span></label>
+<label><input type="checkbox"><span>Smithay skeleton: winit and DRM</span></label>
+<label><input type="checkbox"><span>Snapping and key bindings</span></label>
+<label><input type="checkbox"><span>Dynamic workspaces and overview</span></label>
+<label><input type="checkbox"><span>Dwindle tiling</span></label>
+<label><input type="checkbox"><span>Live KDL config</span></label>
+<label><input type="checkbox"><span>aarch64 build</span></label></div>`,
+};
+
+/* ---------------- state ---------------- */
+let wsList = [], cur = 0, nextWs = 1, nextId = 1, focusId = null, mru = [];
+const wins = new Map();
+const pos = new Spring(0, 0.0005), ov = new Spring(0, 0.0005);
+const isOv = () => ov.t > 0.5;
+const idx = ws => wsList.indexOf(ws);
+const focused = () => { const w = wins.get(focusId); return w && !w.closing && !w.min && w.ws === wsList[cur] ? w : null; };
+
+function makeWs(mode) {
+  const el = document.createElement('div');
+  el.className = 'ws';
+  el.innerHTML = '<div class="wall"></div>';
+  wsLayer.appendChild(el);
+  const ws = { id: nextWs++, mode, wins: [], order: [], el, ratio: 0.5 };
+  el.addEventListener('pointerdown', e => onBgDown(e, ws));
+  return ws;
+}
+
+function createWin(app, ws, rect) {
+  const A = APPS[app];
+  const w = { id: nextId++, app, ws, float: { ...rect }, snap: null, floating: false, full: false, flip: false, closing: false, target: { ...rect }, slotInit: false };
+  w.sp = { x: new Spring(rect.x), y: new Spring(rect.y), w: new Spring(rect.w), h: new Spring(rect.h), s: new Spring(1, 0.0005), o: new Spring(1, 0.002) };
+  w.sl = { x: new Spring(rect.x), y: new Spring(rect.y), s: new Spring(1, 0.0005) };
+  const el = document.createElement('div');
+  el.className = 'win app-' + app;
+  el.innerHTML = `<div class="win-head"><span class="ic" style="background:${A.color};color:var(--ic-fg)">${ICON[app]}</span><span class="win-title">${A.name}</span>
+    <button class="wb wb-min" type="button" aria-label="Minimize"><svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2 6.5h6"/></svg></button>
+    <button class="wb wb-max" type="button" aria-label="Maximize"><svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1.5" y="1.5" width="7" height="7" rx="1.5"/></svg></button>
+    <button class="wb wb-close" type="button" aria-label="Close"><svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2 2l6 6M8 2l-6 6"/></svg></button>
+    <div class="fly"><div class="fl two"><i data-z="left"></i><i data-z="right"></i></div><div class="fl tri"><i data-z="l23"></i><i data-z="r13"></i></div><div class="fl quad"><i data-z="tl"></i><i data-z="tr"></i><i data-z="bl"></i><i data-z="br"></i></div></div>
+  </div><div class="win-body">${BODY[app]()}</div><div class="win-resize"></div>`;
+  const label = document.createElement('div');
+  label.className = 'win-label';
+  label.textContent = A.name;
+  ws.el.append(el, label);
+  w.el = el; w.label = label;
+  ws.wins.push(w); ws.order.push(w); wins.set(w.id, w);
+  wireWin(w);
+  return w;
+}
+
+/* ---------------- layout ---------------- */
+function dockReserve() { return cfg.dockHide ? 0 : DOCK_H + DOCK_M; }
+function workArea() { const g = cfg.gaps; return { x: g, y: PANEL + g, w: W - 2 * g, h: H - PANEL - 2 * g - dockReserve() }; }
+function snapRect(z) {
+  const A = workArea(), g = cfg.gaps, hw = (A.w - g) / 2, hh = (A.h - g) / 2, w23 = (A.w - g) * 2 / 3;
+  switch (z) {
+    case 'max': return A;
+    case 'left': return { x: A.x, y: A.y, w: hw, h: A.h };
+    case 'right': return { x: A.x + hw + g, y: A.y, w: hw, h: A.h };
+    case 'l23': return { x: A.x, y: A.y, w: w23, h: A.h };
+    case 'r13': return { x: A.x + w23 + g, y: A.y, w: A.w - w23 - g, h: A.h };
+    case 'tl': return { x: A.x, y: A.y, w: hw, h: hh };
+    case 'tr': return { x: A.x + hw + g, y: A.y, w: hw, h: hh };
+    case 'bl': return { x: A.x, y: A.y + hh + g, w: hw, h: hh };
+    case 'br': return { x: A.x + hw + g, y: A.y + hh + g, w: hw, h: hh };
+  }
+  return A;
+}
+const OPP = { left: 'right', right: 'left', l23: 'r13', r13: 'l23' };
+const tileList = ws => ws.mode === 'tile' ? ws.order.filter(w => !w.floating && !w.closing && !w.full && !w.min) : [];
+function dwindle(list, A, ratio) {
+  const g = cfg.gaps, out = [];
+  let r = { ...A };
+  list.forEach((w, i) => {
+    if (i === list.length - 1) { out.push(r); return; }
+    let horiz = r.w >= r.h; if (w.flip) horiz = !horiz;
+    const rt = i === 0 ? ratio : 0.5;
+    if (horiz) { const aw = (r.w - g) * rt; out.push({ x: r.x, y: r.y, w: aw, h: r.h }); r = { x: r.x + aw + g, y: r.y, w: r.w - aw - g, h: r.h }; }
+    else { const ah = (r.h - g) * rt; out.push({ x: r.x, y: r.y, w: r.w, h: ah }); r = { x: r.x, y: r.y + ah + g, w: r.w, h: r.h - ah - g }; }
+  });
+  return out;
+}
+function layout(ws) {
+  const tiles = tileList(ws);
+  const rects = dwindle(tiles, workArea(), ws.ratio);
+  tiles.forEach((w, i) => { w.target = rects[i]; });
+  for (const w of ws.order) {
+    if (w.closing) continue;
+    if (w.full) w.target = { x: 0, y: 0, w: W, h: H };
+    else if (!tiles.includes(w)) w.target = w.snap ? snapRect(w.snap) : { ...w.float };
+    w.el.classList.toggle('tiled', tiles.includes(w));
+    w.el.classList.toggle('full', w.full);
+    if (gesture && gesture.win === w && gesture.moved) continue;
+    if (w.min) { const d = toLocal(idx(ws), dockPoint(w.app)); w.sp.x.set(d.x - w.target.w / 2); w.sp.y.set(d.y - w.target.h / 2); w.sp.w.set(w.target.w); w.sp.h.set(w.target.h); continue; }
+    w.sp.x.set(w.target.x); w.sp.y.set(w.target.y); w.sp.w.set(w.target.w); w.sp.h.set(w.target.h);
+  }
+  computeSlots(ws); updateZ(ws); renderThumbs(); updatePanel();
+}
+function layoutAll() { wsList.forEach(layout); }
+function computeSlots(ws) {
+  const list = ws.order.filter(w => !w.closing && !w.min);
+  const n = list.length; if (!n) return;
+  const area = { x: 60, y: 60, w: W - 120, h: H - 130 };
+  const cols = Math.max(1, Math.ceil(Math.sqrt(n * (area.w / area.h) / 1.45)));
+  const rows = Math.ceil(n / cols), cw = area.w / cols, ch = area.h / rows;
+  list.forEach((w, k) => {
+    const r = Math.floor(k / cols), c = k % cols;
+    const inRow = r === rows - 1 ? n - r * cols : cols;
+    const off = (cols - inRow) * cw / 2;
+    const s = Math.min(1, (cw - 44) / w.target.w, (ch - 64) / w.target.h);
+    const x = area.x + off + c * cw + (cw - w.target.w * s) / 2;
+    const y = area.y + r * ch + (ch - 34 - w.target.h * s) / 2;
+    if (!w.slotInit) { w.sl.x.jump(x); w.sl.y.jump(y); w.sl.s.jump(s); w.slotInit = true; }
+    else { w.sl.x.set(x); w.sl.y.set(y); w.sl.s.set(s); }
+  });
+}
+function updateZ(ws) {
+  ws.wins.forEach((w, i) => { const z = w.full ? 500 + i : 2 * i + 2; w.el.style.zIndex = z; w.label.style.zIndex = 900; });
+}
+function refreshFocus() { for (const w of wins.values()) w.el.classList.toggle('focused', w.id === focusId && !w.full); updatePanel(); }
+
+/* ---------------- render ---------------- */
+function wsT(i) {
+  const oc = clamp(ov.x, 0, 1.2);
+  return { tx: (i - pos.x) * W * lerp(1, OV_SPACING, oc), ty: OV_SHIFT * oc, sc: lerp(1, OV_SCALE, oc), oc };
+}
+function toStage(e) { const r = stage.getBoundingClientRect(); return { x: (e.clientX - r.left) / K, y: (e.clientY - r.top) / K }; }
+function toLocal(i, p) { const t = wsT(i); return { x: W / 2 + (p.x - W / 2 - t.tx) / t.sc, y: H / 2 + (p.y - H / 2 - t.ty) / t.sc }; }
+function toScreen(i, p) { const t = wsT(i); return { x: W / 2 + t.tx + t.sc * (p.x - W / 2), y: H / 2 + t.ty + t.sc * (p.y - H / 2) }; }
+
+function render() {
+  const dead = [];
+  wsList.forEach((ws, i) => {
+    const t = wsT(i);
+    const far = Math.abs(t.tx) > W * 1.4;
+    ws.el.style.visibility = far ? 'hidden' : 'visible';
+    ws.el.style.transform = `translate3d(${t.tx}px,${t.ty}px,0) scale(${t.sc})`;
+    ws.el.style.borderRadius = (18 * Math.min(t.oc, 1) / t.sc) + 'px';
+    for (const w of ws.wins) {
+      if (w.closing && !active.has(w.sp.o) && w.sp.o.x < 0.05) { dead.push(w); continue; }
+      if (far) continue;
+      renderWin(w, t);
+    }
+  });
+  dead.forEach(destroyWin);
+  const oc = clamp(ov.x, 0, 1);
+  dotsEl.querySelectorAll('.dot').forEach((d, i) => {
+    const a = Math.max(0, 1 - Math.abs(i - pos.x));
+    d.style.width = (7 + 15 * a) + 'px'; d.style.opacity = (0.35 + 0.65 * a).toFixed(3);
+  });
+  for (const d of dockIcons) { const sz = DOCK_BASE * d.s.x; d.ic.style.width = sz + 'px'; d.ic.style.height = sz + 'px'; d.ic.style.borderRadius = (sz * 0.26) + 'px'; }
+  ovc.style.opacity = oc.toFixed(3);
+  ovc.style.transform = `translateY(${(1 - oc) * -14}px)`;
+  ovc.classList.toggle('live', ov.t > 0.5);
+  if (pv.o.x > 0.002 || active.has(pv.o)) {
+    pv.el.style.display = 'block';
+    pv.el.style.transform = `translate3d(${pv.x.x}px,${pv.y.x}px,0)`;
+    pv.el.style.width = Math.max(0, pv.w.x) + 'px'; pv.el.style.height = Math.max(0, pv.h.x) + 'px';
+    pv.el.style.opacity = clamp(pv.o.x, 0, 1).toFixed(3);
+  } else pv.el.style.display = 'none';
+}
+function renderWin(w, t) {
+  const sp = w.sp, oc = w.min ? 0 : t.oc;
+  const ww = Math.max(40, sp.w.x), hh = Math.max(40, sp.h.x);
+  const b = lerp(1, w.sl.s.x, oc), q = sp.s.x;
+  let x = lerp(sp.x.x, w.sl.x.x, oc), y = lerp(sp.y.x, w.sl.y.x, oc);
+  x += ww * b * (1 - q) / 2; y += hh * b * (1 - q) / 2;
+  w.el.style.transform = `translate3d(${x}px,${y}px,0) scale(${b * q})`;
+  w.el.style.width = ww + 'px'; w.el.style.height = hh + 'px';
+  const vis = clamp(sp.o.x, 0, 1) * clamp((q - 0.05) / 0.35, 0, 1);
+  w.el.style.opacity = vis.toFixed(3);
+  const lo = w.min ? 0 : clamp(oc * 1.6 - 0.6, 0, 1);
+  if (lo > 0) {
+    w.label.style.transform = `translate3d(${x + ww * b * q / 2}px,${y + hh * b * q + 14}px,0) scale(${1 / t.sc}) translateX(-50%)`;
+    w.label.style.opacity = (lo * vis).toFixed(3);
+  } else w.label.style.opacity = '0';
+}
+
+/* ---------------- dynamic workspaces ---------------- */
+function normalize() {
+  if (gesture && gesture.type === 'swipe') return;
+  let changed = false;
+  for (let i = wsList.length - 2; i >= 0; i--) {
+    const ws = wsList[i];
+    if (ws.wins.length === 0 && i !== cur) {
+      ws.el.remove(); wsList.splice(i, 1); changed = true;
+      if (i < cur) { cur--; pos.x -= 1; pos.t -= 1; }
+    }
+  }
+  const lastWs = wsList[wsList.length - 1];
+  if (!lastWs || lastWs.wins.length > 0) { wsList.push(makeWs('float')); changed = true; }
+  if (changed) { rebuildDots(); renderThumbs(); updatePanel(); wake(); }
+}
+function goTo(i, opts = {}) {
+  i = clamp(i, 0, wsList.length - 1);
+  hideAssist();
+  if (i === cur && !opts.force) { pos.set(i); return; }
+  cur = i; pos.set(i);
+  const top = wsList[i].wins.filter(w => !w.closing && !w.min).at(-1);
+  focusId = top ? top.id : null;
+  refreshFocus(); renderThumbs(); updatePanel();
+}
+
+/* ---------------- window ops ---------------- */
+function focusWin(w) {
+  if (!w) { focusId = null; refreshFocus(); return; }
+  const ws = w.ws;
+  ws.wins.splice(ws.wins.indexOf(w), 1); ws.wins.push(w);
+  mru = [w.id, ...mru.filter(i => i !== w.id)];
+  focusId = w.id; updateZ(ws); refreshFocus();
+  const i = idx(ws);
+  if (i !== cur) { cur = i; pos.set(i); renderThumbs(); updatePanel(); }
+}
+function launch(app) {
+  const ws = wsList[cur], A = APPS[app];
+  const n = ws.wins.filter(x => !x.closing).length;
+  const fx = Math.round((W - A.w) / 2 + (n % 4) * 32 - 48), fy = Math.round(PANEL + (H - PANEL - A.h) / 2 + (n % 4) * 26 - 39);
+  const w = createWin(app, ws, { x: fx, y: fy, w: A.w, h: A.h });
+  layout(ws);
+  w.sp.x.jump(w.target.x); w.sp.y.jump(w.target.y); w.sp.w.jump(w.target.w); w.sp.h.jump(w.target.h);
+  w.sp.s.jump(0.9); w.sp.o.jump(0); w.sp.s.set(1); w.sp.o.set(1);
+  focusWin(w); normalize(); bounce(app);
+  if (isOv()) closeOverview();
+  return w;
+}
+function closeWin(w) {
+  if (!w || w.closing) return;
+  w.closing = true; w.el.style.pointerEvents = 'none';
+  w.sp.s.set(0.9); w.sp.o.set(0);
+  mru = mru.filter(i => i !== w.id);
+  if (focusId === w.id) { const top = w.ws.wins.filter(x => !x.closing && !x.min).at(-1); focusId = top ? top.id : null; refreshFocus(); }
+  hideAssist(); layout(w.ws);
+}
+function destroyWin(w) {
+  const ws = w.ws;
+  w.el.remove(); w.label.remove();
+  ws.wins.splice(ws.wins.indexOf(w), 1); ws.order.splice(ws.order.indexOf(w), 1);
+  wins.delete(w.id); renderThumbs(); updatePanel();
+}
+function moveToWs(w, target) {
+  if (!w || !target || w.ws === target) return;
+  const from = w.ws;
+  from.wins.splice(from.wins.indexOf(w), 1); from.order.splice(from.order.indexOf(w), 1);
+  target.wins.push(w); target.order.push(w); w.ws = target;
+  target.el.append(w.el, w.label);
+  w.full = false;
+  layout(from); layout(target);
+  if (focusId === w.id && from === wsList[cur]) { const top = from.wins.filter(x => !x.closing).at(-1); focusId = top ? top.id : null; refreshFocus(); }
+}
+function snapWin(w, zone, assist) {
+  w.snap = zone; w.full = false;
+  focusWin(w); layout(w.ws);
+  if (assist && OPP[zone]) showAssist(w.ws, OPP[zone], w);
+}
+function swapOrder(ws, a, b) { const i = ws.order.indexOf(a), j = ws.order.indexOf(b); ws.order[i] = b; ws.order[j] = a; }
+const center = r => ({ x: r.x + r.w / 2, y: r.y + r.h / 2 });
+function neighbour(w, dir, pool) {
+  const c = center(w.target); let best = null, bd = Infinity;
+  for (const o of pool) {
+    if (o === w) continue;
+    const d = center(o.target), dx = d.x - c.x, dy = d.y - c.y;
+    const ok = dir === 'left' ? dx < -1 : dir === 'right' ? dx > 1 : dir === 'up' ? dy < -1 : dy > 1;
+    if (!ok) continue;
+    const hz = dir === 'left' || dir === 'right';
+    const score = (hz ? Math.abs(dx) : Math.abs(dy)) + 2 * (hz ? Math.abs(dy) : Math.abs(dx));
+    if (score < bd) { bd = score; best = o; }
+  }
+  return best;
+}
+
+/* ---------------- KooL-style actions ---------------- */
+const SNAP_T = {
+  left: { null: 'left', right: null, r13: null, tr: 'tl', br: 'bl', max: 'left', left: 'left', l23: 'left', tl: 'tl', bl: 'bl' },
+  right: { null: 'right', left: null, l23: null, tl: 'tr', bl: 'br', max: 'right', right: 'right', r13: 'right', tr: 'tr', br: 'br' },
+  up: { null: 'max', left: 'tl', right: 'tr', l23: 'max', r13: 'max', bl: 'left', br: 'right', tl: 'tl', tr: 'tr', max: 'max' },
+  down: { null: null, max: null, left: 'bl', right: 'br', l23: null, r13: null, tl: 'left', tr: 'right', bl: 'bl', br: 'br' },
+};
+function focusDir(dir) {
+  const f = focused(), ws = wsList[cur];
+  const pool = ws.wins.filter(w => !w.closing && !w.min);
+  if (!f) { if (pool.length) focusWin(pool.at(-1)); return; }
+  const n = neighbour(f, dir, pool); if (n) focusWin(n);
+}
+function moveDir(dir) {
+  const w = focused(); if (!w) return;
+  const ws = w.ws;
+  if (ws.mode === 'tile' && !w.floating) {
+    const n = neighbour(w, dir, tileList(ws)); if (n) { swapOrder(ws, w, n); layout(ws); }
+    return;
+  }
+  const prev = w.snap, next = SNAP_T[dir][String(w.snap)];
+  if (next === undefined) return;
+  w.snap = next; w.full = false; layout(ws);
+  if (OPP[next] && prev !== next) showAssist(ws, OPP[next], w);
+}
+function resizeDir(dir) {
+  const w = focused(); if (!w) return;
+  const ws = w.ws;
+  if (ws.mode === 'tile' && !w.floating) {
+    ws.ratio = clamp(ws.ratio + (dir === 'right' || dir === 'down' ? 0.05 : -0.05), 0.2, 0.8); layout(ws); return;
+  }
+  if (w.snap) { w.float = { ...w.target }; w.snap = null; }
+  const d = 50;
+  if (dir === 'right') w.float.w += d; if (dir === 'left') w.float.w = Math.max(260, w.float.w - d);
+  if (dir === 'down') w.float.h += d; if (dir === 'up') w.float.h = Math.max(180, w.float.h - d);
+  layout(ws);
+}
+function toggleFloat() {
+  const w = focused(); if (!w) return;
+  if (w.ws.mode !== 'tile') { say('Workspace is floating. Tiling: Super+Alt+Space or Super+T'); return false; }
+  w.floating = !w.floating;
+  if (w.floating) { const A = APPS[w.app]; w.float = { x: (W - A.w) / 2, y: PANEL + (H - PANEL - A.h) / 2, w: A.w, h: A.h }; }
+  layout(w.ws); updateZ(w.ws);
+}
+function toggleWsMode() {
+  const ws = wsList[cur];
+  ws.mode = ws.mode === 'tile' ? 'float' : 'tile';
+  layout(ws);
+}
+function toggleFull() { const w = focused(); if (!w) return; w.full = !w.full; layout(w.ws); refreshFocus(); }
+function toggleMax() {
+  const w = focused(); if (!w) return;
+  if (w.ws.mode === 'tile' && !w.floating) { toggleFull(); return; }
+  w.snap = w.snap === 'max' ? null : 'max'; w.full = false; layout(w.ws);
+}
+function toggleSplit() { const w = focused(); if (!w || w.ws.mode !== 'tile') return; w.flip = !w.flip; layout(w.ws); }
+function moveFocusedTo(n, silent) {
+  const w = focused(); if (!w) return;
+  const target = wsList[Math.min(n, wsList.length - 1)];
+  const ti = idx(target);
+  moveToWs(w, target); normalize();
+  if (!silent) { goTo(idx(target)); focusWin(w); }
+  else if (ti === -1) renderThumbs();
+}
+function relWs(d, move, silent) {
+  if (!move) { goTo(cur + d); return; }
+  const n = clamp(cur + d, 0, wsList.length - 1); moveFocusedTo(n, silent);
+}
+
+/* ---------------- keybinding table (KooL Hyprland-Dots core) ---------------- */
+const K_ = (...k) => k;
+const BINDS = [
+  { g: 'Windows', items: [
+    { id: 'term', label: 'Terminal', keys: K_('Super', 'Enter'), run: () => launch('term') },
+    { id: 'launcher', label: 'App launcher', keys: K_('Super', 'D'), run: () => openOverview(true) },
+    { id: 'files', label: 'Files', keys: K_('Super', 'E'), run: () => launch('files') },
+    { id: 'close', label: 'Close window', keys: K_('Super', 'Q'), run: () => closeWin(focused()) },
+    { id: 'min', label: 'Minimize to the dock', keys: K_('Super', 'M'), run: () => minimize(focused()) },
+    { id: 'float', label: 'Window floating / tiled', keys: K_('Super', 'Space'), run: toggleFloat },
+    { id: 'full', label: 'Fullscreen', keys: K_('Super', 'Shift', 'F'), run: toggleFull },
+    { id: 'max', label: 'Maximize', keys: K_('Super', 'Ctrl', 'F'), run: toggleMax },
+    { id: 'alttab', label: 'Window switcher', keys: K_('Alt', 'Tab'), alt: 'Super+` in the mockup', run: () => switcherStep(true) },
+    { id: 'hints', label: 'Key cheat sheet', keys: K_('Super', 'H'), run: toggleCheat },
+  ]},
+  { g: 'Focus and layout', items: [
+    { id: 'focus', label: 'Focus in direction', keys: K_('Super', '←↑→↓'), run: () => focusDir('right') },
+    { id: 'move', label: 'Move window: snap or shift tile', keys: K_('Super', 'Ctrl', '←↑→↓'), run: () => moveDir('left') },
+    { id: 'resize', label: 'Size ±50 / split ratio', keys: K_('Super', 'Shift', '←↑→↓'), run: () => resizeDir('right') },
+    { id: 'swap', label: 'Swap', keys: K_('Super', 'Alt', '←↑→↓'), run: () => moveDir('right') },
+    { id: 'wsmode', label: 'Workspace: tiling / floating', keys: K_('Super', 'Alt', 'Space'), alt: 'or Super+T', run: toggleWsMode },
+    { id: 'split', label: 'Rotate split', keys: K_('Super', 'Shift', 'I'), run: toggleSplit },
+    { id: 'drag', label: 'Move / resize with mouse', keys: K_('Super', 'LMB / RMB'), na: true },
+  ]},
+  { g: 'Workspaces', items: [
+    { id: 'overview', label: 'Overview', keys: K_('Super', 'A'), run: () => toggleOverview() },
+    { id: 'wsn', label: 'Workspace 1–10', keys: K_('Super', '1…0'), run: () => goTo(0) },
+    { id: 'wsmove', label: 'Move window and follow', keys: K_('Super', 'Shift', '1…0'), run: () => relWs(1, true, false) },
+    { id: 'wssilent', label: 'Move window silently', keys: K_('Super', 'Ctrl', '1…0'), run: () => relWs(1, true, true) },
+    { id: 'wsnext', label: 'Next / previous workspace', keys: K_('Super', 'Tab'), alt: 'Shift goes back, also Super+. and Super+,', run: () => goTo(cur + 1) },
+  ]},
+  { g: 'System (not in the mockup)', items: [
+    { label: 'Screenshot region / full', keys: K_('Super', 'Shift', 'S'), na: true },
+    { label: 'Lock / power menu', keys: K_('Ctrl', 'Alt', 'L / P'), na: true },
+    { label: 'Keyboard layout', keys: K_('Alt', 'Shift'), na: true },
+    { label: 'Volume, brightness, media', keys: K_('Fn keys'), na: true },
+  ]},
+];
+const BIND_BY_ID = {};
+BINDS.forEach(g => g.items.forEach(b => { if (b.id) BIND_BY_ID[b.id] = b; }));
+
+function act(id, keysOverride, labelOverride) {
+  const b = BIND_BY_ID[id]; if (!b) return;
+  const r = b.run();
+  if (r !== false) say(labelOverride || b.label, keysOverride || b.keys);
+}
+let toastT = 0;
+function say(text, keys) {
+  toast.innerHTML = (keys ? keys.map(k => `<kbd>${k}</kbd>`).join('') : '') + `<span>${text}</span>`;
+  toast.classList.add('show'); clearTimeout(toastT);
+  toastT = setTimeout(() => toast.classList.remove('show'), 1300);
+}
+
+/* ---------------- keyboard ---------------- */
+const ARROWS = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down' };
+const ARROW_CH = { left: '←', right: '→', up: '↑', down: '↓' };
+let metaClean = false;
+document.addEventListener('keydown', e => {
+  const inText = e.target.matches && e.target.matches('input[type=text],textarea');
+  if (e.key === 'Escape') {
+    if (sw) hideSwitcher(); else if (cheat.classList.contains('show')) toggleCheat(); else if (assist) hideAssist(); else if (isOv()) closeOverview();
+    return;
+  }
+  if (e.key === 'Meta' || e.key === 'OS') { metaClean = true; return; }
+  metaClean = false;
+  const sup = e.metaKey || e.altKey;
+  const alt = e.metaKey && e.altKey;
+  if (!sup) {
+    if (isOv() && !inText && e.key.length === 1 && !e.ctrlKey) search.focus();
+    return;
+  }
+  const c = e.code; let handled = true;
+  const dir = ARROWS[c];
+  if (dir) {
+    if (e.ctrlKey) { moveDir(dir); say('Move window', ['Super', 'Ctrl', ARROW_CH[dir]]); }
+    else if (e.shiftKey) { resizeDir(dir); say('Resize', ['Super', 'Shift', ARROW_CH[dir]]); }
+    else if (alt) { moveDir(dir); say('Swap', ['Super', 'Alt', ARROW_CH[dir]]); }
+    else { focusDir(dir); say('Focus', ['Super', ARROW_CH[dir]]); }
+  }
+  else if (c === 'Enter' && e.shiftKey) { launch('term'); say('Dropdown terminal (a regular one in the mockup)', ['Super', 'Shift', 'Enter']); }
+  else if (c === 'Enter') act('term');
+  else if (c === 'KeyD') act('launcher');
+  else if (c === 'KeyE') act('files');
+  else if (c === 'KeyQ') act('close');
+  else if (c === 'KeyM') act('min');
+  else if (c === 'Space' && alt) act('wsmode');
+  else if (c === 'Space') act('float');
+  else if (c === 'KeyT') act('wsmode', ['Super', 'T']);
+  else if (c === 'KeyF' && e.shiftKey) act('full');
+  else if (c === 'KeyF' && e.ctrlKey) act('max');
+  else if (c === 'KeyH') act('hints');
+  else if (c === 'KeyA') act('overview');
+  else if (c === 'KeyI' && e.shiftKey) act('split');
+  else if (c === 'Backquote') act('alttab', ['Super', '`']);
+  else if (c === 'Tab') { goTo(cur + (e.shiftKey ? -1 : 1)); say(e.shiftKey ? 'Previous workspace' : 'Next workspace', e.shiftKey ? ['Super', 'Shift', 'Tab'] : ['Super', 'Tab']); }
+  else if (c === 'Period' || c === 'Comma') { const d = c === 'Period' ? 1 : -1; goTo(cur + d); say(d > 0 ? 'Next workspace' : 'Previous workspace', ['Super', d > 0 ? '.' : ',']); }
+  else if (c === 'BracketLeft' || c === 'BracketRight') { const d = c === 'BracketRight' ? 1 : -1; relWs(d, true, e.ctrlKey); say(e.ctrlKey ? 'Move window silently' : 'Move window', ['Super', e.ctrlKey ? 'Ctrl' : 'Shift', d > 0 ? ']' : '[']); }
+  else if (/^Digit\d$/.test(c)) {
+    let n = +c.slice(5); n = n === 0 ? 9 : n - 1;
+    if (e.shiftKey) { moveFocusedTo(n, false); say('Window to workspace ' + (n + 1), ['Super', 'Shift', String((n + 1) % 10)]); }
+    else if (e.ctrlKey) { moveFocusedTo(n, true); say('Window to workspace ' + (n + 1) + ' silently', ['Super', 'Ctrl', String((n + 1) % 10)]); }
+    else { goTo(Math.min(n, wsList.length - 1)); say('Workspace ' + (Math.min(n, wsList.length - 1) + 1), ['Super', String((n + 1) % 10)]); }
+  }
+  else handled = false;
+  if (handled) e.preventDefault();
+});
+document.addEventListener('keyup', e => {
+  if ((e.key === 'Meta' || e.key === 'OS') && metaClean) { toggleOverview(); }
+  if ((e.key === 'Alt' || e.key === 'Meta') && sw && !sw.timer) switcherCommit();
+  metaClean = false;
+});
+
+/* ---------------- pointer: windows ---------------- */
+function track(e, move, up) {
+  const id = e.pointerId, samples = [];
+  const add = ev => { const p = toStage(ev); samples.push({ t: ev.timeStamp, x: p.x, y: p.y }); while (samples.length > 2 && ev.timeStamp - samples[0].t > 90) samples.shift(); return p; };
+  const p0 = add(e);
+  const mv = ev => { if (ev.pointerId !== id) return; move(add(ev), p0, ev); };
+  const end = ev => {
+    if (ev.pointerId !== id) return;
+    removeEventListener('pointermove', mv); removeEventListener('pointerup', end); removeEventListener('pointercancel', end);
+    const p = add(ev), a = samples[0], b = samples[samples.length - 1];
+    const span = (b.t - a.t) / 1000;
+    const v = span > 0.004 ? { x: (b.x - a.x) / span, y: (b.y - a.y) / span } : { x: 0, y: 0 };
+    up(p, p0, v, ev);
+  };
+  addEventListener('pointermove', mv); addEventListener('pointerup', end); addEventListener('pointercancel', end);
+}
+function wireWin(w) {
+  const el = w.el;
+  el.addEventListener('pointerdown', e => {
+    e.stopPropagation();
+    if (!e.target.closest('.fly')) hideAssist();
+    if (isOv()) { if (e.button === 0) startOvDrag(e, w); return; }
+    const sup = e.altKey || e.metaKey;
+    if (sup && e.button === 2) { focusWin(w); e.preventDefault(); startResize(e, w); return; }
+    if (e.button !== 0) return;
+    focusWin(w);
+    if (e.target.closest('.win-resize')) { e.preventDefault(); startResize(e, w); return; }
+    if (sup || (e.target.closest('.win-head') && !e.target.closest('button,.fly'))) { e.preventDefault(); startMove(e, w); }
+  });
+  el.addEventListener('contextmenu', e => { if (e.altKey || e.metaKey) e.preventDefault(); });
+  el.querySelector('.win-head').addEventListener('dblclick', e => { if (e.target.closest('button,.fly')) return; focusWin(w); toggleMax(); });
+  el.querySelector('.wb-close').addEventListener('click', () => closeWin(w));
+  el.querySelector('.wb-min').addEventListener('click', () => minimize(w));
+  const maxBtn = el.querySelector('.wb-max'), fly = el.querySelector('.fly');
+  maxBtn.addEventListener('click', () => { focusWin(w); toggleMax(); fly.classList.remove('show'); });
+  let showT = 0, hideT = 0;
+  const show = () => { clearTimeout(hideT); clearTimeout(showT); showT = setTimeout(() => { if (w.ws.mode === 'tile' && !w.floating) return; focusWin(w); fly.classList.add('show'); }, 320); };
+  const hide = () => { clearTimeout(showT); hideT = setTimeout(() => { fly.classList.remove('show'); hidePreview(); }, 260); };
+  maxBtn.addEventListener('pointerenter', show); maxBtn.addEventListener('pointerleave', hide);
+  fly.addEventListener('pointerenter', () => clearTimeout(hideT)); fly.addEventListener('pointerleave', hide);
+  fly.querySelectorAll('i').forEach(z => {
+    z.addEventListener('pointerenter', () => showPreview(z.dataset.z, w));
+    z.addEventListener('click', ev => { ev.stopPropagation(); fly.classList.remove('show'); hidePreview(); snapWin(w, z.dataset.z, true); });
+  });
+}
+function zoneAt(p) {
+  const E = 16, C = 110;
+  if (p.y < PANEL + E) return p.x < C ? 'tl' : p.x > W - C ? 'tr' : 'max';
+  if (p.x < E) return p.y < PANEL + C ? 'tl' : p.y > H - C ? 'bl' : 'left';
+  if (p.x > W - E) return p.y < PANEL + C ? 'tr' : p.y > H - C ? 'br' : 'right';
+  if (p.y > H - E) return p.x < C ? 'bl' : p.x > W - C ? 'br' : null;
+  return null;
+}
+function startMove(e, w) {
+  const ws = w.ws, i = idx(ws);
+  const tiled = ws.mode === 'tile' && !w.floating && !w.full;
+  const p0 = toLocal(i, toStage(e));
+  const off = { x: p0.x - w.sp.x.x, y: p0.y - w.sp.y.x };
+  const frac = off.x / Math.max(1, w.sp.w.x);
+  let moved = false, zone = null;
+  gesture = { type: 'move', win: w, moved: false };
+  track(e, ps => {
+    const p = toLocal(i, ps);
+    if (!moved) {
+      if (Math.hypot(p.x - p0.x, p.y - p0.y) < 4) return;
+      moved = true; gesture.moved = true; hideAssist();
+      if (w.full) { w.full = false; refreshFocus(); }
+      if (!tiled && w.snap) { w.snap = null; off.x = frac * w.float.w; w.sp.w.set(w.float.w); w.sp.h.set(w.float.h); }
+      w.el.classList.remove('full');
+    }
+    w.sp.x.jump(p.x - off.x); w.sp.y.jump(Math.max(PANEL, p.y - off.y));
+    if (!tiled) { zone = ws.mode === 'float' ? zoneAt(p) : null; showPreview(zone, w); }
+  }, ps => {
+    gesture = null;
+    if (!moved) { wake(); return; }
+    if (tiled) {
+      const p = toLocal(i, ps);
+      const t = tileList(ws).find(o => o !== w && p.x >= o.target.x && p.x <= o.target.x + o.target.w && p.y >= o.target.y && p.y <= o.target.y + o.target.h);
+      if (t) swapOrder(ws, w, t);
+      layout(ws); return;
+    }
+    hidePreview();
+    if (zone) snapWin(w, zone, true);
+    else { w.float = { x: w.sp.x.x, y: w.sp.y.x, w: w.float.w, h: w.float.h }; layout(ws); }
+  });
+}
+function startResize(e, w) {
+  const ws = w.ws;
+  if (ws.mode === 'tile' && !w.floating) return;
+  if (w.snap || w.full) { w.float = { ...w.target }; w.snap = null; w.full = false; }
+  const f0 = { ...w.float };
+  gesture = { type: 'resize', win: w, moved: true };
+  track(e, (p, p0) => {
+    w.float.w = Math.max(260, f0.w + p.x - p0.x); w.float.h = Math.max(180, f0.h + p.y - p0.y);
+    w.sp.x.jump(w.float.x); w.sp.y.jump(w.float.y); w.sp.w.jump(w.float.w); w.sp.h.jump(w.float.h);
+  }, () => { gesture = null; layout(ws); });
+}
+
+/* ---------------- snap preview & assist ---------------- */
+const pv = { el: document.createElement('div'), x: new Spring(0), y: new Spring(0), w: new Spring(0), h: new Spring(0), o: new Spring(0, 0.002), zone: null };
+pv.el.className = 'preview';
+function showPreview(zone, w) {
+  if (zone === pv.zone) return;
+  const ws = w.ws;
+  if (pv.el.parentNode !== ws.el) ws.el.appendChild(pv.el);
+  pv.el.style.zIndex = 2 * ws.wins.length - 1;
+  if (zone) {
+    const r = snapRect(zone);
+    if (!pv.zone && pv.o.x < 0.05) { pv.x.jump(w.sp.x.x); pv.y.jump(w.sp.y.x); pv.w.jump(w.sp.w.x); pv.h.jump(w.sp.h.x); }
+    pv.x.set(r.x); pv.y.set(r.y); pv.w.set(r.w); pv.h.set(r.h); pv.o.set(1);
+  } else pv.o.set(0);
+  pv.zone = zone;
+}
+function hidePreview() { pv.zone = null; pv.o.set(0); }
+
+let assist = null;
+function cloneFor(w, f) {
+  const box = document.createElement('div');
+  box.style.width = w.target.w * f + 'px'; box.style.height = w.target.h * f + 'px';
+  const cl = w.el.cloneNode(true);
+  cl.classList.remove('focused', 'ghosted');
+  cl.querySelector('.fly')?.remove();
+  Object.assign(cl.style, { transform: `scale(${f})`, width: w.target.w + 'px', height: w.target.h + 'px', opacity: 1, zIndex: 0, pointerEvents: 'none', visibility: 'visible' });
+  box.appendChild(cl);
+  return box;
+}
+function showAssist(ws, side, except) {
+  hideAssist();
+  const cands = ws.wins.filter(x => x !== except && !x.closing && !x.min && !x.snap && !x.full && (ws.mode === 'float' || x.floating));
+  if (!cands.length) return;
+  const r = snapRect(side);
+  const el = document.createElement('div');
+  el.className = 'assist';
+  Object.assign(el.style, { left: r.x + 'px', top: r.y + 'px', width: r.w + 'px', height: r.h + 'px', zIndex: 800 });
+  el.innerHTML = '<div class="assist-title">Snap next to it</div><div class="assist-grid"></div>';
+  const grid = el.lastChild;
+  cands.slice().reverse().forEach(x => {
+    const f = Math.min(190 / x.target.w, 120 / x.target.h);
+    const it = document.createElement('button'); it.type = 'button'; it.className = 'assist-item';
+    const box = cloneFor(x, f); box.className = 'assist-thumb';
+    const lab = document.createElement('span'); lab.textContent = APPS[x.app].name;
+    it.append(box, lab);
+    it.addEventListener('click', () => { hideAssist(); snapWin(x, side, false); });
+    grid.appendChild(it);
+  });
+  el.addEventListener('pointerdown', e => e.stopPropagation());
+  ws.el.appendChild(el);
+  requestAnimationFrame(() => el.classList.add('show'));
+  assist = { el, ws };
+}
+function hideAssist() { if (!assist) return; const el = assist.el; el.classList.remove('show'); setTimeout(() => el.remove(), 200); assist = null; }
+
+/* ---------------- background gestures: swipe ws / pull overview ---------------- */
+const rubber = d => 0.35 * d / (1 + Math.abs(d));
+function clampPos(raw) { const max = wsList.length - 1; return raw < 0 ? -rubber(-raw) : raw > max ? max + rubber(raw - max) : raw; }
+function onBgDown(e, ws) {
+  if (e.button !== 0) return;
+  hideAssist();
+  if (e.target.closest('.win')) return;
+  e.preventDefault(); screenEl.focus({ preventScroll: true });
+  startBgGesture(e, ws);
+}
+function startBgGesture(e, ws) {
+  let axis = null;
+  const pos0 = pos.x, ov0 = ov.x;
+  gesture = { type: 'bg' };
+  track(e, (p, p0) => {
+    const dx = p.x - p0.x, dy = p.y - p0.y;
+    if (!axis) {
+      if (Math.hypot(dx, dy) < 8) return;
+      axis = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
+      gesture.type = axis === 'x' ? 'swipe' : 'pull';
+    }
+    if (axis === 'x') { const S = W * lerp(1, OV_SPACING, clamp(ov.x, 0, 1)); pos.jump(clampPos(pos0 - dx / S)); }
+    else ov.jump(clamp(ov0 - dy / 340, -0.08, 1.12));
+  }, (p, p0, v) => {
+    gesture = null;
+    if (!axis) {
+      if (isOv()) { if (ws && idx(ws) !== cur) goTo(idx(ws)); else closeOverview(); }
+      return;
+    }
+    if (axis === 'x') {
+      const S = W * lerp(1, OV_SPACING, clamp(ov.x, 0, 1));
+      const vi = -v.x / S;
+      const target = clamp(Math.round(pos.x + vi * 0.18), 0, wsList.length - 1);
+      goTo(target, { force: true }); pos.v = vi;
+    } else {
+      const vo = -v.y / 340;
+      const open = ov.x + vo * 0.2 > 0.5;
+      open ? openOverview() : closeOverview(); ov.v = vo;
+    }
+  });
+}
+$('.backdrop').addEventListener('pointerdown', e => { if (e.button === 0) { e.preventDefault(); startBgGesture(e, null); } });
+let wheel = null;
+screenEl.addEventListener('wheel', e => {
+  if (Math.abs(e.deltaX) <= Math.abs(e.deltaY) || e.ctrlKey) return;
+  e.preventDefault();
+  const S = W * lerp(1, OV_SPACING, clamp(ov.x, 0, 1));
+  if (!wheel) { wheel = { p0: pos.x, acc: 0, samples: [] }; gesture = { type: 'swipe' }; hideAssist(); }
+  wheel.acc += e.deltaX / K;
+  wheel.samples.push({ t: e.timeStamp, a: wheel.acc });
+  while (wheel.samples.length > 2 && e.timeStamp - wheel.samples[0].t > 100) wheel.samples.shift();
+  pos.jump(clampPos(wheel.p0 + wheel.acc / S));
+  clearTimeout(wheel.timer);
+  wheel.timer = setTimeout(() => {
+    const s = wheel.samples, a = s[0], b = s[s.length - 1];
+    const span = (b.t - a.t) / 1000, vi = span > 0.004 ? (b.a - a.a) / span / S : 0;
+    wheel = null; gesture = null;
+    goTo(clamp(Math.round(pos.x + vi * 0.12), 0, wsList.length - 1), { force: true }); pos.v = vi * 0.6;
+  }, 110);
+}, { passive: false });
+
+/* ---------------- overview ---------------- */
+function openOverview(focusSearch) {
+  hideAssist(); hideSwitcher();
+  wsList.forEach(computeSlots);
+  ov.set(1); renderThumbs();
+  if (focusSearch) setTimeout(() => search.focus(), 60);
+}
+function closeOverview() { ov.set(0); search.value = ''; renderResults(); search.blur(); screenEl.focus({ preventScroll: true }); }
+function toggleOverview() { isOv() ? closeOverview() : openOverview(); }
+$('#btnOv').addEventListener('click', () => toggleOverview());
+
+function startOvDrag(e, w) {
+  const i0 = idx(w.ws);
+  const s0 = toStage(e);
+  let moved = false, ghost = null, gOff = null, ft = 1;
+  gesture = { type: 'ovdrag', win: w };
+  track(e, ps => {
+    if (!moved) {
+      if (Math.hypot(ps.x - s0.x, ps.y - s0.y) < 6) return;
+      moved = true;
+      const t = wsT(i0); ft = w.sl.s.x * t.sc;
+      const tl = toScreen(i0, { x: w.sl.x.x, y: w.sl.y.x });
+      gOff = { x: s0.x - tl.x, y: s0.y - tl.y };
+      ghost = cloneFor(w, ft); ghost.className = 'ghost';
+      ghostLayer.appendChild(ghost); w.el.classList.add('ghosted');
+    }
+    ghost.style.transform = `translate3d(${ps.x - gOff.x * 0.85}px,${ps.y - gOff.y * 0.85}px,0) scale(.85)`;
+    const t = dropTarget(ps);
+    thumbs.querySelectorAll('.thumb').forEach((th, k) => th.classList.toggle('drop', t !== null && wsList[k] === t && t !== w.ws));
+  }, ps => {
+    gesture = null;
+    thumbs.querySelectorAll('.thumb').forEach(th => th.classList.remove('drop'));
+    if (!moved) { focusWin(w); closeOverview(); return; }
+    ghost.remove(); w.el.classList.remove('ghosted');
+    const t = dropTarget(ps);
+    if (t && t !== w.ws) { moveToWs(w, t); normalize(); }
+    wake();
+  });
+}
+function dropTarget(ps) {
+  const ths = [...thumbs.querySelectorAll('.thumb')];
+  for (let k = 0; k < ths.length; k++) {
+    const r = ths[k].getBoundingClientRect(), s = stage.getBoundingClientRect();
+    const x = (r.left - s.left) / K, y = (r.top - s.top) / K, w = r.width / K, h = r.height / K;
+    if (ps.x >= x && ps.x <= x + w && ps.y >= y && ps.y <= y + h) return wsList[k];
+  }
+  for (let i = 0; i < wsList.length; i++) { const l = toLocal(i, ps); if (l.x >= 0 && l.x <= W && l.y >= 0 && l.y <= H) return wsList[i]; }
+  return null;
+}
+function renderThumbs() {
+  const f = 96 / W;
+  thumbs.innerHTML = '';
+  wsList.forEach((ws, i) => {
+    const t = document.createElement('button');
+    t.type = 'button'; t.className = 'thumb' + (i === cur ? ' cur' : '');
+    t.setAttribute('aria-label', 'Workspace ' + (i + 1));
+    t.innerHTML = '<div class="wall"></div>';
+    for (const w of ws.wins) {
+      if (w.closing || w.min) continue;
+      const r = w.target, m = document.createElement('i');
+      m.style.cssText = `left:${r.x * f}px;top:${r.y * f}px;width:${r.w * f}px;height:${r.h * f}px`;
+      if (w.id === focusId) m.className = 'f';
+      t.appendChild(m);
+    }
+    if (ws.mode === 'tile') { const b = document.createElement('b'); b.textContent = 'tile'; t.appendChild(b); }
+    t.addEventListener('pointerdown', e => e.stopPropagation());
+    t.addEventListener('click', () => goTo(i));
+    thumbs.appendChild(t);
+  });
+}
+function renderResults() {
+  const q = search.value.trim().toLowerCase();
+  results.innerHTML = '';
+  if (!q) { results.hidden = true; return; }
+  results.hidden = false;
+  const list = Object.entries(APPS).filter(([, a]) => (a.name + ' ' + a.kw).toLowerCase().includes(q));
+  if (!list.length) { results.innerHTML = '<div class="r-empty">No results</div>'; return; }
+  list.forEach(([k, a], i) => {
+    const b = document.createElement('button'); b.type = 'button';
+    b.className = 'r-item' + (i === 0 ? ' sel' : '');
+    b.innerHTML = `<span class="app-ic" style="width:26px;height:26px;border-radius:7px;background:${a.color}">${ICON[k]}</span>${a.name}${i === 0 ? '<small>Enter</small>' : ''}`;
+    b.addEventListener('click', () => launch(k));
+    results.appendChild(b);
+  });
+}
+search.addEventListener('input', renderResults);
+search.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { const q = search.value.trim().toLowerCase(); const hit = Object.entries(APPS).find(([, a]) => (a.name + ' ' + a.kw).toLowerCase().includes(q)); if (q && hit) launch(hit[0]); }
+  if (e.key === 'Escape' && search.value) { e.stopPropagation(); search.value = ''; renderResults(); }
+});
+search.addEventListener('pointerdown', e => e.stopPropagation());
+results.addEventListener('pointerdown', e => e.stopPropagation());
+/* ---------------- dock: classic macOS (magnification, running dots, launch bounce, minimize target) ---------------- */
+const dockEl = $('#dock'), dockRow = $('#dockRow');
+const dockIcons = [];
+const TRASH_IC = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4.5h11M6 4.5V3h4v1.5M4 4.5l.7 9h6.6l.7-9"/></svg>';
+const APPS_IC = '<svg viewBox="0 0 16 16" fill="currentColor"><rect x="2" y="2" width="3" height="3" rx="1"/><rect x="6.5" y="2" width="3" height="3" rx="1"/><rect x="11" y="2" width="3" height="3" rx="1"/><rect x="2" y="6.5" width="3" height="3" rx="1"/><rect x="6.5" y="6.5" width="3" height="3" rx="1"/><rect x="11" y="6.5" width="3" height="3" rx="1"/><rect x="2" y="11" width="3" height="3" rx="1"/><rect x="6.5" y="11" width="3" height="3" rx="1"/><rect x="11" y="11" width="3" height="3" rx="1"/></svg>';
+function addDockItem(key, name, icon, color, onClick) {
+  const it = document.createElement('div'); it.className = 'dk-item'; it.dataset.key = key;
+  it.innerHTML = `<span class="dk-tip">${name}</span><button class="dk-ic" type="button" aria-label="${name}" style="background:${color}">${icon}</button><i class="dk-dot"></i>`;
+  it.querySelector('.dk-ic').addEventListener('click', onClick);
+  dockRow.appendChild(it);
+  const d = { key, el: it, ic: it.querySelector('.dk-ic'), s: new Spring(1, 0.001), base: 0 };
+  dockIcons.push(d); return d;
+}
+addDockItem('apps', 'Apps', APPS_IC, 'var(--ic-apps)', () => openOverview(true));
+Object.entries(APPS).forEach(([k, a]) => addDockItem(k, a.name, ICON[k], a.color, () => dockClick(k)));
+dockRow.insertAdjacentHTML('beforeend', '<span class="dk-sep" aria-hidden="true"></span>');
+addDockItem('trash', 'Trash', TRASH_IC, 'var(--ic-trash)', () => { launch('files'); say('Trash opens in ds-files'); });
+
+function measureDock() {
+  const sr = stage.getBoundingClientRect();
+  dockIcons.forEach(d => { const r = d.ic.getBoundingClientRect(); d.base = (r.left + r.width / 2 - sr.left) / K - W / 2; });
+}
+dockEl.addEventListener('pointerenter', () => { if (dockIcons.every(d => Math.abs(d.s.x - 1) < 0.01)) measureDock(); revealDock(true); });
+dockEl.addEventListener('pointermove', e => {
+  if (!cfg.dockMag) return;
+  const x = toStage(e).x - W / 2;
+  dockIcons.forEach(d => { const dist = Math.abs(x - d.base); d.s.set(dist < DOCK_RANGE ? 1 + (DOCK_MAG - 1) * Math.cos(dist / DOCK_RANGE * Math.PI / 2) : 1); });
+});
+dockEl.addEventListener('pointerleave', () => { dockIcons.forEach(d => d.s.set(1)); scheduleDockHide(); });
+dockEl.addEventListener('pointerdown', e => e.stopPropagation());
+
+function dockPoint(app) {
+  const d = dockIcons.find(x => x.key === app) || dockIcons[0];
+  const sr = stage.getBoundingClientRect(), r = d.ic.getBoundingClientRect();
+  return { x: (r.left + r.width / 2 - sr.left) / K, y: (r.top + r.height / 2 - sr.top) / K };
+}
+function bounce(app) {
+  const d = dockIcons.find(x => x.key === app); if (!d) return;
+  d.el.classList.remove('bounce'); void d.el.offsetWidth; d.el.classList.add('bounce');
+}
+function dockClick(app) {
+  closeDockMenu();
+  const all = [...wins.values()].filter(w => w.app === app && !w.closing);
+  if (!all.length) { launch(app); return; }
+  const here = all.filter(w => w.ws === wsList[cur]);
+  const pool = here.length ? here : all;
+  const vis = pool.filter(w => !w.min);
+  if (isOv()) closeOverview();
+  if (!vis.length) { restore(pool.filter(w => w.min).sort((a, b) => b.minAt - a.minAt)[0]); return; }
+  const best = mru.map(id => wins.get(id)).find(w => w && vis.includes(w)) || vis.at(-1);
+  focusWin(best);
+}
+function updateDock() {
+  dockIcons.forEach(d => d.el.classList.toggle('run', [...wins.values()].some(w => w.app === d.key && !w.closing)));
+  applyDockVis();
+}
+
+/* auto-hide (off by default, like a stock macOS dock) */
+let dockShown = true, dockHideT = 0;
+function dockVisible() { const f = focused(); if (f && f.full && !isOv()) return false; return !cfg.dockHide || dockShown; }
+function applyDockVis() { dockEl.classList.toggle('hid', !dockVisible()); }
+function revealDock(v) { clearTimeout(dockHideT); if (!cfg.dockHide) return; dockShown = v; applyDockVis(); }
+function scheduleDockHide() { if (!cfg.dockHide) return; clearTimeout(dockHideT); dockHideT = setTimeout(() => { dockShown = false; applyDockVis(); }, 450); }
+stage.addEventListener('pointermove', e => { if (cfg.dockHide && !dockShown && toStage(e).y > H - 6) revealDock(true); });
+
+/* right-click menu on a dock icon */
+let dockMenu = null;
+function closeDockMenu() { dockMenu?.remove(); dockMenu = null; }
+dockRow.addEventListener('contextmenu', e => {
+  const it = e.target.closest('.dk-item'); if (!it) return;
+  e.preventDefault();
+  const key = it.dataset.key; if (!APPS[key]) return;
+  closeDockMenu();
+  const open = [...wins.values()].filter(w => w.app === key && !w.closing);
+  const m = document.createElement('div'); m.className = 'dk-menu';
+  m.innerHTML = `<div class="dk-mh">${APPS[key].name}${open.length ? ` · ${open.length} window${open.length > 1 ? 's' : ''}` : ''}</div>`;
+  const items = [['New window', () => launch(key)]];
+  if (open.length) items.push(['Show all windows', () => openOverview()], ['Quit', () => open.forEach(closeWin)]);
+  items.forEach(([label, fn]) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = label; b.onclick = () => { closeDockMenu(); fn(); }; m.appendChild(b); });
+  m.addEventListener('pointerdown', ev => ev.stopPropagation());
+  stage.appendChild(m);
+  const p = dockPoint(key), r = it.querySelector('.dk-ic').getBoundingClientRect();
+  m.style.left = p.x + 'px'; m.style.bottom = (H - (p.y - r.height / K / 2) + 14) + 'px';
+  dockMenu = m;
+});
+stage.addEventListener('pointerdown', e => { if (dockMenu && !dockMenu.contains(e.target)) closeDockMenu(); }, true);
+
+/* minimize into the dock icon and back */
+function minimize(w) {
+  if (!w || w.closing || w.min || w.full) return false;
+  w.min = true; w.minAt = performance.now(); w.el.style.pointerEvents = 'none'; hideAssist();
+  w.sp.s.set(0.05);
+  if (focusId === w.id) { const top = w.ws.wins.filter(x => !x.closing && !x.min).at(-1); focusId = top ? top.id : null; refreshFocus(); }
+  layout(w.ws);
+}
+function restore(w) {
+  if (!w || !w.min) return;
+  w.min = false; w.el.style.pointerEvents = '';
+  w.sp.s.set(1);
+  focusWin(w); layout(w.ws);
+}
+
+/* ---------------- switcher (Alt+Tab) ---------------- */
+let sw = null;
+function switcherStep(timed) {
+  if (!sw) {
+    const list = mru.map(i => wins.get(i)).filter(w => w && !w.closing && !w.min && w.ws === wsList[cur]);
+    if (list.length < 2) { say('Only one window on this workspace'); return false; }
+    sw = { list, idx: 1, timer: 0 };
+    switcher.innerHTML = '';
+    list.forEach(w => {
+      const it = document.createElement('div'); it.className = 'sw-item';
+      const f = Math.min(164 / w.target.w, 104 / w.target.h);
+      const holder = document.createElement('div'); holder.className = 'sw-box'; holder.appendChild(cloneFor(w, f));
+      const lab = document.createElement('span'); lab.textContent = APPS[w.app].name;
+      it.append(holder, lab); switcher.appendChild(it);
+    });
+    switcher.classList.add('show');
+  } else sw.idx = (sw.idx + 1) % sw.list.length;
+  [...switcher.children].forEach((c, i) => c.classList.toggle('sel', i === sw.idx));
+  if (timed) { clearTimeout(sw.timer); sw.timer = setTimeout(switcherCommit, 1100); }
+}
+function switcherCommit() { if (!sw) return; const w = sw.list[sw.idx]; hideSwitcher(); focusWin(w); }
+function hideSwitcher() { if (!sw) return; clearTimeout(sw.timer); sw = null; switcher.classList.remove('show'); }
+
+/* ---------------- cheat sheet (Super+H) ---------------- */
+function toggleCheat() {
+  if (cheat.classList.contains('show')) { cheat.classList.remove('show'); return; }
+  cheat.innerHTML = '<h4>ds keys</h4>' + BINDS.slice(0, 3).flatMap(g => g.items).map(b => `<div><span>${b.label}</span><span>${b.keys.map(k => `<kbd>${k}</kbd>`).join('')}</span></div>`).join('');
+  cheat.classList.add('show');
+}
+cheat.addEventListener('pointerdown', e => { e.stopPropagation(); toggleCheat(); });
+
+/* ---------------- panel ---------------- */
+function rebuildDots() {
+  dotsEl.innerHTML = '';
+  wsList.forEach((ws, i) => {
+    const d = document.createElement('button'); d.type = 'button'; d.className = 'dot'; d.setAttribute('aria-label', 'Workspace ' + (i + 1));
+    d.addEventListener('click', () => goTo(i)); dotsEl.appendChild(d);
+  });
+}
+function updatePanel() {
+  const ws = wsList[cur]; if (!ws) return;
+  modeChip.textContent = ws.mode === 'tile' ? '▦ tiling' : '◱ floating';
+  const f = focused();
+  panel.classList.toggle('hidden', !!(f && f.full) && !isOv());
+  updateDock();
+}
+modeChip.addEventListener('click', () => { toggleWsMode(); say(wsList[cur].mode === 'tile' ? 'Tiling on this workspace' : 'Floating windows on this workspace', ['Super', 'Alt', 'Space']); });
+const clock = $('#clock');
+function tick() { const d = new Date(); clock.textContent = d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }) + '  ' + d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }); }
+tick(); setInterval(tick, 15000);
+panel.addEventListener('pointerdown', e => e.stopPropagation());
+
+/* ---------------- rail: launch, keys, tuning ---------------- */
+const launchEl = $('#launch');
+Object.entries(APPS).forEach(([k, a]) => {
+  const b = document.createElement('button'); b.type = 'button'; b.className = 'btn';
+  b.innerHTML = `<span class="sq" style="background:${a.color}">${ICON[k]}</span>${a.name}`;
+  b.addEventListener('click', () => launch(k)); launchEl.appendChild(b);
+});
+const keysEl = $('#keys');
+BINDS.forEach(g => {
+  const sec = document.createElement('div'); sec.className = 'kgroup';
+  sec.innerHTML = `<h3>${g.g}</h3>`;
+  g.items.forEach(b => {
+    const row = document.createElement(b.na ? 'div' : 'button');
+    if (!b.na) row.type = 'button';
+    row.className = 'krow' + (b.na ? ' na' : '');
+    row.innerHTML = `<span>${b.label}${b.alt ? `<br><small style="color:var(--muted)">${b.alt}</small>` : ''}</span><span class="keys">${b.keys.map(k => `<kbd>${k}</kbd>`).join('')}</span>`;
+    if (!b.na) row.addEventListener('click', () => act(b.id));
+    sec.appendChild(row);
+  });
+  keysEl.appendChild(sec);
+});
+
+const ctl = id => document.getElementById(id);
+function applyCfg() {
+  stage.style.setProperty('--r', cfg.radius + 'px');
+  stage.style.setProperty('--bw', cfg.border + 'px');
+  stage.classList.toggle('blur', cfg.blur); stage.classList.toggle('noblur', !cfg.blur);
+  stage.classList.toggle('shadows', cfg.shadows);
+  ctl('k').value = cfg.k; ctl('kOut').textContent = cfg.k;
+  ctl('zeta').value = cfg.zeta; ctl('zetaOut').textContent = cfg.zeta.toFixed(2);
+  ctl('radius').value = cfg.radius; ctl('radiusOut').textContent = cfg.radius + ' px';
+  ctl('gaps').value = cfg.gaps; ctl('gapsOut').textContent = cfg.gaps + ' px';
+  ctl('border').value = cfg.border; ctl('borderOut').textContent = cfg.border + ' px';
+  ctl('blur').checked = cfg.blur; ctl('shadows').checked = cfg.shadows; ctl('slow').checked = cfg.slow;
+  ctl('dockMag').checked = cfg.dockMag; ctl('dockHide').checked = cfg.dockHide;
+  document.querySelectorAll('#presets button').forEach(b => { const p = PRESETS[b.dataset.p]; b.classList.toggle('on', p.k === cfg.k && Math.abs(p.zeta - cfg.zeta) < 0.005); });
+  ctl('cfg').textContent = kdl();
+  drawCurve();
+}
+function kdl() {
+  return `// ~/.config/ds/config.kdl
+animations {
+    spring stiffness=${cfg.k} damping-ratio=${cfg.zeta.toFixed(2)}
+}
+layout {
+    default-mode "floating"   // per workspace: Super+Alt+Space
+    gaps ${cfg.gaps}
+    corner-radius ${cfg.radius}
+    border width=${cfg.border} active="#f2a46a"
+}
+effects {
+    blur ${cfg.blur ? 'on' : 'off'}
+    shadows ${cfg.shadows ? 'on' : 'off'}
+}
+dock {
+    magnification ${cfg.dockMag ? 'on' : 'off'} size=${DOCK_BASE} max=${Math.round(DOCK_BASE * DOCK_MAG)}
+    autohide ${cfg.dockHide ? 'on' : 'off'}
+}
+binds preset="kool" {
+    // drop: zoom, wallpaper, themes, emoji, calc
+}`;
+}
+['k', 'zeta', 'radius', 'gaps', 'border'].forEach(id => ctl(id).addEventListener('input', e => {
+  cfg[id] = id === 'zeta' ? parseFloat(e.target.value) : parseInt(e.target.value, 10);
+  applyCfg(); if (id === 'gaps') layoutAll();
+}));
+['blur', 'shadows', 'slow', 'dockMag', 'dockHide'].forEach(id => ctl(id).addEventListener('change', e => {
+  cfg[id] = e.target.checked; applyCfg();
+  if (id === 'dockHide') { dockShown = !cfg.dockHide; updatePanel(); layoutAll(); }
+}));
+document.querySelectorAll('#presets button').forEach(b => b.addEventListener('click', () => { Object.assign(cfg, PRESETS[b.dataset.p]); applyCfg(); demoBounce(); }));
+function demoBounce() { const w = focused(); if (!w) return; w.sp.s.jump(0.93); w.sp.s.set(1); }
+ctl('copy').addEventListener('click', async () => {
+  const b = ctl('copy');
+  try { await navigator.clipboard.writeText(kdl()); b.textContent = 'Copied'; }
+  catch { const r = document.createRange(); r.selectNodeContents(ctl('cfg')); const s = getSelection(); s.removeAllRanges(); s.addRange(r); b.textContent = 'Selected, press Ctrl+C'; }
+  setTimeout(() => { b.textContent = 'Copy'; }, 1600);
+});
+
+function drawCurve() {
+  const cv = ctl('curve'), dpr = devicePixelRatio || 1, w = cv.clientWidth, h = cv.clientHeight;
+  if (!w) return;
+  cv.width = w * dpr; cv.height = h * dpr;
+  const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, h);
+  const css = getComputedStyle(document.documentElement);
+  const accent = css.getPropertyValue('--accent').trim(), line = css.getPropertyValue('--line').trim();
+  const T = 0.6, top = 18, bot = h - 14, y = v => bot - (bot - top) * v;
+  g.strokeStyle = line; g.lineWidth = 1; g.setLineDash([3, 4]);
+  g.beginPath(); g.moveTo(0, y(1)); g.lineTo(w, y(1)); g.stroke(); g.setLineDash([]);
+  const k = cfg.k, c = 2 * cfg.zeta * Math.sqrt(k);
+  let x = 0, v = 0, t = 0, settle = null; const dt = 1 / 480;
+  g.strokeStyle = accent; g.lineWidth = 2; g.beginPath(); g.moveTo(0, y(0));
+  while (t < 3) {
+    const a = -k * (x - 1) - c * v; v += a * dt; x += v * dt; t += dt;
+    if (t <= T) g.lineTo(t / T * w, y(x));
+    if (settle === null && Math.abs(x - 1) < 0.01 && Math.abs(v) < 0.05) settle = t;
+    if (settle !== null && Math.abs(x - 1) >= 0.01) settle = null;
+  }
+  g.stroke();
+  ctl('settle').textContent = settle ? `settles in ≈ ${Math.round(settle * 1000)} ms` : '';
+}
+new ResizeObserver(drawCurve).observe(ctl('curve'));
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', drawCurve);
+new MutationObserver(drawCurve).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+
+setInterval(() => {
+  const now = performance.now();
+  while (stamps.length && now - stamps[0] > 1000) stamps.shift();
+  ctl('fps').textContent = stamps.length; ctl('ftotal').textContent = frames;
+}, 250);
+
+/* ---------------- initial scene ---------------- */
+const ws0 = makeWs('float'), ws1 = makeWs('tile');
+wsList.push(ws0, ws1);
+const ed = createWin('editor', ws0, { x: 190, y: 110, w: 600, h: 440 }); ed.snap = 'left';
+const fi = createWin('files', ws0, { x: 712, y: 392, w: 520, h: 350 });
+const te = createWin('term', ws0, { x: 668, y: 64, w: 568, h: 312 });
+createWin('notes', ws1, { x: 100, y: 100, w: 400, h: 400 });
+createWin('term', ws1, { x: 200, y: 120, w: 560, h: 330 });
+createWin('editor', ws1, { x: 300, y: 140, w: 600, h: 430 });
+mru = [te.id, fi.id, ed.id];
+normalize();
+applyCfg(); layoutAll();
+for (const w of wins.values()) Object.values(w.sp).forEach(s => s.jump(s.t));
+focusWin(ws1.wins.at(-1)); focusWin(te);
+pos.jump(0); ov.jump(0);
+rebuildDots(); renderThumbs(); updatePanel(); render();
+screenEl.addEventListener('pointerdown', () => screenEl.focus({ preventScroll: true }));
+})();
+</script>

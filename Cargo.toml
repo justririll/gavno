@@ -1,0 +1,19 @@
+[workspace]
+members = ["crates/ds"]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+version = "0.1.0"
+
+# Dependencies are optimized even in dev builds: Smithay and Mesa paths are
+# hot, and an unoptimized compositor stutters.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+debug = "line-tables-only"

@@ -1,0 +1,1214 @@
+<title>ds-files</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap">
+<style>
+/* Layout: one ds-styled app window floating on the dusk wallpaper, two short explainer cards under it.
+   Identity: ds palette (slate glass, apricot accent), indigo folders, a red band that means "you are root now". */
+:root{
+  --bg:#f2f1f6; --surface:#ffffff; --surface-2:#f0eff6; --surface-3:#e7e6ef; --fg:#1a1b26; --muted:#5c6177; --line:#dddce7;
+  --accent:#b4531c; --accent-soft:rgba(180,83,28,.13); --accent-line:rgba(180,83,28,.5); --accent-ink:#ffffff;
+  --root:#c3322a; --root-soft:rgba(195,50,42,.09); --root-line:rgba(195,50,42,.35); --root-ink:#ffffff;
+  --folder:#6b78d6; --folder-back:#4f5bbd; --folder-ink:rgba(255,255,255,.92);
+  --file:#ffffff; --file-fold:#ecebf3; --file-line:#c9c8d6;
+  --t-code:#7b5ce0; --t-text:#5d6680; --t-img:#d4517a; --t-arch:#c98a1c; --t-disc:#1f9a8a; --t-web:#3d7be0; --ic-fg:#ffffff;
+  --wall-1:#e3dcf2; --wall-2:rgba(255,160,104,.66); --wall-3:rgba(136,114,230,.5); --wall-4:rgba(255,122,146,.38); --wall-5:#f8ece2;
+  --glass:rgba(255,255,255,.72); --shadow:rgba(45,30,80,.30);
+  --term-bg:#13141d; --term-head:#1b1d29; --term-fg:#d9dbe7; --term-dim:#7d8299; --term-ok:#8fd19e; --term-acc:#f2a46a; --term-root:#ff7a6e; --term-path:#8fb4ff;
+  --font-ui:"Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono:"Geist Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0d0f17; --surface:#181b28; --surface-2:#1e2232; --surface-3:#262b3d; --fg:#e7e8f1; --muted:#949ab0; --line:#2a2f42;
+    --accent:#f2a46a; --accent-soft:rgba(242,164,106,.15); --accent-line:rgba(242,164,106,.55); --accent-ink:#1b1209;
+    --root:#ff6b5e; --root-soft:rgba(255,107,94,.11); --root-line:rgba(255,107,94,.4); --root-ink:#2a0d0a;
+    --folder:#7f8be6; --folder-back:#5d68c8; --folder-ink:rgba(20,22,40,.85);
+    --file:#262a3a; --file-fold:#30354a; --file-line:#3c4259;
+    --wall-1:#1d1e38; --wall-2:rgba(240,138,88,.56); --wall-3:rgba(116,86,206,.52); --wall-4:rgba(226,84,122,.34); --wall-5:#0e0f1e;
+    --glass:rgba(24,27,40,.78); --shadow:rgba(0,0,0,.6);
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0d0f17; --surface:#181b28; --surface-2:#1e2232; --surface-3:#262b3d; --fg:#e7e8f1; --muted:#949ab0; --line:#2a2f42;
+  --accent:#f2a46a; --accent-soft:rgba(242,164,106,.15); --accent-line:rgba(242,164,106,.55); --accent-ink:#1b1209;
+  --root:#ff6b5e; --root-soft:rgba(255,107,94,.11); --root-line:rgba(255,107,94,.4); --root-ink:#2a0d0a;
+  --folder:#7f8be6; --folder-back:#5d68c8; --folder-ink:rgba(20,22,40,.85);
+  --file:#262a3a; --file-fold:#30354a; --file-line:#3c4259;
+  --wall-1:#1d1e38; --wall-2:rgba(240,138,88,.56); --wall-3:rgba(116,86,206,.52); --wall-4:rgba(226,84,122,.34); --wall-5:#0e0f1e;
+  --glass:rgba(24,27,40,.78); --shadow:rgba(0,0,0,.6);
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+body{background:var(--bg);color:var(--fg);font-family:var(--font-ui);font-size:14px;line-height:1.5;
+  padding-left:max(16px, env(safe-area-inset-left, 0px));padding-right:max(16px, env(safe-area-inset-right, 0px));padding-block:20px 40px}
+button,input{font:inherit;color:inherit}
+.wrap{max-width:1240px;margin:0 auto;display:grid;gap:18px}
+.top{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:12px 24px}
+.brand{display:flex;align-items:center;gap:14px;min-width:0}
+.mark{width:42px;height:42px;flex:none}
+.brand h1{margin:0;font-size:22px;font-weight:650;letter-spacing:-.02em;line-height:1.15}
+.brand p{margin:2px 0 0;color:var(--muted);font-size:13.5px;max-width:64ch;text-wrap:pretty}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{font:500 12px/1 var(--font-mono);padding:6px 9px;border-radius:999px;border:1px solid var(--line);color:var(--muted);background:var(--surface)}
+
+/* desktop backdrop */
+.desk{position:relative;border-radius:20px;padding:34px;overflow:hidden;
+  background:radial-gradient(70% 80% at 82% 10%, var(--wall-2), transparent 62%),radial-gradient(60% 75% at 6% 95%, var(--wall-3), transparent 62%),
+  radial-gradient(50% 60% at 58% 80%, var(--wall-4), transparent 66%),linear-gradient(158deg, var(--wall-1), var(--wall-5))}
+@media (max-width:720px){.desk{padding:8px;border-radius:14px}}
+
+/* ---------- app window ---------- */
+.app{position:relative;height:660px;border-radius:14px;background:var(--surface);box-shadow:0 0 0 1px var(--line),0 40px 90px -30px var(--shadow),0 10px 30px -12px var(--shadow);
+  display:grid;grid-template-rows:auto auto 1fr;overflow:hidden;transition:box-shadow .25s}
+.app.focus{box-shadow:0 0 0 2px var(--accent),0 40px 90px -30px var(--shadow),0 10px 30px -12px var(--shadow)}
+.app.is-root{box-shadow:0 0 0 2px var(--root),0 40px 90px -30px var(--shadow),0 10px 30px -12px var(--shadow)}
+@media (max-width:720px){.app{height:600px}}
+.hb{display:flex;align-items:center;gap:6px;padding:8px 10px;background:var(--surface-2);border-bottom:1px solid var(--line);min-width:0;transition:background .25s}
+.is-root .hb{background:linear-gradient(var(--root-soft),var(--root-soft)),var(--surface-2)}
+.ib{width:32px;height:32px;border-radius:9px;border:0;background:none;display:grid;place-items:center;cursor:pointer;flex:none;color:var(--fg)}
+.ib:hover{background:var(--surface-3)}
+.ib:disabled{opacity:.35;cursor:default;background:none}
+.ib.on{background:var(--accent-soft);color:var(--accent)}
+.ib svg{width:17px;height:17px}
+.ib:focus-visible,.place:focus-visible,.crumb:focus-visible,.mi:focus-visible,.btn:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+#btnSide{display:none}
+@media (max-width:720px){#btnSide{display:grid}}
+.path{flex:1;min-width:0;height:32px;border-radius:9px;background:var(--surface);border:1px solid var(--line);display:flex;align-items:center;overflow:hidden;cursor:text}
+.crumbs{display:flex;align-items:center;min-width:0;overflow-x:auto;scrollbar-width:none;padding:0 4px;flex:1}
+.crumbs::-webkit-scrollbar{display:none}
+.crumb{border:0;background:none;padding:4px 7px;border-radius:6px;cursor:pointer;white-space:nowrap;font-size:13.5px;flex:none}
+.crumb:hover{background:var(--surface-3)}
+.crumb:last-child{font-weight:600}
+.sep{color:var(--muted);flex:none;font-size:12px}
+.path input{flex:1;min-width:0;height:100%;border:0;outline:none;background:none;padding:0 10px;font:500 13px var(--font-mono)}
+.search{width:0;opacity:0;height:32px;border-radius:9px;border:1px solid var(--line);background:var(--surface);padding:0;outline:none;transition:width .22s,opacity .18s,padding .22s;font-size:13.5px}
+.search.open{width:170px;opacity:1;padding:0 10px}
+.search:focus{border-color:var(--accent-line)}
+@media (max-width:720px){.search.open{width:110px}.hide-narrow{display:none}}
+.rootbtn{display:flex;align-items:center;gap:6px;height:32px;padding:0 10px;border-radius:9px;border:1px solid var(--line);background:var(--surface);cursor:pointer;font-weight:600;font-size:12.5px;flex:none}
+.rootbtn svg{width:15px;height:15px}
+.rootbtn:hover{border-color:var(--root-line);color:var(--root)}
+.is-root .rootbtn{background:var(--root);border-color:var(--root);color:var(--root-ink)}
+.rootbar{display:flex;align-items:center;gap:10px;padding:6px 12px;background:var(--root);color:var(--root-ink);font-size:12.5px;font-weight:550}
+.rootbar b{font:600 12px var(--font-mono);font-variant-numeric:tabular-nums}
+.rootbar span{flex:1;min-width:0}
+.rootbar button{border:0;border-radius:7px;padding:3px 10px;background:rgba(255,255,255,.22);cursor:pointer;color:inherit;font-weight:600}
+
+.body{display:grid;grid-template-columns:196px minmax(0,1fr);min-height:0;position:relative}
+@media (max-width:720px){.body{grid-template-columns:minmax(0,1fr)}}
+.side{border-right:1px solid var(--line);background:var(--surface-2);padding:10px 8px;overflow-y:auto;display:grid;align-content:start;gap:1px}
+@media (max-width:720px){.side{position:absolute;left:0;top:0;bottom:0;width:220px;z-index:30;transform:translateX(-105%);transition:transform .25s cubic-bezier(.2,.8,.2,1);box-shadow:20px 0 40px -20px var(--shadow)}
+  .side.open{transform:none}}
+.side h4{margin:12px 8px 4px;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.side h4:first-child{margin-top:2px}
+.place{display:flex;align-items:center;gap:10px;padding:6px 8px;border:0;border-radius:8px;background:none;cursor:pointer;text-align:left;font-size:13.5px;width:100%}
+.place:hover{background:var(--surface-3)}
+.place.on{background:var(--accent-soft);font-weight:550}
+.place svg{width:16px;height:16px;color:var(--muted);flex:none}
+.place.on svg{color:var(--accent)}
+.place small{margin-left:auto;font:500 10.5px var(--font-mono);color:var(--muted)}
+.place.drop{box-shadow:inset 0 0 0 2px var(--accent)}
+
+.main{display:flex;flex-direction:column;min-height:0;min-width:0;position:relative}
+.main > .banner,.main > .term,.main > .status{flex:none}
+.banner{display:flex;align-items:center;gap:10px;padding:8px 14px;background:var(--root-soft);border-bottom:1px solid var(--root-line);font-size:13px}
+.banner svg{width:16px;height:16px;color:var(--root);flex:none}
+.banner span{flex:1;min-width:0}
+.btn{border:1px solid var(--line);background:var(--surface);border-radius:8px;padding:5px 11px;cursor:pointer;font-size:12.5px;font-weight:550;white-space:nowrap}
+.btn:hover{border-color:var(--accent-line)}
+.btn.root{background:var(--root);border-color:var(--root);color:var(--root-ink)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+
+.items{flex:1 1 auto;overflow-y:auto;padding:14px;outline:none;min-height:0;align-content:start}
+.items.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(104px,1fr));gap:6px}
+.items.list{display:block;padding:6px 10px}
+.items.nav-f{animation:navF .22s cubic-bezier(.2,.8,.2,1)}
+.items.nav-b{animation:navB .22s cubic-bezier(.2,.8,.2,1)}
+@keyframes navF{from{opacity:.2;transform:translateX(14px)}}
+@keyframes navB{from{opacity:.2;transform:translateX(-14px)}}
+.it{position:relative;border-radius:10px;cursor:default;border:1px solid transparent}
+.grid .it{display:grid;justify-items:center;gap:6px;padding:10px 6px 8px}
+.it:hover{background:var(--surface-2)}
+.it.sel{background:var(--accent-soft);border-color:var(--accent-line)}
+.it.cut{opacity:.45}
+.it.hidden-f .nm{color:var(--muted)}
+.ico{position:relative;width:56px;height:56px;display:grid;place-items:center}
+.ico svg{width:100%;height:100%}
+.lockb{position:absolute;right:-2px;bottom:2px;width:20px;height:20px;border-radius:50%;background:var(--surface);display:grid;place-items:center;box-shadow:0 0 0 1px var(--line)}
+.lockb svg{width:11px;height:11px;color:var(--root)}
+.imgthumb{width:50px;height:40px;border-radius:6px;box-shadow:0 0 0 1px var(--file-line),0 4px 10px -4px var(--shadow);
+  background:radial-gradient(70% 80% at 80% 14%, var(--wall-2), transparent 62%),radial-gradient(60% 75% at 8% 92%, var(--wall-3), transparent 62%),linear-gradient(158deg, var(--wall-1), var(--wall-5))}
+.imgthumb.ov{background:linear-gradient(var(--wall-1),var(--wall-1)) 50% 55%/56% 46% no-repeat,radial-gradient(70% 80% at 80% 14%, var(--wall-2), transparent 62%),linear-gradient(158deg, var(--wall-3), var(--wall-5))}
+.nm{font-size:12.5px;text-align:center;line-height:1.3;word-break:break-word;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;max-width:100%}
+.ren{width:100%;font-size:12.5px;padding:2px 5px;border-radius:6px;border:1px solid var(--accent);background:var(--surface);outline:none;text-align:center}
+.list .lhead,.list .it{display:grid;grid-template-columns:minmax(0,1fr) 88px 110px 54px;gap:10px;align-items:center;padding:5px 8px}
+.list .lhead{font-size:11.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid var(--line);margin-bottom:4px;position:sticky;top:-6px;background:var(--surface);z-index:1}
+.list .it{border-radius:7px}
+.list .ico{width:22px;height:22px}
+.list .imgthumb{width:20px;height:16px;border-radius:3px}
+.list .lockb{width:12px;height:12px;right:-4px;bottom:-2px}.list .lockb svg{width:8px;height:8px}
+.list .c1{display:flex;align-items:center;gap:10px;min-width:0}
+.list .nm{text-align:left;-webkit-line-clamp:1;font-size:13px}
+.list .ren{text-align:left}
+.list .c2,.list .c3,.list .c4{font:12px var(--font-mono);color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
+@media (max-width:720px){.list .lhead,.list .it{grid-template-columns:minmax(0,1fr) 76px}.list .c3,.list .c4{display:none}}
+.empty{display:grid;place-items:center;align-content:center;gap:10px;height:100%;min-height:200px;color:var(--muted);text-align:center;grid-column:1/-1}
+.empty svg{width:42px;height:42px;opacity:.6}
+.lockb-big{display:grid;place-items:center;width:52px;height:52px;border-radius:50%;background:var(--root-soft)}
+.empty .lockb-big svg,.lockb-big svg{width:22px;height:22px;color:var(--root);opacity:1}
+
+/* terminal drawer */
+.term{height:0;background:var(--term-bg);color:var(--term-fg);font:12.5px/1.55 var(--font-mono);display:grid;grid-template-rows:auto 1fr;overflow:hidden;
+  transition:height .3s cubic-bezier(.2,.9,.25,1.08)}
+.term.open{height:var(--th,220px)}
+.term.dragging{transition:none}
+.th{flex:none;display:flex;align-items:center;gap:8px;padding:0 6px 0 12px;height:30px;background:rgba(255,255,255,.04);border-top:1px solid rgba(255,255,255,.06);cursor:ns-resize;font:500 11.5px var(--font-ui);color:var(--term-dim);touch-action:none}
+.th .tt{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.th .grip{width:34px;height:4px;border-radius:2px;background:rgba(255,255,255,.18);flex:none}
+.th .tt + .grip{margin-right:auto}
+.term.root .th{background:rgba(255,107,94,.16);color:var(--term-fg)}
+.term{display:flex;flex-direction:column}
+.term .tout{flex:1;min-height:0}
+/* separate terminal windows: what ds opens with foot --working-directory */
+.tw{position:absolute;width:min(540px,calc(100% - 16px));height:300px;border-radius:12px;background:var(--term-bg);color:var(--term-fg);font:12.5px/1.55 var(--font-mono);
+  display:flex;flex-direction:column;overflow:hidden;box-shadow:0 0 0 1px rgba(255,255,255,.07),0 34px 80px -24px var(--shadow),0 10px 26px -10px var(--shadow);
+  animation:twIn .32s cubic-bezier(.2,.9,.25,1.12)}
+.tw.focus{box-shadow:0 0 0 2px var(--accent),0 34px 80px -24px var(--shadow),0 10px 26px -10px var(--shadow)}
+.tw.root.focus{box-shadow:0 0 0 2px var(--term-root),0 34px 80px -24px var(--shadow),0 10px 26px -10px var(--shadow)}
+.tw.closing{animation:twOut .18s ease-in forwards}
+@keyframes twIn{from{opacity:0;transform:scale(.92)}}
+@keyframes twOut{to{opacity:0;transform:scale(.94)}}
+.twh{flex:none;display:flex;align-items:center;gap:8px;height:32px;padding:0 6px 0 12px;background:var(--term-head);border-bottom:1px solid rgba(255,255,255,.06);font:550 12px var(--font-ui);color:var(--term-dim);touch-action:none;user-select:none;cursor:grab}
+.twh:active{cursor:grabbing}
+.twh > svg{width:14px;height:14px;flex:none}
+.twh .tt{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tw.root .twh{background:rgba(255,107,94,.18);color:var(--term-fg)}
+.twh button{border:0;background:none;color:var(--term-dim);cursor:pointer;width:24px;height:24px;border-radius:6px;display:grid;place-items:center}
+.twh button:hover{background:rgba(255,255,255,.08);color:var(--term-fg)}
+.twh button svg{width:13px;height:13px}
+.tw .tout{flex:1;min-height:0}
+.th button{border:0;background:none;color:var(--term-dim);cursor:pointer;width:24px;height:24px;border-radius:6px;display:grid;place-items:center}
+.th button:hover{background:rgba(255,255,255,.08);color:var(--term-fg)}
+.th svg{width:12px;height:12px}
+.tout{overflow-y:auto;padding:6px 12px 10px;white-space:pre-wrap;word-break:break-word;cursor:text}
+.tline{display:flex;gap:7px;align-items:baseline}
+.tline input{flex:1;min-width:0;border:0;outline:none;background:none;color:var(--term-fg);font:inherit;padding:0;caret-color:var(--term-acc)}
+.p-u{color:var(--term-ok)}.p-r{color:var(--term-root);font-weight:600}.p-path{color:var(--term-path)}.t-dim{color:var(--term-dim)}.t-err{color:var(--term-root)}.t-acc{color:var(--term-acc)}
+.t-dir{color:var(--term-path);font-weight:600}
+
+.status{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:6px 14px;border-top:1px solid var(--line);font-size:12px;color:var(--muted);background:var(--surface-2);min-width:0}
+.status span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.status kbd{font:500 10.5px var(--font-mono);padding:1px 5px;border-radius:4px;border:1px solid var(--line);background:var(--surface)}
+.who{font:600 11px var(--font-mono);padding:2px 7px;border-radius:999px;background:var(--surface-3);color:var(--fg)}
+.is-root .who{background:var(--root);color:var(--root-ink)}
+
+/* context menu */
+.menu{position:absolute;z-index:50;min-width:250px;padding:5px;border-radius:12px;background:var(--glass);border:1px solid var(--line);
+  box-shadow:0 22px 50px -18px var(--shadow),0 4px 12px -6px var(--shadow);backdrop-filter:blur(18px) saturate(1.4);
+  transform-origin:var(--ox,0) var(--oy,0);animation:pop .16s cubic-bezier(.2,.9,.3,1.25)}
+@keyframes pop{from{opacity:0;transform:scale(.94)}}
+.mi{display:flex;align-items:center;gap:10px;width:100%;padding:6px 9px;border:0;border-radius:7px;background:none;cursor:pointer;text-align:left;font-size:13px}
+.mi:hover,.mi.kfocus{background:var(--accent-soft)}
+.mi.rootish:hover,.mi.rootish.kfocus{background:var(--root-soft)}
+.mi:disabled{opacity:.42;cursor:default;background:none}
+.mi .mic{width:16px;height:16px;display:grid;place-items:center;flex:none;color:var(--muted)}
+.mi .mic svg{width:15px;height:15px}
+.mi.rootish .mic{color:var(--root)}
+.mi.hot .mic{color:var(--accent)}
+.mi kbd{margin-left:auto;font:500 11px var(--font-mono);color:var(--muted)}
+.mi .chk{margin-left:auto;color:var(--accent);font-weight:700}
+.msep{height:1px;background:var(--line);margin:4px 6px}
+.mhead{padding:5px 9px 3px;font:600 11px var(--font-mono);color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:280px}
+
+/* modal: polkit, quick look */
+.scrim{position:absolute;inset:0;z-index:60;background:rgba(10,10,20,.28);display:grid;place-items:center;padding:16px;animation:fade .15s}
+@keyframes fade{from{opacity:0}}
+.dlg{width:min(400px,100%);border-radius:16px;background:var(--surface);border:1px solid var(--line);box-shadow:0 30px 80px -24px var(--shadow);padding:22px;display:grid;gap:12px;animation:pop .2s cubic-bezier(.2,.9,.3,1.2)}
+.dlg h3{margin:0;font-size:17px;letter-spacing:-.01em}
+.dlg p{margin:0;color:var(--muted);font-size:13px}
+.dlg .what{font:500 12px var(--font-mono);padding:8px 10px;border-radius:8px;background:var(--surface-2);color:var(--fg);word-break:break-all}
+.shield{width:44px;height:44px;border-radius:12px;background:var(--root-soft);display:grid;place-items:center;color:var(--root)}
+.shield svg{width:24px;height:24px}
+.dlg .row{display:flex;justify-content:flex-end;gap:8px;margin-top:4px}
+.dlg .row .btn{padding:7px 14px;font-size:13px}
+.ql{width:min(640px,100%);max-height:100%;border-radius:16px;background:var(--surface);border:1px solid var(--line);box-shadow:0 30px 80px -24px var(--shadow);display:grid;grid-template-rows:auto 1fr auto;overflow:hidden;animation:pop .2s cubic-bezier(.2,.9,.3,1.15)}
+.qlh{display:flex;align-items:center;gap:12px;padding:12px 14px;border-bottom:1px solid var(--line)}
+.qlh .ico{width:36px;height:36px}
+.qlh .imgthumb{width:34px;height:28px}
+.qlh b{display:block;font-size:14px}
+.qlh small{display:block;font:500 11.5px var(--font-mono);color:var(--muted)}
+.qlb{overflow:auto;min-height:120px;max-height:380px}
+.qlb pre{margin:0;padding:14px 16px;font:12.5px/1.6 var(--font-mono);white-space:pre}
+.qlb .big{display:grid;place-items:center;gap:8px;padding:30px;color:var(--muted)}
+.qlb .big .imgthumb{width:320px;max-width:100%;height:200px;border-radius:10px}
+.qlf{display:flex;flex-wrap:wrap;gap:8px;justify-content:space-between;align-items:center;padding:10px 14px;border-top:1px solid var(--line);font:500 11.5px var(--font-mono);color:var(--muted)}
+
+.toast{position:absolute;left:50%;bottom:54px;z-index:70;transform:translate(-50%,10px);opacity:0;pointer-events:none;max-width:calc(100% - 32px);
+  padding:9px 16px;border-radius:12px;background:var(--fg);color:var(--bg);font-size:13px;box-shadow:0 16px 40px -18px var(--shadow);transition:opacity .16s,transform .22s cubic-bezier(.2,.9,.3,1.2)}
+.toast.show{opacity:1;transform:translate(-50%,0)}
+.toast code{font:500 12px var(--font-mono);opacity:.85}
+
+/* explainer cards */
+.cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+@media (max-width:820px){.cards{grid-template-columns:minmax(0,1fr)}}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:16px 18px;display:grid;gap:10px;align-content:start;min-width:0}
+.card h2{margin:0;font-size:13px;font-weight:650;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+.card ul{margin:0;padding-left:18px;display:grid;gap:7px}
+.card li::marker{color:var(--accent)}
+.card kbd{font:500 11.5px var(--font-mono);padding:1px 6px;border-radius:5px;border:1px solid var(--line);background:var(--surface-2)}
+.card code{font:500 12px var(--font-mono);background:var(--surface-2);padding:1px 5px;border-radius:4px}
+
+@media (prefers-reduced-motion: reduce){
+  .items.nav-f,.items.nav-b,.menu,.dlg,.ql,.scrim,.tw{animation:none}
+  .term,.side,.search,.toast{transition:none}
+}
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <div class="brand">
+      <svg class="mark" viewBox="0 0 42 42" aria-hidden="true"><path d="M3 10a4 4 0 0 1 4-4h10l4 4h14a4 4 0 0 1 4 4v18a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4z" fill="var(--folder-back)"/><path d="M3 16a4 4 0 0 1 4-4h28a4 4 0 0 1 4 4v16a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4z" fill="var(--folder)"/><path d="M12 21l4 3.5-4 3.5M19 28h8" stroke="var(--accent)" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <div>
+        <h1>ds-files</h1>
+        <p>A file manager for ds in the spirit of Nautilus. Right-click opens a terminal in any folder, and root mode is one button away.</p>
+      </div>
+    </div>
+    <div class="chips"><span class="chip">rust</span><span class="chip">polkit</span><span class="chip">mockup</span></div>
+  </header>
+
+  <div class="desk">
+    <div class="app" id="app">
+      <div class="hb">
+        <button class="ib" id="btnSide" type="button" aria-label="Sidebar"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M2.5 4h11M2.5 8h11M2.5 12h11"/></svg></button>
+        <button class="ib" id="btnBack" type="button" aria-label="Back" title="Back (Alt+←)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3L5 8l5 5"/></svg></button>
+        <button class="ib hide-narrow" id="btnFwd" type="button" aria-label="Forward" title="Forward (Alt+→)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3l5 5-5 5"/></svg></button>
+        <div class="path" id="path" title="Ctrl+L to type a path"><div class="crumbs" id="crumbs"></div><input id="pathInput" type="text" hidden spellcheck="false" autocomplete="off" aria-label="Path"></div>
+        <input class="search" id="search" type="text" placeholder="Search this folder" aria-label="Search this folder" spellcheck="false" autocomplete="off">
+        <button class="ib" id="btnSearch" type="button" aria-label="Search" title="Search (Ctrl+F)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="7" cy="7" r="4.6"/><path d="M10.5 10.5l3.5 3.5" stroke-linecap="round"/></svg></button>
+        <button class="ib hide-narrow" id="btnView" type="button" aria-label="View" title="Grid or list (Ctrl+1 / Ctrl+2)"></button>
+        <button class="ib" id="btnTerm" type="button" aria-label="Terminal" title="Docked terminal (F4)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="1.5" y="2.5" width="13" height="11" rx="2"/><path d="M4.5 6l2 2-2 2M8.5 10.5h3"/></svg></button>
+        <button class="ib hide-narrow" id="btnTermWin" type="button" aria-label="Terminal in a new window" title="Terminal in a new window (Shift+F4)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="1.5" y="4" width="10" height="9.5" rx="1.8"/><path d="M4 7.5l1.6 1.5L4 10.5M5 2h8a1.5 1.5 0 0 1 1.5 1.5v7"/></svg></button>
+        <button class="rootbtn" id="btnRoot" type="button" title="Root mode (Ctrl+Shift+R)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M8 1.5l5 2v4c0 3.2-2.1 5.7-5 7-2.9-1.3-5-3.8-5-7v-4z"/></svg><span>root</span></button>
+      </div>
+      <div class="rootbar" id="rootbar" hidden>
+        <span>Administrator mode: changes run as root through polkit</span><b id="rootLeft">5:00</b><button type="button" id="rootExit">Exit</button>
+      </div>
+      <div class="body">
+        <nav class="side" id="side" aria-label="Places"></nav>
+        <section class="main">
+          <div class="banner" id="banner" hidden></div>
+          <div class="items grid" id="items" tabindex="0" aria-label="Files"></div>
+          <div class="term" id="term">
+            <div class="th" id="termHandle"><span id="termTitle" class="tt">Terminal</span><span class="grip"></span><button type="button" id="termPop" title="Pop out to a separate window (Shift+F4)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2.5h4.5V7M13.5 2.5L8 8M12 9.5v3a1 1 0 0 1-1 1H3.5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h3"/></svg></button><button type="button" id="termRootBtn" title="sudo -i / exit"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M8 1.5l5 2v4c0 3.2-2.1 5.7-5 7-2.9-1.3-5-3.8-5-7v-4z"/></svg></button><button type="button" id="termClose" title="Hide (F4, or drag down)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg></button></div>
+            <div class="tout" id="tout"></div>
+          </div>
+          <footer class="status"><span id="stLeft"></span><span id="stRight"></span></footer>
+        </section>
+      </div>
+      <div class="toast" id="toast" role="status"></div>
+    </div>
+  </div>
+
+  <div class="cards">
+    <div class="card">
+      <h2>Try it</h2>
+      <ul>
+        <li>Right-click the <code>src</code> folder. "Terminal in this folder" slides the docked terminal up from the bottom, and "Terminal in new window" opens a separate ds window. You can drag it by its title bar.</li>
+        <li>Go to <code>/etc</code> through "System". Everything there is locked. Press <kbd>Ctrl+Shift+R</kbd> or the root button: the header turns red and you can edit.</li>
+        <li>Type <code>cd ..</code> in the docked terminal: the window follows the terminal and the other way round. Drag the handle up or down, and drag it all the way down to hide the terminal. The ⧉ button pops it out into a separate window.</li>
+        <li><code>sudo -i</code> gives a root shell, <code>exit</code> returns to your user, and <code>sudo !!</code> repeats a command that failed with Permission denied.</li>
+        <li><kbd>Space</kbd> opens quick look, <kbd>F2</kbd> renames, <kbd>Ctrl+H</kbd> shows hidden files, and <kbd>Ctrl+L</kbd> opens the path input.</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h2>How it will work</h2>
+      <ul>
+        <li>The interface always runs as your own user. Root operations are handled by a small helper, <code>ds-files-helper</code>, through polkit: the password is asked once and the session lasts 5 minutes.</li>
+        <li>The docked terminal (<kbd>F4</kbd>) uses the same folder as the window: <code>cd</code> in the terminal navigates the window, and clicking a folder runs <code>cd</code> in the terminal.</li>
+        <li>A separate terminal (<kbd>Shift+F4</kbd>) is launched as <code>foot --working-directory=…</code> and lives on its own. Which terminal to launch is set in the config.</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+'use strict';
+const $ = s => document.querySelector(s);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const HOME = '/home/user';
+const NOW = Date.now(), DAY = 864e5;
+
+/* ---------------- fake filesystem ---------------- */
+const KDL = `// ~/.config/ds/config.kdl
+animations {
+    spring stiffness=420 damping-ratio=0.82
+}
+layout {
+    gaps 10
+    corner-radius 12
+}
+binds preset="kool"`;
+const SPEC = {
+  '@': 'root',
+  boot: { '@': 'root', 'vmlinuz-6.18-gentoo': { size: 14.2e6 }, 'initramfs-6.18.img': { size: 38.5e6 } },
+  etc: { '@': 'root',
+    'fstab': `# <fs>        <mountpoint>  <type>  <opts>          <dump/pass>
+UUID=5c1e-77a0  /boot         vfat    defaults,noatime  0 2
+UUID=9f3b…      /             ext4    noatime           0 1
+UUID=c0de…      /mnt/hdd      ntfs3   uid=1000,noatime  0 0`,
+    'hostname': 'ds-x1e',
+    'hosts': '127.0.0.1   localhost\n::1         localhost\n127.0.1.1   ds-x1e',
+    portage: { '@': 'root', 'make.conf': `COMMON_FLAGS="-O2 -pipe -mcpu=oryon-1"
+USE="wayland gles2 egl udev libinput -X elogind"
+VIDEO_CARDS="freedreno"
+MAKEOPTS="-j12"`, 'package.use': { '@': 'root', 'ds': 'gui-wm/ds blur' } },
+    greetd: { '@': 'root', 'config.toml': '[default_session]\ncommand = "tuigreet --cmd ds"\nuser = "greeter"' },
+    'locale.gen': 'en_US.UTF-8 UTF-8\nru_RU.UTF-8 UTF-8',
+  },
+  home: { '@': 'root', user: { '@': 'user',
+    '.config': { ds: { 'config.kdl': KDL }, foot: { 'foot.ini': '[main]\nfont=Geist Mono:size=11\npad=12x10' } },
+    '.bashrc': '# ~/.bashrc\nexport EDITOR=hx\nalias ll="ls -lah"',
+    'Documents': { 'plan.md': '# ds plan\n\n- [x] Concept\n- [x] Compositor mockup\n- [ ] Smithay skeleton\n- [ ] ds-files', 'notes.txt': 'Gentoo on X Elite: kernel 6.18, freedreno, seatd.' },
+    'Downloads': { 'stage3-arm64-desktop-openrc.tar.xz': { size: 312e6 }, 'install-arm64-minimal.iso': { size: 724e6 }, 'smithay-main.zip': { size: 8.4e6 } },
+    'Pictures': { 'wallpaper-dusk.png': { size: 4.1e6, img: 'dusk' }, 'screenshot-overview.png': { size: 1.2e6, img: 'ov' } },
+    'Music': {},
+    'Projects': { ds: {
+      src: {
+        'main.rs': 'mod layout;\nmod snap;\nmod spring;\n\nfn main() -> anyhow::Result<()> {\n    let backend = ds::backend::detect()?;\n    ds::run(backend)\n}',
+        'spring.rs': 'pub struct Spring { pub value: f64, pub velocity: f64, pub target: f64 }',
+        'layout.rs': '/// Dwindle layout: each new window splits the last leaf.\npub fn dwindle(area: Rect, n: usize, ratio: f64) -> Vec<Rect> { todo!() }',
+        'snap.rs': 'pub enum Zone { Left, Right, Max, TopLeft, TopRight, BottomLeft, BottomRight }',
+      },
+      shaders: { 'rounded.frag': 'precision mediump float;\nuniform float radius;\nvarying vec2 v_coords;', 'blur.frag': '// dual-kawase downsample pass' },
+      design: { 'mockup.html': { size: 62e3 }, 'files-mockup.html': { size: 48e3 } },
+      'Cargo.toml': '[package]\nname = "ds"\nversion = "0.1.0"\nedition = "2024"\n\n[dependencies]\nsmithay = { version = "0.7", default-features = false }',
+      'config.kdl': KDL,
+      'README.md': '# ds\n\nA lightweight Wayland compositor built on Smithay.',
+    } },
+  } },
+  mnt: { '@': 'root', hdd: { '@': 'user', 'build': { 'target-ds': {} }, 'backup-2026-11.tar.zst': { size: 41.7e9 } } },
+  opt: { '@': 'root' },
+  root: { '@': 'root!', '.bash_history': 'emerge -avuDN @world\nrc-update add seatd default', 'install.log': 'stage3 unpacked\nkernel built: 6.18-gentoo' },
+  tmp: { '@': 'user' },
+  usr: { '@': 'root', bin: { '@': 'root', 'ds': { size: 7.9e6 }, 'ds-files': { size: 4.3e6 }, 'ds-files-helper': { size: 0.4e6 }, 'foot': { size: 0.6e6 } }, share: { '@': 'root' } },
+  var: { '@': 'root', log: { '@': 'root', 'emerge.log': '>>> emerge (1 of 1) gui-wm/ds-0.1.0\n::: completed emerge' } },
+};
+let seed = 7;
+const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+function build(name, spec, owner, parent) {
+  if (typeof spec === 'string') return { name, type: 'file', owner, content: spec, size: new Blob([spec]).size, mtime: NOW - rnd() * 30 * DAY, parent };
+  if (spec && spec.size !== undefined && !('@' in spec) && Object.keys(spec).every(k => k === 'size' || k === 'img')) return { name, type: 'file', owner, size: spec.size, img: spec.img, mtime: NOW - rnd() * 60 * DAY, parent };
+  const o = spec['@'] || owner;
+  const d = { name, type: 'dir', owner: o, children: {}, mtime: NOW - rnd() * 20 * DAY, parent };
+  for (const [k, v] of Object.entries(spec)) if (k !== '@') d.children[k] = build(k, v, o === 'root!' ? 'root!' : o, d);
+  return d;
+}
+const ROOT = build('', SPEC, 'root', null);
+
+function pathOf(n) { const parts = []; for (let x = n; x && x.parent; x = x.parent) parts.unshift(x.name); return '/' + parts.join('/'); }
+function norm(p, base) {
+  if (!p) return base;
+  if (p === '~' || p.startsWith('~/')) p = HOME + p.slice(1);
+  if (!p.startsWith('/')) p = (base === '/' ? '' : base) + '/' + p;
+  const out = [];
+  for (const s of p.split('/')) { if (!s || s === '.') continue; if (s === '..') out.pop(); else out.push(s); }
+  return '/' + out.join('/');
+}
+function resolve(p) { let n = ROOT; for (const s of p.split('/').filter(Boolean)) { if (n.type !== 'dir' || !n.children[s]) return null; n = n.children[s]; } return n; }
+const pretty = p => p === HOME ? '~' : p.startsWith(HOME + '/') ? '~' + p.slice(HOME.length) : p;
+
+/* ---------------- state ---------------- */
+const S = { cwd: HOME + '/Projects/ds', back: [HOME + '/Projects', HOME], fwd: [], sel: new Set(), anchor: null, view: 'grid', hidden: false, q: '',
+  root: null, termOpen: true, termRoot: false, clip: null, renaming: null, trash: [] };
+const canRead = d => S.root || d.owner !== 'root!';
+const canWrite = d => !!S.root || d.owner === 'user';
+
+const app = $('#app'), itemsEl = $('#items'), crumbsEl = $('#crumbs'), pathInput = $('#pathInput'), searchEl = $('#search');
+const side = $('#side'), banner = $('#banner'), stLeft = $('#stLeft'), stRight = $('#stRight'), toastEl = $('#toast');
+const term = $('#term'), tout = $('#tout');
+
+/* ---------------- icons ---------------- */
+const G = {
+  home: '<path d="M18 29l6-5 6 5v6h-4v-4h-4v4h-4z" fill="var(--folder-ink)"/>',
+  doc: '<path d="M20 23h8M20 27h8M20 31h5" stroke="var(--folder-ink)" stroke-width="2" stroke-linecap="round"/>',
+  down: '<path d="M24 22v10M20 28l4 4 4-4" stroke="var(--folder-ink)" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>',
+  img: '<rect x="18" y="22" width="12" height="10" rx="2" stroke="var(--folder-ink)" stroke-width="2" fill="none"/><path d="M19 31l4-4 3 3 2-2 2 2" stroke="var(--folder-ink)" stroke-width="1.6" fill="none"/>',
+  music: '<path d="M22 32a2 2 0 1 1-2-2 2 2 0 0 1 2 2zm0 0v-9l7-2v8" stroke="var(--folder-ink)" stroke-width="2" fill="none" stroke-linecap="round"/>',
+  code: '<path d="M21 23l-3 4 3 4M27 23l3 4-3 4" stroke="var(--folder-ink)" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>',
+  conf: '<circle cx="24" cy="27" r="3.2" stroke="var(--folder-ink)" stroke-width="2" fill="none"/><path d="M24 21.5v2M24 30.5v2M18.5 27h2M27.5 27h2" stroke="var(--folder-ink)" stroke-width="2" stroke-linecap="round"/>',
+};
+const FOLDER_GLYPH = { [HOME]: 'home', [HOME + '/Documents']: 'doc', [HOME + '/Downloads']: 'down', [HOME + '/Pictures']: 'img', [HOME + '/Music']: 'music', [HOME + '/Projects']: 'code', '/etc': 'conf', [HOME + '/.config']: 'conf' };
+function folderSvg(p) {
+  const g = G[FOLDER_GLYPH[p]] || '';
+  return `<svg viewBox="0 0 48 48"><path d="M4 12a4 4 0 0 1 4-4h11l4 4h17a4 4 0 0 1 4 4v20a4 4 0 0 1-4 4H8a4 4 0 0 1-4-4z" fill="var(--folder-back)"/><path d="M4 18a4 4 0 0 1 4-4h32a4 4 0 0 1 4 4v18a4 4 0 0 1-4 4H8a4 4 0 0 1-4-4z" fill="var(--folder)"/>${g}</svg>`;
+}
+const EXT_T = { rs: 'code', frag: 'code', toml: 'code', kdl: 'code', conf: 'code', gen: 'text', md: 'text', txt: 'text', log: 'text', png: 'img', xz: 'arch', zip: 'arch', zst: 'arch', img: 'disc', iso: 'disc', html: 'web' };
+function fileKind(n) { const m = n.name.match(/\.([^.]+)$/); const e = m ? m[1].toLowerCase() : ''; return { ext: e, kind: EXT_T[e] || (n.content !== undefined ? 'text' : 'bin') }; }
+function fileSvg(n) {
+  const { ext, kind } = fileKind(n);
+  const color = { code: 'var(--t-code)', text: 'var(--t-text)', img: 'var(--t-img)', arch: 'var(--t-arch)', disc: 'var(--t-disc)', web: 'var(--t-web)', bin: 'var(--t-text)' }[kind];
+  const label = (ext || (kind === 'bin' ? 'bin' : 'txt')).slice(0, 4).toUpperCase();
+  return `<svg viewBox="0 0 48 48"><path d="M12 4.5h17l9.5 9.5v28a2 2 0 0 1-2 2H12a2 2 0 0 1-2-2v-35.5a2 2 0 0 1 2-2z" fill="var(--file)" stroke="var(--file-line)"/><path d="M29 4.5v7.5a2 2 0 0 0 2 2h7.5" fill="var(--file-fold)" stroke="var(--file-line)"/><rect x="12.5" y="27" width="23" height="10" rx="2.5" fill="${color}"/><text x="24" y="34.2" text-anchor="middle" font-size="6.6" font-family="Geist Mono, ui-monospace, monospace" font-weight="600" fill="var(--ic-fg)">${label}</text></svg>`;
+}
+function iconHtml(n, p) {
+  if (n.type === 'dir') return folderSvg(p);
+  if (n.img) return `<div class="imgthumb ${n.img === 'ov' ? 'ov' : ''}"></div>`;
+  return fileSvg(n);
+}
+const LOCK = '<span class="lockb" title="Root only"><svg viewBox="0 0 12 12" fill="currentColor"><path d="M3.5 5V3.8a2.5 2.5 0 0 1 5 0V5h.5a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zm1.2 0h2.6V3.8a1.3 1.3 0 0 0-2.6 0z"/></svg></span>';
+const I = {
+  term: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="1.5" y="2.5" width="13" height="11" rx="2"/><path d="M4.5 6l2 2-2 2M8.5 10.5h3"/></svg>',
+  win: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><rect x="1.5" y="3" width="10" height="9" rx="1.5"/><path d="M5 1.5h8a1.5 1.5 0 0 1 1.5 1.5v7"/></svg>',
+  shield: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M8 1.5l5 2v4c0 3.2-2.1 5.7-5 7-2.9-1.3-5-3.8-5-7v-4z"/></svg>',
+  open: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2.5h4.5V7M13.5 2.5L7.5 8.5M12 9.5v3a1 1 0 0 1-1 1H3.5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h3"/></svg>',
+  eye: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M1.5 8S4 3.5 8 3.5 14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/></svg>',
+  edit: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M10.5 2.5l3 3-8 8H2.5v-3z"/></svg>',
+  copy: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="5" y="5" width="9" height="9" rx="1.5"/><path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-6A1.5 1.5 0 0 0 2 3.5v6A1.5 1.5 0 0 0 3.5 11H5"/></svg>',
+  cut: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="4" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><path d="M5.5 10.5L12 2.5M10.5 10.5L4 2.5"/></svg>',
+  paste: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><rect x="3" y="3" width="10" height="11.5" rx="1.5"/><path d="M6 1.8h4v2.4H6z"/></svg>',
+  path: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M6.5 9.5l3-3M5 8l-1.5 1.5a2.1 2.1 0 0 0 3 3L8 11M11 8l1.5-1.5a2.1 2.1 0 0 0-3-3L8 5"/></svg>',
+  trash: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4.5h11M6 4.5V3h4v1.5M4 4.5l.7 9h6.6l.7-9"/></svg>',
+  info: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="8" cy="8" r="6.2"/><path d="M8 7.2v4M8 4.9v.2"/></svg>',
+  newdir: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 4.5a1 1 0 0 1 1-1h3.5l1.5 1.5h6a1 1 0 0 1 1 1v6.5a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1zM8 7.5v4M6 9.5h4"/></svg>',
+  newfile: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 1.5H4a1 1 0 0 0-1 1v11a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V5zM9.5 1.5V5H13M8 8v4M6 10h4"/></svg>',
+  hidden: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M2 2l12 12M6.5 3.8A6.8 6.8 0 0 1 8 3.5c4 0 6.5 4.5 6.5 4.5a12 12 0 0 1-1.9 2.4M4 5.3A11.4 11.4 0 0 0 1.5 8S4 12.5 8 12.5a6.3 6.3 0 0 0 2.6-.6"/></svg>',
+  all: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-dasharray="2 1.6"><rect x="2" y="2" width="12" height="12" rx="2"/></svg>',
+  restore: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8a5 5 0 1 0 1.5-3.5M3 2.5v2.5h2.5"/></svg>',
+  grid: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="2" y="2" width="5" height="5" rx="1.2"/><rect x="9" y="2" width="5" height="5" rx="1.2"/><rect x="2" y="9" width="5" height="5" rx="1.2"/><rect x="9" y="9" width="5" height="5" rx="1.2"/></svg>',
+  list: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M5.5 4h8.5M5.5 8h8.5M5.5 12h8.5M2 4h.5M2 8h.5M2 12h.5"/></svg>',
+};
+
+/* ---------------- formatting ---------------- */
+function fmtSize(b) {
+  if (b < 1024) return b + ' B';
+  const u = ['KB', 'MB', 'GB', 'TB']; let i = -1;
+  do { b /= 1024; i++; } while (b >= 1024 && i < u.length - 1);
+  return (b < 10 ? b.toFixed(1) : Math.round(b)).toString() + ' ' + u[i];
+}
+function fmtDate(t) {
+  const d = new Date(t), diff = (NOW - t) / DAY;
+  if (diff < 1 && new Date(NOW).getDate() === d.getDate()) return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+}
+const perms = n => n.type === 'dir' ? (n.owner === 'root!' ? 'drwx------' : 'drwxr-xr-x') : (n.owner === 'root!' ? '-rw-------' : '-rw-r--r--');
+const ownerName = n => n.owner === 'user' ? 'user' : 'root';
+const countOf = n => n === 1 ? 'item' : 'items';
+
+/* ---------------- listing ---------------- */
+function entries() {
+  if (S.cwd === 'trash:') return S.trash.map(t => t.node);
+  const d = resolve(S.cwd);
+  if (!d || !canRead(d)) return [];
+  let list = Object.values(d.children);
+  if (!S.hidden) list = list.filter(n => !n.name.startsWith('.'));
+  if (S.q) list = list.filter(n => n.name.toLowerCase().includes(S.q.toLowerCase()));
+  return list.sort((a, b) => (a.type === b.type ? 0 : a.type === 'dir' ? -1 : 1) || a.name.localeCompare(b.name, 'en'));
+}
+const childPath = name => S.cwd === 'trash:' ? null : norm(name, S.cwd);
+
+/* ---------------- render ---------------- */
+let navDir = 0;
+function render() {
+  const inTrash = S.cwd === 'trash:';
+  const d = inTrash ? null : resolve(S.cwd);
+  app.classList.toggle('is-root', !!S.root);
+  $('#rootbar').hidden = !S.root;
+  $('#btnBack').disabled = !S.back.length; $('#btnFwd').disabled = !S.fwd.length;
+  $('#btnView').innerHTML = S.view === 'grid' ? I.list : I.grid;
+  $('#btnTerm').classList.toggle('on', S.termOpen);
+  term.classList.toggle('open', S.termOpen);
+  // crumbs
+  crumbsEl.innerHTML = '';
+  if (inTrash) crumbsEl.innerHTML = '<button class="crumb" type="button">Trash</button>';
+  else {
+    const parts = S.cwd.split('/').filter(Boolean);
+    const homeParts = HOME.split('/').filter(Boolean);
+    let start = 0, acc = '';
+    const isHome = S.cwd === HOME || S.cwd.startsWith(HOME + '/');
+    const segs = [];
+    if (isHome) { segs.push({ label: 'Home', path: HOME }); start = homeParts.length; acc = HOME; }
+    else segs.push({ label: '/', path: '/' });
+    for (let i = start; i < parts.length; i++) { acc += '/' + parts[i]; segs.push({ label: parts[i], path: acc }); }
+    segs.forEach((s, i) => {
+      if (i) crumbsEl.insertAdjacentHTML('beforeend', '<span class="sep">›</span>');
+      const b = document.createElement('button'); b.type = 'button'; b.className = 'crumb'; b.textContent = s.label;
+      b.addEventListener('click', e => { e.stopPropagation(); go(s.path); });
+      crumbsEl.appendChild(b);
+    });
+    requestAnimationFrame(() => { crumbsEl.scrollLeft = crumbsEl.scrollWidth; });
+  }
+  // banner
+  banner.hidden = true;
+  if (d && !canRead(d)) {
+    banner.hidden = false;
+    banner.innerHTML = `${I.shield}<span>No access to <b>${esc(S.cwd)}</b>: this folder is readable only by root.</span><button class="btn root" type="button" id="bnRoot">Open as root</button>`;
+    $('#bnRoot').onclick = () => needRoot('Open ' + S.cwd, () => render());
+  } else if (d && !canWrite(d)) {
+    banner.hidden = false;
+    banner.innerHTML = `${I.shield}<span>Read-only. Turn on root mode to change files here.</span><button class="btn root" type="button" id="bnRoot">Root <kbd style="font:500 10.5px var(--font-mono);opacity:.8">Ctrl+Shift+R</kbd></button>`;
+    $('#bnRoot').onclick = () => toggleRoot();
+  } else if (inTrash) {
+    banner.hidden = false;
+    banner.innerHTML = `${I.trash}<span>Deleted files. Right-click a file to restore it.</span>`;
+  }
+  // items
+  const list = entries();
+  itemsEl.className = 'items ' + S.view;
+  if (navDir) { void itemsEl.offsetWidth; itemsEl.classList.add(navDir > 0 ? 'nav-f' : 'nav-b'); }
+  navDir = 0;
+  let html = '';
+  if (S.view === 'list') html += '<div class="lhead"><span>Name</span><span>Size</span><span>Modified</span><span>Owner</span></div>';
+  if (d && !canRead(d)) html += `<div class="empty">${LOCK.replace('lockb', 'lockb-big')}<div>Contents hidden</div></div>`;
+  else if (!list.length) html += `<div class="empty"><svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 14a4 4 0 0 1 4-4h9l4 4h15a4 4 0 0 1 4 4v16a4 4 0 0 1-4 4H10a4 4 0 0 1-4-4z"/></svg><div>${S.q ? 'Nothing found' : inTrash ? 'Trash is empty' : 'This folder is empty'}</div></div>`;
+  for (const n of list) {
+    const p = inTrash ? null : childPath(n.name);
+    const locked = !S.root && n.owner !== 'user';
+    const sel = S.sel.has(n.name) ? ' sel' : '';
+    const cut = S.clip && S.clip.cut && S.clip.from === S.cwd && S.clip.names.includes(n.name) ? ' cut' : '';
+    const hid = n.name.startsWith('.') ? ' hidden-f' : '';
+    const nameHtml = S.renaming === n.name ? `<input class="ren" id="ren" value="${esc(n.name)}" spellcheck="false" autocomplete="off" aria-label="New name">` : `<div class="nm">${esc(n.name)}</div>`;
+    const ico = `<div class="ico">${iconHtml(n, p)}${locked ? LOCK : ''}</div>`;
+    if (S.view === 'grid') html += `<div class="it${sel}${cut}${hid}" data-name="${esc(n.name)}">${ico}${nameHtml}</div>`;
+    else html += `<div class="it${sel}${cut}${hid}" data-name="${esc(n.name)}"><div class="c1">${ico}${nameHtml}</div><div class="c2">${n.type === 'dir' ? Object.keys(n.children).length + ' items' : fmtSize(n.size)}</div><div class="c3">${fmtDate(n.mtime)}</div><div class="c4">${ownerName(n)}</div></div>`;
+  }
+  itemsEl.innerHTML = html;
+  const ren = $('#ren');
+  if (ren) { ren.focus(); const dot = ren.value.lastIndexOf('.'); ren.setSelectionRange(0, dot > 0 && resolveSel(S.renaming)?.type === 'file' ? dot : ren.value.length); }
+  renderSide(); renderStatus(); renderPrompt();
+}
+function resolveSel(name) { if (S.cwd === 'trash:') return S.trash.find(t => t.node.name === name)?.node; const d = resolve(S.cwd); return d && d.children[name]; }
+function renderStatus() {
+  const list = entries();
+  const sel = [...S.sel].map(resolveSel).filter(Boolean);
+  if (sel.length) {
+    const size = sel.filter(n => n.type === 'file').reduce((a, n) => a + n.size, 0);
+    stLeft.textContent = `${sel.length} of ${list.length} selected` + (size ? ` · ${fmtSize(size)}` : '');
+  } else stLeft.textContent = `${list.length} ${countOf(list.length)}`;
+  stRight.innerHTML = `<kbd>F4</kbd> terminal · <kbd>Shift+F4</kbd> in window · <span class="who">${S.root ? 'root' : 'user'}</span>`;
+}
+const PLACES = [
+  { h: 'Places' },
+  { label: 'Home', path: HOME, icon: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M2.5 7L8 2.5 13.5 7v6.5h-4v-4h-3v4h-4z"/></svg>' },
+  { label: 'Documents', path: HOME + '/Documents', icon: I.newfile.replace('M8 8v4M6 10h4', 'M5.5 8.5h5M5.5 11h3.5') },
+  { label: 'Downloads', path: HOME + '/Downloads', icon: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v8.5M4.5 7.5L8 11l3.5-3.5M2.5 13.5h11"/></svg>' },
+  { label: 'Pictures', path: HOME + '/Pictures', icon: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><rect x="2" y="3" width="12" height="10" rx="2"/><path d="M2.5 11.5l3.5-3.5 3 3 1.5-1.5 3 3"/></svg>' },
+  { label: 'Projects', path: HOME + '/Projects', icon: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 4L2 8l3.5 4M10.5 4L14 8l-3.5 4"/></svg>' },
+  { label: 'ds', path: HOME + '/Projects/ds', icon: '<svg viewBox="0 0 16 16"><rect x="1.5" y="2" width="8" height="9" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="6.5" y="5" width="8" height="9" rx="2" fill="currentColor"/></svg>' },
+  { label: 'Trash', path: 'trash:', icon: I.trash },
+  { h: 'Devices' },
+  { label: 'System', path: '/', icon: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="2" y="3" width="12" height="10" rx="2"/><path d="M4.5 10.5h3" stroke-linecap="round"/><circle cx="11" cy="10.5" r=".6" fill="currentColor"/></svg>', note: '512 GB' },
+  { label: 'HDD', path: '/mnt/hdd', icon: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="2" y="3" width="12" height="10" rx="2"/><circle cx="8" cy="8" r="2.2"/></svg>', note: '1 TB' },
+  { label: 'Config', path: '/etc', icon: I.shield },
+];
+function renderSide() {
+  side.innerHTML = PLACES.map(p => p.h ? `<h4>${p.h}</h4>` :
+    `<button class="place${S.cwd === p.path ? ' on' : ''}" type="button" data-path="${esc(p.path)}">${p.icon}<span>${p.label}</span>${p.path === 'trash:' && S.trash.length ? `<small>${S.trash.length}</small>` : p.note ? `<small>${p.note}</small>` : ''}</button>`).join('');
+}
+side.addEventListener('click', e => { const b = e.target.closest('.place'); if (!b) return; go(b.dataset.path); side.classList.remove('open'); });
+side.addEventListener('contextmenu', e => {
+  const b = e.target.closest('.place'); if (!b || b.dataset.path === 'trash:') return;
+  e.preventDefault(); const p = b.dataset.path;
+  openMenu(e, [{ head: pretty(p) }, { label: 'Open', icon: I.open, run: () => go(p) }, { label: 'Terminal here', icon: I.term, kbd: 'F4', hot: true, run: () => openDock(p, false) }, { label: 'Terminal in new window', icon: I.win, kbd: 'Shift+F4', run: () => openWin(p, false) }, { label: 'Root terminal in new window', icon: I.shield, rootish: true, run: () => openWin(p, true) }]);
+});
+
+/* ---------------- navigation ---------------- */
+function go(path, opts = {}) {
+  if (path !== 'trash:') { const n = resolve(path); if (!n) { toast(`No such folder: <code>${esc(path)}</code>`); return false; } if (n.type !== 'dir') { quickLook(n); return false; } }
+  if (path === S.cwd) { render(); return true; }
+  if (!opts.hist) { S.back.push(S.cwd); S.fwd = []; }
+  const fwd = path.length > S.cwd.length && path.startsWith(S.cwd);
+  navDir = opts.dir ?? (fwd ? 1 : -1);
+  S.cwd = path; S.sel.clear(); S.anchor = null; S.q = ''; searchEl.value = ''; S.renaming = null;
+  if (path !== 'trash:') { dock.cwd = path; if (S.termOpen && !opts.fromTerm) dock.lines.push(`<span class="t-dim">cd ${esc(shq(pretty(path)))}</span>`); }
+  render();
+  return true;
+}
+const shq = s => /\s/.test(s) ? `'${s}'` : s;
+function back() { if (!S.back.length) return; S.fwd.push(S.cwd); go(S.back.pop(), { hist: true, dir: -1 }); }
+function fwdNav() { if (!S.fwd.length) return; S.back.push(S.cwd); go(S.fwd.pop(), { hist: true, dir: 1 }); }
+function up() { if (S.cwd === '/' || S.cwd === 'trash:') return; go(norm('..', S.cwd), { dir: -1 }); }
+$('#btnBack').onclick = back; $('#btnFwd').onclick = fwdNav;
+$('#btnView').onclick = () => { S.view = S.view === 'grid' ? 'list' : 'grid'; render(); };
+$('#btnSide').onclick = () => side.classList.toggle('open');
+
+/* path editing */
+function editPath() {
+  crumbsEl.hidden = true; pathInput.hidden = false;
+  pathInput.value = S.cwd === 'trash:' ? '' : pretty(S.cwd);
+  pathInput.focus(); pathInput.select();
+}
+function endPath() { pathInput.hidden = true; crumbsEl.hidden = false; }
+$('#path').addEventListener('click', e => { if (e.target === $('#path') || e.target === crumbsEl) editPath(); });
+pathInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { const p = norm(pathInput.value.trim() || '~', S.cwd === 'trash:' ? HOME : S.cwd); if (go(p) !== false) endPath(); }
+  if (e.key === 'Escape') { e.stopPropagation(); endPath(); itemsEl.focus(); }
+});
+pathInput.addEventListener('blur', endPath);
+
+/* search */
+$('#btnSearch').onclick = () => { searchEl.classList.toggle('open'); if (searchEl.classList.contains('open')) searchEl.focus(); else { S.q = ''; searchEl.value = ''; render(); } };
+searchEl.addEventListener('input', () => { S.q = searchEl.value; S.sel.clear(); render(); });
+searchEl.addEventListener('keydown', e => { if (e.key === 'Escape') { e.stopPropagation(); S.q = ''; searchEl.value = ''; searchEl.classList.remove('open'); render(); itemsEl.focus(); } if (e.key === 'Enter') { const f = entries()[0]; if (f) { S.sel = new Set([f.name]); openItem(f); } } });
+
+/* ---------------- selection + item interaction ---------------- */
+function itemAt(e) { const el = e.target.closest('.it'); return el ? el.dataset.name : null; }
+itemsEl.addEventListener('pointerdown', e => {
+  if (e.target.closest('.ren')) return;
+  closeMenu();
+  const name = itemAt(e);
+  if (e.button === 2) { if (name && !S.sel.has(name)) { S.sel = new Set([name]); S.anchor = name; render(); } else if (!name) { S.sel.clear(); render(); } return; }
+  if (!name) { if (S.renaming) commitRename(); S.sel.clear(); render(); return; }
+  const list = entries().map(n => n.name);
+  if (e.shiftKey && S.anchor) { const a = list.indexOf(S.anchor), b = list.indexOf(name); S.sel = new Set(list.slice(Math.min(a, b), Math.max(a, b) + 1)); }
+  else if (e.ctrlKey || e.metaKey) { S.sel.has(name) ? S.sel.delete(name) : S.sel.add(name); S.anchor = name; }
+  else { S.sel = new Set([name]); S.anchor = name; }
+  render();
+});
+itemsEl.addEventListener('dblclick', e => { const name = itemAt(e); if (!name || S.renaming) return; const n = resolveSel(name); if (n) openItem(n); });
+function openItem(n) {
+  if (S.cwd === 'trash:') { quickLook(n); return; }
+  if (n.type === 'dir') { go(childPath(n.name)); return; }
+  const { kind } = fileKind(n);
+  if (kind === 'text' || kind === 'code' || kind === 'img') quickLook(n);
+  else toast(`Opening in the default application: <code>xdg-open ${esc(n.name)}</code>`);
+}
+
+/* ---------------- context menu ---------------- */
+let menuEl = null, menuFocus = -1;
+function openMenu(e, items) {
+  closeMenu();
+  const m = document.createElement('div'); m.className = 'menu'; m.setAttribute('role', 'menu');
+  items.forEach(it => {
+    if (it === '-') { m.insertAdjacentHTML('beforeend', '<div class="msep"></div>'); return; }
+    if (it.head) { m.insertAdjacentHTML('beforeend', `<div class="mhead">${esc(it.head)}</div>`); return; }
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'mi' + (it.rootish ? ' rootish' : '') + (it.hot ? ' hot' : ''); b.setAttribute('role', 'menuitem');
+    b.disabled = !!it.disabled;
+    b.innerHTML = `<span class="mic">${it.icon || ''}</span><span>${esc(it.label)}</span>${it.check !== undefined ? `<span class="chk">${it.check ? '✓' : ''}</span>` : it.kbd ? `<kbd>${it.kbd}</kbd>` : ''}`;
+    b.addEventListener('click', ev => { ev.stopPropagation(); closeMenu(); it.run(); });
+    m.appendChild(b);
+  });
+  app.appendChild(m);
+  const ar = app.getBoundingClientRect();
+  let x = e.clientX - ar.left, y = e.clientY - ar.top;
+  const w = m.offsetWidth, h = m.offsetHeight;
+  const ox = x + w > ar.width - 8 ? 'right' : 'left', oy = y + h > ar.height - 8 ? 'bottom' : 'top';
+  if (ox === 'right') x = Math.max(8, x - w); if (oy === 'bottom') y = Math.max(8, y - h);
+  m.style.left = x + 'px'; m.style.top = y + 'px';
+  m.style.setProperty('--ox', ox); m.style.setProperty('--oy', oy);
+  menuEl = m; menuFocus = -1;
+}
+function closeMenu() { if (menuEl) { menuEl.remove(); menuEl = null; } }
+function menuKey(e) {
+  const btns = [...menuEl.querySelectorAll('.mi:not(:disabled)')];
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { menuFocus = (menuFocus + (e.key === 'ArrowDown' ? 1 : -1) + btns.length) % btns.length; btns.forEach((b, i) => b.classList.toggle('kfocus', i === menuFocus)); btns[menuFocus].focus(); e.preventDefault(); return true; }
+  if (e.key === 'Escape') { closeMenu(); itemsEl.focus(); e.preventDefault(); return true; }
+  return false;
+}
+document.addEventListener('pointerdown', e => { if (menuEl && !menuEl.contains(e.target)) closeMenu(); });
+itemsEl.addEventListener('contextmenu', e => {
+  e.preventDefault();
+  const name = itemAt(e);
+  if (S.cwd === 'trash:') {
+    if (!name) { openMenu(e, [{ label: 'Empty trash', icon: I.trash, disabled: !S.trash.length, run: () => { const n = S.trash.length; S.trash = []; render(); toast(`Permanently deleted: ${n}`); } }]); return; }
+    openMenu(e, [{ head: name }, { label: 'Restore', icon: I.restore, hot: true, run: restoreSel }, { label: 'Quick look', icon: I.eye, kbd: 'Space', run: () => quickLook(resolveSel(name)) }]);
+    return;
+  }
+  const d = resolve(S.cwd);
+  const w = d && canWrite(d);
+  if (!name) {
+    openMenu(e, [
+      { head: pretty(S.cwd) },
+      { label: 'Terminal here', icon: I.term, kbd: 'F4', hot: true, run: () => openDock(S.cwd, false) },
+      { label: 'Terminal in new window', icon: I.win, kbd: 'Shift+F4', run: () => openWin(S.cwd, false) },
+      { label: 'Root terminal in new window', icon: I.shield, rootish: true, run: () => openWin(S.cwd, true) },
+      '-',
+      { label: 'New folder', icon: I.newdir, kbd: 'Ctrl+Shift+N', disabled: !w, run: () => create('dir') },
+      { label: 'New file', icon: I.newfile, disabled: !w, run: () => create('file') },
+      { label: 'Paste', icon: I.paste, kbd: 'Ctrl+V', disabled: !w || !S.clip, run: paste },
+      ...(w ? [] : [{ label: 'Turn on root mode', icon: I.shield, rootish: true, kbd: 'Ctrl+Shift+R', run: toggleRoot }]),
+      '-',
+      { label: 'Show hidden files', icon: I.hidden, check: S.hidden, run: toggleHidden },
+      { label: 'Select all', icon: I.all, kbd: 'Ctrl+A', run: selectAll },
+      { label: 'Copy path', icon: I.path, run: () => copyText(S.cwd, 'Path copied') },
+    ]);
+    return;
+  }
+  const n = resolveSel(name);
+  const many = S.sel.size > 1;
+  const dirPath = n.type === 'dir' ? childPath(n.name) : S.cwd;
+  openMenu(e, [
+    { head: many ? `Selected: ${S.sel.size}` : n.name },
+    { label: 'Open', icon: I.open, kbd: 'Enter', disabled: many, run: () => openItem(n) },
+    { label: n.type === 'dir' ? 'Terminal in this folder' : 'Terminal here', icon: I.term, kbd: n.type === 'dir' ? '' : 'F4', hot: true, run: () => openDock(dirPath, false) },
+    { label: 'Terminal in new window', icon: I.win, kbd: n.type === 'dir' ? '' : 'Shift+F4', run: () => openWin(dirPath, false) },
+    { label: 'Root terminal in new window', icon: I.shield, rootish: true, run: () => openWin(dirPath, true) },
+    ...(n.type === 'file' && n.owner !== 'user' ? [{ label: 'Edit as root', icon: I.edit, rootish: true, run: () => needRoot('Edit ' + childPath(n.name), () => toast(`Opened through <code>sudoedit ${esc(childPath(n.name))}</code>`)) }] : []),
+    { label: 'Quick look', icon: I.eye, kbd: 'Space', disabled: many, run: () => quickLook(n) },
+    '-',
+    { label: 'Cut', icon: I.cut, kbd: 'Ctrl+X', disabled: !w, run: () => clip(true) },
+    { label: 'Copy', icon: I.copy, kbd: 'Ctrl+C', run: () => clip(false) },
+    { label: 'Rename', icon: I.edit, kbd: 'F2', disabled: !w || many, run: () => startRename(name) },
+    { label: 'Copy path', icon: I.path, run: () => copyText([...S.sel].map(childPath).join('\n'), 'Path copied') },
+    '-',
+    { label: 'Move to trash', icon: I.trash, kbd: 'Del', disabled: !w, run: trashSel },
+    ...(w ? [] : [{ label: 'Unlock (root)', icon: I.shield, rootish: true, kbd: 'Ctrl+Shift+R', run: toggleRoot }]),
+    { label: 'Properties', icon: I.info, disabled: many, run: () => quickLook(n) },
+  ]);
+});
+
+/* ---------------- file ops ---------------- */
+function curDir() { return S.cwd === 'trash:' ? null : resolve(S.cwd); }
+function guard(action) {
+  const d = curDir(); if (!d) return null;
+  if (!canWrite(d)) { needRoot(action + ' in ' + S.cwd, () => {}); return null; }
+  return d;
+}
+function uniq(d, base) {
+  if (!d.children[base]) return base;
+  const m = base.match(/^(.*?)(\.[^.]+)?$/);
+  for (let i = 2; ; i++) { const c = `${m[1]} (${i})${m[2] || ''}`; if (!d.children[c]) return c; }
+}
+function create(type) {
+  const d = guard(type === 'dir' ? 'Create folder' : 'Create file'); if (!d) return;
+  const name = uniq(d, type === 'dir' ? 'New Folder' : 'New File.txt');
+  d.children[name] = type === 'dir' ? { name, type: 'dir', owner: S.root ? 'root' : 'user', children: {}, mtime: Date.now(), parent: d }
+    : { name, type: 'file', owner: S.root ? 'root' : 'user', content: '', size: 0, mtime: Date.now(), parent: d };
+  S.sel = new Set([name]); S.renaming = name; render();
+}
+function startRename(name) { if (!guard('Rename')) return; S.renaming = name; render(); }
+function commitRename(cancel) {
+  const old = S.renaming; if (!old) return;
+  const input = $('#ren'); const val = input ? input.value.trim() : old;
+  S.renaming = null;
+  const d = curDir();
+  if (!cancel && d && val && val !== old) {
+    if (val.includes('/')) toast('Name cannot contain "/"');
+    else if (d.children[val]) toast(`"${esc(val)}" already exists`);
+    else { const n = d.children[old]; delete d.children[old]; n.name = val; n.mtime = Date.now(); d.children[val] = n; S.sel = new Set([val]); }
+  }
+  render(); itemsEl.focus();
+}
+itemsEl.addEventListener('keydown', e => {
+  if (!e.target.classList.contains('ren')) return;
+  if (e.key === 'Enter') { e.preventDefault(); commitRename(false); }
+  if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); commitRename(true); }
+  e.stopPropagation();
+});
+itemsEl.addEventListener('focusout', e => { if (e.target.classList && e.target.classList.contains('ren')) setTimeout(() => { if (S.renaming) commitRename(false); }, 0); });
+function trashSel() {
+  const d = guard('Delete'); if (!d || !S.sel.size) return;
+  const names = [...S.sel];
+  names.forEach(nm => { const n = d.children[nm]; if (!n) return; delete d.children[nm]; S.trash.push({ node: n, from: S.cwd }); });
+  S.sel.clear(); render(); toast(`Moved to trash: ${names.length === 1 ? '"' + esc(names[0]) + '"' : names.length + ' ' + countOf(names.length)}`);
+}
+function restoreSel() {
+  const names = [...S.sel];
+  S.trash = S.trash.filter(t => {
+    if (!names.includes(t.node.name)) return true;
+    const d = resolve(t.from); if (!d) return true;
+    const nm = uniq(d, t.node.name); t.node.name = nm; t.node.parent = d; d.children[nm] = t.node; return false;
+  });
+  S.sel.clear(); render(); toast('Restored');
+}
+function clip(cut) {
+  if (!S.sel.size) return;
+  if (cut && !guard('Cut')) return;
+  S.clip = { cut, from: S.cwd, names: [...S.sel] }; render();
+  toast(`${cut ? 'Cut' : 'Copied'}: ${S.clip.names.length}`);
+}
+function deepCopy(n, parent) {
+  const c = { ...n, parent, mtime: Date.now(), owner: S.root ? n.owner : 'user' };
+  if (n.type === 'dir') { c.children = {}; for (const [k, v] of Object.entries(n.children)) c.children[k] = deepCopy(v, c); }
+  return c;
+}
+function paste() {
+  if (!S.clip) return;
+  const d = guard('Paste'); if (!d) return;
+  const src = resolve(S.clip.from); if (!src) return;
+  const added = [];
+  for (const nm of S.clip.names) {
+    const n = src.children[nm]; if (!n) continue;
+    if (S.clip.cut && src === d) continue;
+    const name = uniq(d, nm);
+    if (S.clip.cut) { delete src.children[nm]; n.name = name; n.parent = d; d.children[name] = n; }
+    else { const c = deepCopy(n, d); c.name = name; d.children[name] = c; }
+    added.push(name);
+  }
+  if (S.clip.cut) S.clip = null;
+  S.sel = new Set(added); render();
+}
+function selectAll() { S.sel = new Set(entries().map(n => n.name)); render(); }
+function toggleHidden() { S.hidden = !S.hidden; render(); toast(S.hidden ? 'Hidden files shown' : 'Hidden files hidden'); }
+async function copyText(t, msg) { try { await navigator.clipboard.writeText(t); toast(msg); } catch { toast(`${msg.replace('copied', 'not copied')}: <code>${esc(t)}</code>`); } }
+
+/* ---------------- root mode (polkit) ---------------- */
+let rootTimer = 0;
+const desk = $('.desk');
+const FM_NOTE = 'Runs through <b>ds-files-helper</b> using polkit. The file manager itself stays as your user. The root session lasts 5 minutes.';
+const SUDO_NOTE = 'This is sudo in the terminal. The polkit confirmation is valid for 5 minutes for this terminal.';
+function auth(what, ok, note) {
+  const scrim = document.createElement('div'); scrim.className = 'scrim'; scrim.style.zIndex = 100000;
+  scrim.innerHTML = `<div class="dlg" role="dialog" aria-modal="true" aria-labelledby="authT">
+    <div class="shield">${I.shield}</div>
+    <h3 id="authT">Administrator rights required</h3>
+    <div class="what">${esc(what)}</div>
+    <p>${note || FM_NOTE}</p>
+    <p style="font-size:12px">This mockup does not ask for a password, just confirm.</p>
+    <div class="row"><button class="btn" type="button" id="authNo">Cancel</button><button class="btn root" type="button" id="authYes">Confirm</button></div></div>`;
+  desk.appendChild(scrim);
+  const prev = document.activeElement;
+  const done = y => { scrim.remove(); document.removeEventListener('keydown', k, true); if (y) ok(); else prev?.focus?.({ preventScroll: true }); };
+  const k = e => { if (e.key === 'Escape') { e.stopPropagation(); e.preventDefault(); done(false); } };
+  document.addEventListener('keydown', k, true);
+  scrim.querySelector('#authNo').onclick = () => done(false);
+  scrim.querySelector('#authYes').onclick = () => done(true);
+  scrim.addEventListener('pointerdown', e => { if (e.target === scrim) done(false); });
+  scrim.querySelector('#authYes').focus({ preventScroll: true });
+}
+function needRoot(what, then) { if (S.root) { then(); return; } auth(what, () => { startRoot(); then(); }); }
+function startRoot() {
+  S.root = { until: Date.now() + 5 * 60e3 };
+  clearInterval(rootTimer);
+  const tick = () => {
+    const left = Math.max(0, S.root.until - Date.now());
+    $('#rootLeft').textContent = `${Math.floor(left / 60e3)}:${String(Math.floor(left / 1e3) % 60).padStart(2, '0')}`;
+    if (!left) endRoot('Root session expired');
+  };
+  rootTimer = setInterval(tick, 1000); render(); tick();
+  toast('Root mode on for 5 minutes');
+}
+function endRoot(msg) { clearInterval(rootTimer); S.root = null; render(); toast(msg || 'Root mode off'); }
+function toggleRoot() { S.root ? endRoot() : needRoot('Root mode for ' + (S.cwd === 'trash:' ? 'the trash' : S.cwd), () => {}); }
+$('#btnRoot').onclick = toggleRoot;
+$('#rootExit').onclick = () => endRoot();
+
+/* ---------------- terminals: docked (follows the window) and separate ds windows ---------------- */
+const XI = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>';
+function mkTerm(cwd, root, out, el, titleEl, isDock) {
+  const t = { cwd, root: !!root, sudoUntil: root ? Date.now() + 5 * 60e3 : 0, lines: [], hist: [], hi: 0, last: null, out, el, tt: titleEl, dock: isDock, closed: false, input: null };
+  out.addEventListener('pointerup', () => { if (!getSelection().toString()) t.input?.focus({ preventScroll: true }); });
+  return t;
+}
+const dock = mkTerm(S.cwd, false, tout, term, $('#termTitle'), true);
+const twins = [];
+let zTop = 5;
+function raise(el) {
+  el.style.zIndex = ++zTop;
+  document.querySelectorAll('.tw.focus,.app.focus').forEach(x => { if (x !== el) x.classList.remove('focus'); });
+  el.classList.add('focus');
+}
+app.addEventListener('pointerdown', () => raise(app), true);
+app.addEventListener('focusin', () => raise(app));
+
+function openDock(path, asRoot) {
+  if (path === 'trash:') path = HOME;
+  const run = () => {
+    if (path !== S.cwd) go(path);
+    if (asRoot && !dock.root) { dock.root = true; dock.sudoUntil = Date.now() + 5 * 60e3; dock.lines.push('<span class="t-dim"># sudo -i, confirmed through polkit</span>'); }
+    S.termOpen = true; render(); setTimeout(() => dock.input?.focus({ preventScroll: true }), 60);
+  };
+  asRoot && !dock.root ? auth('sudo -i in ' + path, run, SUDO_NOTE) : run();
+}
+const openTerm = openDock;
+function closeDock() { S.termOpen = false; render(); itemsEl.focus({ preventScroll: true }); }
+function renderPrompt() { tRender(dock); }
+
+function placeWin() {
+  const dw = desk.clientWidth, dh = desk.clientHeight, n = twins.filter(t => !t.closed).length;
+  const w = Math.min(540, dw - 16), h = 300;
+  if (dw < 720) return { x: 8 + (n % 3) * 12, y: Math.max(8, 70 + (n % 3) * 14) };
+  return { x: Math.max(8, dw - w - 26 - (n % 4) * 30), y: Math.max(8, Math.min(dh - h - 26, 90 + (n % 4) * 26)) };
+}
+function openWin(path, asRoot, lines) {
+  if (path === 'trash:') path = HOME;
+  const start = () => {
+    const el = document.createElement('div'); el.className = 'tw';
+    el.setAttribute('role', 'dialog'); el.setAttribute('aria-label', 'Terminal');
+    el.innerHTML = `<div class="twh">${I.term}<span class="tt"></span><button type="button" data-a="sudo" title="sudo -i / exit">${I.shield}</button><button type="button" data-a="close" title="Close">${XI}</button></div><div class="tout"></div>`;
+    const t = mkTerm(path, asRoot, el.querySelector('.tout'), el, el.querySelector('.tt'), false);
+    if (lines) t.lines.push(...lines);
+    if (asRoot) t.lines.push('<span class="t-dim"># sudo -i, confirmed through polkit</span>');
+    const p = placeWin(); el.style.left = p.x + 'px'; el.style.top = p.y + 'px';
+    desk.appendChild(el); twins.push(t); raise(el);
+    el.addEventListener('pointerdown', () => raise(el));
+    el.querySelector('[data-a=close]').onclick = () => closeWin(t);
+    el.querySelector('[data-a=sudo]').onclick = () => runCmd(t, t.root ? 'exit' : 'sudo -i');
+    dragWin(t); tRender(t);
+    setTimeout(() => t.input?.focus({ preventScroll: true }), 40);
+    return t;
+  };
+  if (asRoot) { auth('Root terminal in ' + path, start, 'A separate terminal window with a root shell (sudo -i) will open.'); return null; }
+  return start();
+}
+function closeWin(t) { if (t.closed) return; t.closed = true; t.el.classList.add('closing'); setTimeout(() => t.el.remove(), 190); itemsEl.focus({ preventScroll: true }); }
+function dragWin(t) {
+  const h = t.el.querySelector('.twh');
+  h.addEventListener('pointerdown', e => {
+    if (e.target.closest('button') || e.button !== 0) return;
+    e.preventDefault(); try { h.setPointerCapture(e.pointerId); } catch {}
+    const x0 = e.clientX, y0 = e.clientY, l0 = t.el.offsetLeft, top0 = t.el.offsetTop;
+    const mv = ev => {
+      t.el.style.left = Math.min(desk.clientWidth - 60, Math.max(60 - t.el.offsetWidth, l0 + ev.clientX - x0)) + 'px';
+      t.el.style.top = Math.min(desk.clientHeight - 32, Math.max(0, top0 + ev.clientY - y0)) + 'px';
+    };
+    const up = () => { h.removeEventListener('pointermove', mv); h.removeEventListener('pointerup', up); };
+    h.addEventListener('pointermove', mv); h.addEventListener('pointerup', up);
+  });
+}
+function popOut() {
+  const t = openWin(dock.cwd, false, dock.lines.slice(-8));
+  t.root = dock.root; t.sudoUntil = dock.sudoUntil; t.hist = dock.hist.slice(); t.hi = t.hist.length; tRender(t);
+  dock.root = false; dock.sudoUntil = 0; dock.lines = []; dock.hist = []; dock.hi = 0;
+  closeDock(); raise(t.el); setTimeout(() => t.input?.focus({ preventScroll: true }), 50);
+  toast('Terminal moved to a separate ds window');
+}
+$('#btnTerm').onclick = e => { if (e.shiftKey) { openWin(S.cwd); return; } S.termOpen ? closeDock() : openDock(S.cwd); };
+$('#btnTermWin').onclick = () => openWin(S.cwd);
+$('#termClose').onclick = closeDock;
+$('#termPop').onclick = popOut;
+$('#termRootBtn').onclick = () => runCmd(dock, dock.root ? 'exit' : 'sudo -i');
+
+function promptHtml(t) {
+  const p = esc(pretty(t.cwd));
+  return t.root ? `<span class="p-r">root@ds-x1e</span> <span class="p-path">${p}</span> <span class="p-r">#</span>` : `<span class="p-u">user@ds-x1e</span> <span class="p-path">${p}</span> <span class="t-dim">$</span>`;
+}
+function tRender(t) {
+  if (t.closed) return;
+  const keep = t.input ? t.input.value : '';
+  const had = t.input && document.activeElement === t.input;
+  t.el.classList.toggle('root', t.root);
+  t.tt.textContent = t.dock ? `Terminal · ${t.root ? 'root · ' : ''}${pretty(t.cwd)}` : `foot — ${t.root ? 'root: ' : ''}${pretty(t.cwd)}`;
+  t.out.innerHTML = t.lines.map(l => `<div>${l}</div>`).join('') + `<div class="tline">${promptHtml(t)}<input type="text" spellcheck="false" autocomplete="off" aria-label="Terminal command"></div>`;
+  t.input = t.out.querySelector('input'); t.input.value = keep;
+  t.input.addEventListener('keydown', e => termKey(t, e));
+  if (had) t.input.focus({ preventScroll: true });
+  t.out.scrollTop = t.out.scrollHeight;
+}
+function tprint(t, html) { t.lines.push(html); if (t.lines.length > 300) t.lines.shift(); tRender(t); }
+function termKey(t, e) {
+  e.stopPropagation();
+  const inp = e.target;
+  if (e.key === 'Enter') { const v = inp.value; inp.value = ''; if (v.trim()) t.hist.push(v); t.hi = t.hist.length; runCmd(t, v); }
+  else if (e.key === 'ArrowUp') { if (t.hi > 0) { t.hi--; inp.value = t.hist[t.hi]; } e.preventDefault(); }
+  else if (e.key === 'ArrowDown') { if (t.hi < t.hist.length) { t.hi++; inp.value = t.hist[t.hi] || ''; } e.preventDefault(); }
+  else if (e.key === 'F4' && e.shiftKey) { e.preventDefault(); t.dock ? popOut() : openWin(t.cwd); }
+  else if (e.key === 'F4' && t.dock) { e.preventDefault(); closeDock(); }
+  else if (e.key === 'l' && e.ctrlKey) { e.preventDefault(); t.lines.length = 0; tRender(t); }
+  else if (e.key === 'd' && e.ctrlKey && !inp.value) { e.preventDefault(); runCmd(t, 'exit'); }
+  else if (e.key === 'Tab') { e.preventDefault(); complete(t, inp); }
+}
+function complete(t, input) {
+  const v = input.value, word = v.match(/(\S*)$/)[1];
+  const base = word.includes('/') ? word.slice(0, word.lastIndexOf('/') + 1) : '';
+  const d = resolve(norm(base || '.', t.cwd)); if (!d || d.type !== 'dir') return;
+  const pre = word.slice(base.length);
+  const c = Object.keys(d.children).filter(k => k.startsWith(pre));
+  if (c.length === 1) input.value = v.slice(0, v.length - word.length) + base + c[0] + (d.children[c[0]].type === 'dir' ? '/' : ' ');
+  else if (c.length > 1) tprint(t, `${promptHtml(t)} ${esc(v)}<br>${c.map(esc).join('  ')}`);
+}
+function asRootOnce(t, l) {
+  const run = () => { t.sudoUntil = Date.now() + 5 * 60e3; const was = t.root; t.root = true; runCmd(t, l); t.root = was; tRender(t); t.input?.focus({ preventScroll: true }); };
+  t.sudoUntil > Date.now() ? run() : auth('sudo ' + l, run, SUDO_NOTE);
+}
+function runCmd(t, line) {
+  tprint(t, `${promptHtml(t)} ${esc(line)}`);
+  const parts = line.trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return;
+  const [cmd, ...args] = parts;
+  const cwd = t.cwd;
+  const out = s => tprint(t, s), err = s => tprint(t, `<span class="t-err">${s}</span>`);
+  const canR = d => t.root || d.owner !== 'root!', canW = d => t.root || d.owner === 'user';
+  if (cmd === 'sudo') {
+    if (!args.length || ['-i', '-s', 'su'].includes(args[0])) {
+      if (t.root) return;
+      const up = () => { t.sudoUntil = Date.now() + 5 * 60e3; t.root = true; tRender(t); t.input?.focus({ preventScroll: true }); };
+      t.sudoUntil > Date.now() ? up() : auth('sudo -i in ' + cwd, up, SUDO_NOTE);
+      return;
+    }
+    if (args[0] === '!!') { if (!t.last) { err('bash: !!: event not found'); return; } const l = t.last; t.last = null; t.root ? runCmd(t, l) : asRootOnce(t, l); return; }
+    t.root ? runCmd(t, args.join(' ')) : asRootOnce(t, args.join(' '));
+    return;
+  }
+  switch (cmd) {
+    case 'help': out(`<span class="t-dim">Mockup commands: ls [-la] [path], cd, pwd, cat, mkdir, touch, rm, whoami, open ., sudo -i, sudo &lt;cmd&gt;, sudo !!, exit, clear. ${t.dock ? 'This terminal follows the file manager window; Shift+F4 pops it out into a separate window.' : 'This is a separate ds window and lives on its own; open . shows this folder in the file manager.'}</span>`); break;
+    case 'clear': t.lines.length = 0; tRender(t); break;
+    case 'pwd': out(esc(cwd)); break;
+    case 'whoami': out(t.root ? 'root' : 'user'); break;
+    case 'exit':
+      if (t.root) { t.root = false; out('<span class="t-dim">logout</span>'); }
+      else if (t.dock) closeDock(); else closeWin(t);
+      break;
+    case 'cd': {
+      const p = norm(args[0] || '~', cwd), n = resolve(p);
+      if (!n) err(`bash: cd: ${esc(args[0])}: No such file or directory`);
+      else if (n.type !== 'dir') err(`bash: cd: ${esc(args[0])}: Not a directory`);
+      else if (!canR(n)) err(`bash: cd: ${esc(args[0])}: Permission denied`);
+      else { t.cwd = p; if (t.dock) go(p, { fromTerm: true }); tRender(t); }
+      break;
+    }
+    case 'ls': case 'll': {
+      const flags = args.filter(a => a.startsWith('-')).join('');
+      const all = cmd === 'll' || flags.includes('a'), long = cmd === 'll' || flags.includes('l');
+      const target = args.find(a => !a.startsWith('-'));
+      const n = resolve(norm(target || '.', cwd));
+      if (!n) { err(`ls: cannot access '${esc(target)}': No such file or directory`); break; }
+      if (n.type !== 'dir') { out(esc(n.name)); break; }
+      if (!canR(n)) { err(`ls: cannot open directory '${esc(target || '.')}': Permission denied`); t.last = line; break; }
+      const list = Object.values(n.children).filter(c => all || !c.name.startsWith('.')).sort((a, b) => a.name.localeCompare(b.name, 'en'));
+      const nm = c => c.type === 'dir' ? `<span class="t-dir">${esc(c.name)}</span>` : esc(c.name);
+      if (long) out(list.map(c => `${perms(c)} ${ownerName(c).padEnd(4)} ${(c.type === 'dir' ? '-' : fmtSize(c.size)).padStart(8)}  ${nm(c)}`).join('\n'));
+      else out(list.map(nm).join('  '));
+      break;
+    }
+    case 'cat': {
+      if (!args[0]) { err('cat: missing operand'); break; }
+      const n = resolve(norm(args[0], cwd));
+      if (!n) err(`cat: ${esc(args[0])}: No such file or directory`);
+      else if (n.type === 'dir') err(`cat: ${esc(args[0])}: Is a directory`);
+      else if (!canR(n)) { err(`cat: ${esc(args[0])}: Permission denied`); t.last = line; }
+      else if (n.content === undefined) out('<span class="t-dim">(binary file)</span>');
+      else out(esc(n.content));
+      break;
+    }
+    case 'mkdir': case 'touch': case 'rm': {
+      const d = resolve(cwd);
+      const nm = args.filter(a => !a.startsWith('-'))[0];
+      if (!nm) { err(`${cmd}: missing operand`); break; }
+      if (!canW(d)) { err(`${cmd}: cannot ${cmd === 'rm' ? 'remove' : 'create'} '${esc(nm)}': Permission denied`); out('<span class="t-dim">hint: sudo !! or the shield in the terminal title bar</span>'); t.last = line; break; }
+      if (cmd === 'rm') {
+        if (!d.children[nm]) { err(`rm: cannot remove '${esc(nm)}': No such file or directory`); break; }
+        if (d.children[nm].type === 'dir' && !args.some(a => a.startsWith('-') && a.includes('r'))) { err(`rm: cannot remove '${esc(nm)}': Is a directory`); break; }
+        S.trash.push({ node: d.children[nm], from: cwd }); delete d.children[nm];
+      } else if (!d.children[nm]) {
+        d.children[nm] = cmd === 'mkdir' ? { name: nm, type: 'dir', owner: t.root ? 'root' : 'user', children: {}, mtime: Date.now(), parent: d } : { name: nm, type: 'file', owner: t.root ? 'root' : 'user', content: '', size: 0, mtime: Date.now(), parent: d };
+      }
+      render(); break;
+    }
+    case 'open': case 'xdg-open': {
+      const n = resolve(norm(args[0] || '.', cwd));
+      if (!n) err(`xdg-open: file '${esc(args[0])}' does not exist`);
+      else if (n.type === 'dir') { go(pathOf(n)); raise(app); }
+      else quickLook(n);
+      break;
+    }
+    default: err(`bash: ${esc(cmd)}: command not found`);
+  }
+}
+
+/* docked terminal: drag the handle to resize, pull it all the way down to close, double-click to toggle tall */
+(() => {
+  const h = $('#termHandle');
+  let lastH = 220;
+  h.addEventListener('pointerdown', e => {
+    if (e.target.closest('button') || e.button !== 0) return;
+    e.preventDefault(); try { h.setPointerCapture(e.pointerId); } catch {}
+    const y0 = e.clientY, h0 = term.getBoundingClientRect().height;
+    let cur = h0;
+    term.classList.add('dragging');
+    const mv = ev => { cur = Math.max(30, Math.min(460, h0 - (ev.clientY - y0))); term.style.setProperty('--th', cur + 'px'); };
+    const up = () => {
+      term.classList.remove('dragging'); h.removeEventListener('pointermove', mv); h.removeEventListener('pointerup', up);
+      if (cur < 100) { term.style.setProperty('--th', Math.max(160, lastH) + 'px'); closeDock(); } else lastH = cur;
+    };
+    h.addEventListener('pointermove', mv); h.addEventListener('pointerup', up);
+  });
+  h.addEventListener('dblclick', e => { if (e.target.closest('button')) return; const tall = term.getBoundingClientRect().height > 330; lastH = tall ? 220 : 420; term.style.setProperty('--th', lastH + 'px'); });
+})();
+
+/* ---------------- quick look / properties ---------------- */
+function quickLook(n) {
+  if (!n) return;
+  const p = n.parent ? pathOf(n) : S.cwd;
+  const { kind } = n.type === 'file' ? fileKind(n) : { kind: 'dir' };
+  const locked = !S.root && n.owner === 'root!';
+  let body;
+  if (n.type === 'dir') body = `<div class="big">${folderSvg(p).replace('<svg', '<svg style="width:84px;height:84px"')}<div>${Object.keys(n.children).length} ${countOf(Object.keys(n.children).length)} inside</div></div>`;
+  else if (n.img) body = `<div class="big"><div class="imgthumb ${n.img === 'ov' ? 'ov' : ''}"></div></div>`;
+  else if (locked) body = `<div class="big">${LOCK.replace('lockb', 'lockb-big')}<div>Contents are readable only by root</div></div>`;
+  else if (n.content !== undefined) body = `<pre>${esc(n.content) || '<span style="opacity:.5">(empty file)</span>'}</pre>`;
+  else body = `<div class="big">${fileSvg(n).replace('<svg', '<svg style="width:84px;height:84px"')}<div>No preview · ${kind === 'disc' ? 'disk image' : kind === 'arch' ? 'archive' : 'binary file'}</div></div>`;
+  const scrim = document.createElement('div'); scrim.className = 'scrim';
+  scrim.innerHTML = `<div class="ql" role="dialog" aria-modal="true" aria-label="Quick look">
+    <div class="qlh"><div class="ico">${iconHtml(n, p)}</div><div style="min-width:0"><b>${esc(n.name)}</b><small>${esc(pretty(p))}</small></div></div>
+    <div class="qlb">${body}</div>
+    <div class="qlf"><span>${perms(n)} · ${ownerName(n)} · ${n.type === 'dir' ? 'folder' : fmtSize(n.size)} · modified ${fmtDate(n.mtime)}</span><span style="display:flex;gap:8px"><button class="btn" type="button" data-a="term">Terminal here</button><button class="btn primary" type="button" data-a="close">Close</button></span></div></div>`;
+  app.appendChild(scrim);
+  const close = () => { scrim.remove(); document.removeEventListener('keydown', k, true); itemsEl.focus(); };
+  const k = e => { if (e.key === 'Escape' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); close(); } };
+  document.addEventListener('keydown', k, true);
+  scrim.addEventListener('pointerdown', e => { if (e.target === scrim) close(); });
+  scrim.querySelector('[data-a=close]').onclick = close;
+  scrim.querySelector('[data-a=term]').onclick = () => { close(); openTerm(n.type === 'dir' ? p : (n.parent ? pathOf(n.parent) : S.cwd), false); };
+  scrim.querySelector('[data-a=close]').focus();
+}
+
+/* ---------------- keyboard ---------------- */
+function moveSel(dx, dy, extend) {
+  const list = entries().map(n => n.name); if (!list.length) return;
+  const els = [...itemsEl.querySelectorAll('.it')];
+  let cols = 1;
+  if (S.view === 'grid' && els.length) { const t = els[0].offsetTop; cols = els.filter(e => e.offsetTop === t).length; }
+  const cur = S.anchor && list.includes(S.anchor) ? list.indexOf(S.anchor) : -1;
+  let i = cur < 0 ? 0 : Math.max(0, Math.min(list.length - 1, cur + dx + dy * cols));
+  S.anchor = list[i];
+  if (extend) S.sel.add(list[i]); else S.sel = new Set([list[i]]);
+  render();
+  itemsEl.querySelector(`.it[data-name="${CSS.escape(list[i])}"]`)?.scrollIntoView({ block: 'nearest' });
+}
+document.addEventListener('keydown', e => {
+  if (!app.isConnected) return;
+  if (menuEl && menuKey(e)) return;
+  const tag = e.target.tagName;
+  const typing = tag === 'INPUT' && e.target.type === 'text';
+  const ctrl = e.ctrlKey || e.metaKey;
+  if (e.key === 'F4') { e.preventDefault(); if (e.shiftKey) openWin(S.cwd); else S.termOpen ? closeDock() : openDock(S.cwd); return; }
+  if (ctrl && e.shiftKey && (e.key === 'R' || e.key === 'r')) { e.preventDefault(); toggleRoot(); return; }
+  if (typing) return;
+  if (!app.contains(e.target) && e.target !== document.body) return;
+  let h = true;
+  if (ctrl && e.key.toLowerCase() === 'l') editPath();
+  else if (ctrl && e.key.toLowerCase() === 'f') { searchEl.classList.add('open'); searchEl.focus(); }
+  else if (ctrl && e.key.toLowerCase() === 'h') toggleHidden();
+  else if (ctrl && e.shiftKey && e.key.toLowerCase() === 'n') create('dir');
+  else if (ctrl && e.key.toLowerCase() === 'a') selectAll();
+  else if (ctrl && e.key.toLowerCase() === 'c') clip(false);
+  else if (ctrl && e.key.toLowerCase() === 'x') clip(true);
+  else if (ctrl && e.key.toLowerCase() === 'v') paste();
+  else if (ctrl && e.key === '1') { S.view = 'grid'; render(); }
+  else if (ctrl && e.key === '2') { S.view = 'list'; render(); }
+  else if (e.altKey && e.key === 'ArrowLeft') back();
+  else if (e.altKey && e.key === 'ArrowRight') fwdNav();
+  else if (e.altKey && e.key === 'ArrowUp') up();
+  else if (e.key === 'Backspace') back();
+  else if (e.key === 'F2' && S.sel.size === 1) startRename([...S.sel][0]);
+  else if (e.key === 'Delete') S.cwd === 'trash:' ? null : trashSel();
+  else if (e.key === 'Enter' && S.sel.size === 1) openItem(resolveSel([...S.sel][0]));
+  else if (e.key === ' ' && S.sel.size === 1) quickLook(resolveSel([...S.sel][0]));
+  else if (e.key === 'ArrowRight') moveSel(1, 0, e.shiftKey);
+  else if (e.key === 'ArrowLeft') moveSel(-1, 0, e.shiftKey);
+  else if (e.key === 'ArrowDown') moveSel(0, 1, e.shiftKey);
+  else if (e.key === 'ArrowUp') moveSel(0, -1, e.shiftKey);
+  else if (e.key === 'Escape') { S.sel.clear(); side.classList.remove('open'); render(); }
+  else h = false;
+  if (h) e.preventDefault();
+});
+
+/* ---------------- toast ---------------- */
+let tT = 0;
+function toast(html) { toastEl.innerHTML = html; toastEl.classList.add('show'); clearTimeout(tT); tT = setTimeout(() => toastEl.classList.remove('show'), 2400); }
+
+/* ---------------- boot ---------------- */
+dock.lines.push(
+  `${promptHtml(dock)} cargo check`,
+  '<span class="t-ok">    Finished</span> `dev` profile [unoptimized + debuginfo] target(s) in 3.21s',
+  '<span class="t-dim"># the docked terminal follows the window. Shift+F4 or the ⧉ button pops it out into a separate window. help lists commands</span>'
+);
+S.sel = new Set(['src']); S.anchor = 'src';
+render();
+})();
+</script>
