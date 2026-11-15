@@ -547,6 +547,7 @@ impl WindowDecor {
         output: &Output,
         animations: &mut WindowAnimations,
         time: Duration,
+        scene: Option<&[crate::overview::SceneWindow]>,
     ) -> Vec<GavnoRenderElement> {
         animations.advance(time, space);
         self.caches.retain(|c| {
@@ -604,9 +605,10 @@ impl WindowDecor {
         append_layers(&mut result, renderer, true);
         // Closing windows retain their former stacking position relative to surviving
         // windows using the last space order captured below.
-        let mut windows: Vec<Window> = space.elements().cloned().collect();
+        let mut windows: Vec<Window> = scene.map(|s| s.iter().map(|v| v.window.clone()).collect())
+            .unwrap_or_else(|| space.elements().cloned().collect());
         for a in &animations.entries {
-            if a.motion.closing && !windows.contains(&a.window) {
+            if scene.is_none() && a.motion.closing && !windows.contains(&a.window) {
                 let above = self
                     .stack
                     .iter()
@@ -706,7 +708,8 @@ impl WindowDecor {
                 continue;
             }
             cache.snapshot = None;
-            let Some(loc) = space.element_location(window) else {
+            let visual = scene.and_then(|s| s.iter().find(|v| &v.window == window));
+            let Some(loc) = visual.map(|v| v.location).or_else(|| space.element_location(window)) else {
                 continue;
             };
             let rect = Rectangle::new(
@@ -717,7 +720,7 @@ impl WindowDecor {
                 .map(|m| m.rect(Rectangle::new(loc, window.geometry().size).to_f64()))
                 .unwrap_or(Rectangle::new(loc, window.geometry().size).to_f64());
             let animated = Rectangle::new(animated.loc - output_geo.loc.to_f64(), animated.size);
-            let shown = visual_rect(animated, motion.map(|m| m.scale()).unwrap_or(1.0));
+            let shown = visual.map(|v| v.rect).unwrap_or_else(|| visual_rect(animated, motion.map(|m| m.scale()).unwrap_or(1.0)));
             let bbox = window.bbox_with_popups().to_f64();
             let ratio = Scale::from((
                 shown.size.w / rect.size.w.max(1.0),

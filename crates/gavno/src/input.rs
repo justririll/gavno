@@ -42,6 +42,11 @@ pub enum Action {
     Resize(Direction),
     SwitcherCycle(bool),
     SwitcherFinish(bool),
+    Workspace(usize),
+    MoveWorkspace(usize),
+    WorkspaceStep(bool),
+    ToggleOverview,
+    CloseOverview,
 }
 
 impl Gavno {
@@ -55,6 +60,14 @@ impl Gavno {
             InputEvent::PointerMotionAbsolute { event, .. } => self.on_pointer_motion_absolute::<I>(event),
             InputEvent::PointerButton { event, .. } => self.on_pointer_button::<I>(event),
             InputEvent::PointerAxis { event, .. } => self.on_pointer_axis::<I>(event),
+            InputEvent::GestureSwipeBegin { event, .. } => self.on_gesture_swipe_begin::<I>(event),
+            InputEvent::GestureSwipeUpdate { event, .. } => self.on_gesture_swipe_update::<I>(event),
+            InputEvent::GestureSwipeEnd { event, .. } => self.on_gesture_swipe_end::<I>(event),
+            InputEvent::GesturePinchBegin { event, .. } => self.on_gesture_pinch_begin::<I>(event),
+            InputEvent::GesturePinchUpdate { event, .. } => self.on_gesture_pinch_update::<I>(event),
+            InputEvent::GesturePinchEnd { event, .. } => self.on_gesture_pinch_end::<I>(event),
+            InputEvent::GestureHoldBegin { event, .. } => self.on_gesture_hold_begin::<I>(event),
+            InputEvent::GestureHoldEnd { event, .. } => self.on_gesture_hold_end::<I>(event),
             _ => {}
         }
     }
@@ -81,6 +94,14 @@ impl Gavno {
                 {
                     gv.switcher_finish(true);
                 }
+                let sym = handle.modified_sym().raw();
+                if gv.greeter.is_none() && !gv.protocols.locks.locked && !gv.seat.keyboard_shortcuts_inhibited() {
+                    let is_super = matches!(sym, keysyms::KEY_Super_L | keysyms::KEY_Super_R);
+                    let other_down = gv.desktop_keys.iter().any(|k| *k != raw_code);
+                    let toggle = gv.gestures.super_tap.key(raw_code, is_super, key_state == KeyState::Pressed, other_down);
+                    if toggle { return FilterResult::Intercept(Some(Action::ToggleOverview)); }
+                    if is_super { return FilterResult::Intercept(None); }
+                } else { gv.gestures.super_tap.cancel(); }
                 if key_state == KeyState::Released {
                     // Swallow the release of a key whose press was a bind.
                     if let Some(i) = gv.suppressed_keys.iter().position(|k| *k == raw_code) {
@@ -145,11 +166,19 @@ impl Gavno {
                         gv.suppressed_keys.push(raw_code);
                         FilterResult::Intercept(Some(action))
                     }
+                    None if gv.overview.visible() => {
+                        gv.suppressed_keys.push(raw_code);
+                        FilterResult::Intercept(None)
+                    }
                     None => FilterResult::Forward,
                 }
             },
         );
 
+        match key_state {
+            KeyState::Pressed => { if !self.desktop_keys.contains(&raw_code) { self.desktop_keys.push(raw_code); } }
+            KeyState::Released => self.desktop_keys.retain(|k| *k != raw_code),
+        }
         if action.is_none() {
             self.record_activation_serial(keyboard.current_focus(), serial);
         }
@@ -194,14 +223,23 @@ impl Gavno {
         if mods.ctrl && mods.alt && sym == keysyms::KEY_Delete {
             return Some(Action::Quit);
         }
-        if mods.alt && !mods.ctrl && !mods.logo
+        if !main && mods.alt && !mods.ctrl && !mods.logo
             && matches!(sym, keysyms::KEY_Tab | keysyms::KEY_ISO_Left_Tab)
         {
             return Some(Action::SwitcherCycle(mods.shift));
         }
+        if self.overview.visible() && sym == keysyms::KEY_Escape { return Some(Action::CloseOverview); }
+        if mods.logo && mods.shift && sym == keysyms::KEY_F23 { return Some(Action::ToggleOverview); }
         if !main {
             return None;
         }
+        if (keysyms::KEY_1..=keysyms::KEY_9).contains(&sym) {
+            let index = (sym - keysyms::KEY_1) as usize;
+            return Some(if mods.shift { Action::MoveWorkspace(index) } else { Action::Workspace(index) });
+        }
+        if matches!(sym, keysyms::KEY_Tab | keysyms::KEY_ISO_Left_Tab) { return Some(Action::WorkspaceStep(mods.shift)); }
+        if mods.ctrl && matches!(sym, keysyms::KEY_Page_Up | keysyms::KEY_Page_Down) { return Some(Action::WorkspaceStep(sym == keysyms::KEY_Page_Up)); }
+        if matches!(sym, keysyms::KEY_a | keysyms::KEY_A) { return Some(Action::ToggleOverview); }
         let direction = match sym {
             keysyms::KEY_Left => Some(Direction::Left),
             keysyms::KEY_Right => Some(Direction::Right),
@@ -235,6 +273,11 @@ impl Gavno {
 
     pub fn run_action(&mut self, action: Action) {
         match action {
+            Action::Workspace(index) => { if let Some(output) = self.active_output() { self.switch_workspace(&output, index); } }
+            Action::MoveWorkspace(index) => { if let Some(window) = self.focused_window() { self.move_to_workspace(&window, index); } }
+            Action::WorkspaceStep(backwards) => self.workspace_step(backwards),
+            Action::ToggleOverview => self.toggle_overview(),
+            Action::CloseOverview => self.close_overview(),
             Action::Quit => self.quit(),
             Action::Spawn(cmd) => spawn_shell(&cmd),
             Action::CloseWindow => self.close_focused(),
@@ -262,6 +305,7 @@ impl Gavno {
             delta: event.delta(), delta_unaccel: event.delta_unaccel(), utime: event.time(),
         });
         if !allowed { pointer.frame(self); return; }
+        self.overview_motion(pos);
         let new_under = self.surface_under(pos);
         let serial = SERIAL_COUNTER.next_serial();
         pointer.motion(self, new_under.clone(), &MotionEvent { location: pos, serial, time: event.time_msec() });
@@ -286,6 +330,7 @@ impl Gavno {
         }
         let serial = SERIAL_COUNTER.next_serial();
         let pointer = self.seat.get_pointer().unwrap();
+        self.overview_motion(pos);
         let under = self.surface_under(pos);
         pointer.motion(
             self,
@@ -324,6 +369,9 @@ impl Gavno {
             return;
         }
 
+        self.gestures.super_tap.cancel();
+        if self.overview_button(button, button_state == ButtonState::Pressed) { return; }
+        if self.desktop_transform_at(pointer.current_location()) && self.layer_hit(pointer.current_location(), &[Layer::Overlay, Layer::Top]).is_none() { return; }
         if button_state == ButtonState::Pressed && !pointer.is_grabbed() {
             let pos = pointer.current_location();
             // A launcher holding exclusive keyboard focus keeps it on clicks elsewhere.
@@ -423,6 +471,7 @@ impl Gavno {
     }
 
     fn on_pointer_axis<I: InputBackend>(&mut self, event: I::PointerAxisEvent) {
+        if self.overview.visible() { return; }
         let source = event.source();
         let horizontal = event
             .amount(Axis::Horizontal)
@@ -467,4 +516,32 @@ fn clamp_to(pos: Point<f64, Logical>, rect: Rectangle<i32, Logical>) -> Point<f6
         pos.y.clamp(rect.loc.y as f64, max_y),
     )
         .into()
+}
+
+#[cfg(test)]
+mod workspace_tests {
+    use super::*;
+
+    #[test]
+    fn workspace_shortcuts_follow_configured_modifier() {
+        let mut h = crate::state::tests::Harness::new();
+        for (mod_key, mut mods) in [
+            (crate::config::ModKey::Super, ModifiersState { logo: true, ..Default::default() }),
+            (crate::config::ModKey::Alt, ModifiersState { alt: true, ..Default::default() }),
+        ] {
+            h.gv.config.mod_key = mod_key;
+            assert_eq!(h.gv.bind_for(Keysym::from(keysyms::KEY_3), &mods), Some(Action::Workspace(2)));
+            assert_eq!(h.gv.bind_for(Keysym::from(keysyms::KEY_Tab), &mods), Some(Action::WorkspaceStep(false)));
+            mods.shift = true;
+            assert_eq!(h.gv.bind_for(Keysym::from(keysyms::KEY_3), &mods), Some(Action::MoveWorkspace(2)));
+            assert_eq!(h.gv.bind_for(Keysym::from(keysyms::KEY_Tab), &mods), Some(Action::WorkspaceStep(true)));
+            mods.shift = false;
+            mods.ctrl = true;
+            assert_eq!(h.gv.bind_for(Keysym::from(keysyms::KEY_Page_Up), &mods), Some(Action::WorkspaceStep(true)));
+            assert_eq!(h.gv.bind_for(Keysym::from(keysyms::KEY_Page_Down), &mods), Some(Action::WorkspaceStep(false)));
+            assert_eq!(h.gv.bind_for(Keysym::from(keysyms::KEY_a), &mods), Some(Action::ToggleOverview));
+        }
+        let copilot = ModifiersState { logo: true, shift: true, ..Default::default() };
+        assert_eq!(h.gv.bind_for(Keysym::from(keysyms::KEY_F23), &copilot), Some(Action::ToggleOverview));
+    }
 }

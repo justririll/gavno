@@ -79,6 +79,9 @@ pub fn with_mode_state<T>(window: &Window, f: impl FnOnce(&mut ModeState) -> T) 
 impl Gavno {
     /// Greatest output overlap; unmapped windows use the active output.
     pub(crate) fn output_for_window(&self, window: &Window) -> Option<Output> {
+        if self.space.element_location(window).is_none() {
+            if let Some((output, _)) = self.workspaces.membership(window) { return Some(output); }
+        }
         let rect = self.window_rect(window);
         self.space
             .outputs()
@@ -123,7 +126,7 @@ impl Gavno {
             WindowMode::Fullscreen => output.as_ref().and_then(|o| self.space.output_geometry(o)),
         };
 
-        let current = self.space.element_location(window).map(|loc| {
+        let current = self.space.element_location(window).or_else(|| self.workspaces.location(window)).map(|loc| {
             Rectangle::new(
                 loc,
                 toplevel
@@ -145,6 +148,9 @@ impl Gavno {
             target
         };
         configure_mode(window, mode, geometry.map(|r| r.size));
+        if !mapped {
+            if let Some(rect) = geometry { self.save_workspace_location(window, rect.loc); }
+        }
 
         if mapped {
             let loc = match mode {

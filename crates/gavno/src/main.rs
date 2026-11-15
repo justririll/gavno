@@ -22,6 +22,9 @@ mod render;
 mod state;
 mod ui;
 mod window_mode;
+mod workspace;
+mod overview;
+mod gesture;
 mod xwayland;
 
 use smithay::reexports::{calloop::EventLoop, wayland_server::Display};

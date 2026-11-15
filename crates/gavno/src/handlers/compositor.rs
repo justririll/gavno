@@ -26,16 +26,16 @@ impl CompositorHandler for Gavno {
 
     fn commit(&mut self, surface: &WlSurface) {
         on_commit_buffer_handler::<Self>(surface);
+        let mut root = surface.clone();
+        while let Some(parent) = get_parent(&root) { root = parent; }
+        let mut hidden_commit = self.window_for_surface(&root).is_some_and(|w| self.space.element_location(&w).is_none());
 
         if !is_sync_subsurface(surface) {
-            let mut root = surface.clone();
-            while let Some(parent) = get_parent(&root) {
-                root = parent;
-            }
             if let Some(window) = self.window_for_surface(&root) {
                 window.on_commit();
                 let has_buffer = with_renderer_surface_state(&root, |s| s.buffer().is_some()).unwrap_or(false);
-                crate::anim::surface_commit(self, &window, has_buffer);
+                hidden_commit = self.space.element_location(&window).is_none();
+                if !hidden_commit { crate::anim::surface_commit(self, &window, has_buffer); }
             }
 
             // First buffer of a new toplevel: place and show it.
@@ -57,7 +57,7 @@ impl CompositorHandler for Gavno {
         xdg_shell::handle_commit(self, surface);
         layer_shell::handle_commit(self, surface);
         resize_grab::handle_commit(&mut self.space, surface);
-        self.queue_redraw_all();
+        if !hidden_commit || self.overview.visible() { self.queue_redraw_all(); }
     }
 }
 

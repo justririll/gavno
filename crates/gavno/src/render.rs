@@ -50,6 +50,7 @@ render_elements! {
     Memory = MemoryRenderBufferRenderElement<GlesRenderer>,
     Window = crate::decor::WindowElement,
     Shader = smithay::backend::renderer::gles::element::PixelShaderElement,
+    Thumbnail = crate::overview::ThumbnailElement,
 }
 
 /// Dmabuf feedback for one output: what to prefer for composition and what
@@ -108,6 +109,8 @@ pub fn output_elements(
     window_decor: &mut crate::decor::WindowDecor,
     animations: &mut crate::anim::WindowAnimations,
     locks: &crate::handlers::session_lock::Locks,
+    workspaces: &mut crate::workspace::Workspaces,
+    overview: &mut crate::overview::Overview,
 ) -> Vec<GavnoRenderElement> {
     let mut elements: Vec<GavnoRenderElement> = Vec::new();
     let Some(output_geo) = space.output_geometry(output) else {
@@ -177,7 +180,9 @@ pub fn output_elements(
     }
 
     elements.extend(crate::overlay::overlay_elements(overlay, renderer, output, output_geo, scale.x, time));
-    elements.extend(window_decor.elements(renderer, space, output, animations, time));
+    let scene = overview.scene(workspaces, space, output, time);
+    elements.extend(overview.chrome(renderer, workspaces, space, output));
+    elements.extend(window_decor.elements(renderer, space, output, animations, time, scene.as_deref()));
     elements
 }
 
