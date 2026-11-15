@@ -111,6 +111,17 @@ struct DockView {
     visible: bool,
     menu_rect: Option<Rectangle<f64, Logical>>,
 }
+impl DockView {
+    /// An empty dock draws nothing, so park every spring at its target instead
+    /// of leaving `Dock::active` reporting stale motion forever.
+    fn settle(&mut self) {
+        let target = self.slide.target;
+        self.slide.jump(target);
+        self.icons.clear();
+        self.hits.clear();
+        self.menu_rect = None;
+    }
+}
 struct Launch {
     id: String,
     start: Duration,
@@ -286,6 +297,13 @@ impl Dock {
                         .any(|l| self.now.saturating_sub(l.start) < Duration::from_millis(950)))
         }) || self.minimized.iter().any(|m| m.progress.is_active())
     }
+    /// An empty dock has nothing to draw; settle its springs and transient
+    /// motion so `active` cannot keep the compositor awake on frozen animation.
+    fn settle_empty(&mut self, index: usize) {
+        self.views[index].settle();
+        self.launches.clear();
+        self.menu = None;
+    }
     pub fn elements(
         &mut self,
         renderer: &mut GlesRenderer,
@@ -323,7 +341,7 @@ impl Dock {
         }
         let count = self.apps.len();
         if count == 0 {
-            v.hits.clear();
+            self.settle_empty(index);
             return Vec::new();
         }
         let has_separator = self.order.contains(&ItemKey::Separator);
@@ -1025,6 +1043,64 @@ mod tests {
         h.gv.minimize_window(&w);
         h.gv.minimize_window(&w);
         assert_eq!(h.gv.dock.minimized.len(), 1);
+    }
+    #[test]
+    fn empty_dock_settles_motion_instead_of_freezing_springs() {
+        let output = Output::new(
+            "empty-dock-test".into(),
+            smithay::output::PhysicalProperties {
+                size: (0, 0).into(),
+                subpixel: smithay::output::Subpixel::Unknown,
+                make: "test".into(),
+                model: "test".into(),
+            },
+        );
+        let mut slide = Spring::new(0.0, SpringParams::SMOOTH);
+        slide.set(1.0);
+        slide.advance(Duration::ZERO);
+        let mut scale = Spring::new(1.0, SpringParams::SNAPPY);
+        scale.set(DOCK_MAG);
+        scale.advance(Duration::ZERO);
+        let mut dock = Dock::default();
+        let menu_output = output.clone();
+        dock.views.push(DockView {
+            output,
+            canvas: Default::default(),
+            icons: vec![IconMotion {
+                id: "closed".into(),
+                scale,
+            }],
+            slide,
+            hits: vec![(
+                "closed".into(),
+                Rectangle::from_size((10.0, 10.0).into()),
+            )],
+            panel: Rectangle::default(),
+            visible: true,
+            menu_rect: Some(Rectangle::default()),
+        });
+        dock.launches.push(Launch {
+            id: "closed".into(),
+            start: Duration::ZERO,
+            baseline: 0,
+            timer: None,
+        });
+        dock.menu = Some(DockMenu {
+            id: "closed".into(),
+            output: menu_output,
+        });
+        assert!(dock.active());
+
+        dock.settle_empty(0);
+
+        assert!(!dock.active());
+        assert!(dock.launches.is_empty());
+        assert!(dock.menu.is_none());
+        assert!(dock.views[0].icons.is_empty());
+        assert!(dock.views[0].hits.is_empty());
+        assert!(dock.views[0].menu_rect.is_none());
+        assert!(!dock.views[0].slide.is_active());
+        assert_eq!(dock.views[0].slide.value, 1.0);
     }
     #[test]
     fn work_area_reservations_preserve_origin_and_clamp() {

@@ -5,8 +5,12 @@ use smithay::{
 };
 use std::{
     collections::{HashMap, HashSet},
+    io::Read,
     path::{Path, PathBuf},
 };
+
+/// Upper bound on SVG bytes handed to the parser.
+const MAX_SVG_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Prefer the configured theme, its inherited themes, then hicolor and pixmaps.
 pub fn lookup(name: &str, theme: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
@@ -142,12 +146,27 @@ fn tint_white(pixels: &mut [u8]) {
         p[..3].fill(alpha);
     }
 }
+/// Read an SVG while bounding the bytes handed to the parser. Gzip-compressed
+/// SVG is rejected instead of decompressed, since its expanded size is unknown.
+fn read_svg(path: &Path) -> Option<Vec<u8>> {
+    if path.extension().is_some_and(|e| e == "svgz") {
+        return None;
+    }
+    let file = std::fs::File::open(path).ok()?;
+    let mut reader = file.take(MAX_SVG_BYTES + 1);
+    let mut data = Vec::new();
+    reader.read_to_end(&mut data).ok()?;
+    if data.len() as u64 > MAX_SVG_BYTES || data.starts_with(&[0x1f, 0x8b]) {
+        return None;
+    }
+    Some(data)
+}
 fn raster(path: &Path, size: u32, tint: bool) -> Option<MemoryRenderBuffer> {
-    let mut pixels = if path.extension().is_some_and(|e| e == "svg") {
-        let data = std::fs::read(path).ok()?;
-        if data.len() > 8 * 1024 * 1024 {
-            return None;
-        }
+    let mut pixels = if path
+        .extension()
+        .is_some_and(|e| e == "svg" || e == "svgz")
+    {
+        let data = read_svg(path)?;
         let tree = resvg::usvg::Tree::from_data(&data, &resvg::usvg::Options::default()).ok()?;
         let mut pixmap = resvg::tiny_skia::Pixmap::new(size, size)?;
         let s = (size as f32 / tree.size().width()).min(size as f32 / tree.size().height());
@@ -264,5 +283,32 @@ mod tests {
             pixels,
             [255, 255, 255, 255, 128, 128, 128, 128, 0, 0, 0, 0]
         );
+    }
+    #[test]
+    fn svg_reads_are_bounded_and_reject_gzip() {
+        let root = std::env::temp_dir().join(format!("gavno-icons-svg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+
+        let good = root.join("good.svg");
+        let svg = b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>";
+        std::fs::write(&good, svg).unwrap();
+        assert_eq!(read_svg(&good).unwrap().as_slice(), svg);
+
+        // Oversized files are rejected without reading the whole file.
+        let oversized = root.join("oversized.svg");
+        std::fs::write(&oversized, vec![b' '; MAX_SVG_BYTES as usize + 1]).unwrap();
+        assert!(read_svg(&oversized).is_none());
+
+        // Both the .svgz extension and the gzip magic are rejected before the
+        // parser can decompress untrusted data.
+        let gzip = root.join("gzip.svg");
+        std::fs::write(&gzip, [0x1f, 0x8b, 0x08, 0x00]).unwrap();
+        assert!(read_svg(&gzip).is_none());
+        let svgz = root.join("plain.svgz");
+        std::fs::write(&svgz, svg).unwrap();
+        assert!(read_svg(&svgz).is_none());
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

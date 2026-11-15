@@ -12,9 +12,11 @@ pub struct DesktopEntry {
     pub icon: String,
     pub startup_wm_class: String,
     pub terminal: bool,
+    /// Location of the desktop file, used to expand `%k`.
+    pub path: Option<PathBuf>,
 }
 impl DesktopEntry {
-    pub fn parse(id: &str, text: &str) -> Option<Self> {
+    pub fn parse(id: &str, text: &str, path: Option<&Path>) -> Option<Self> {
         let mut fields = HashMap::new();
         let mut main = false;
         for line in text.lines().map(str::trim) {
@@ -41,10 +43,11 @@ impl DesktopEntry {
             icon: fields.get("Icon").unwrap_or(&"").to_string(),
             startup_wm_class: fields.get("StartupWMClass").unwrap_or(&"").to_string(),
             terminal: fields.get("Terminal") == Some(&"true"),
+            path: path.map(Path::to_owned),
         })
     }
     pub fn command(&self, terminal: &str) -> Option<String> {
-        let args = exec_arguments(&self.exec)?;
+        let args = self.arguments()?;
         if args.is_empty() {
             return None;
         }
@@ -59,6 +62,15 @@ impl DesktopEntry {
             command
         })
     }
+    /// Expand the Exec field using this entry's metadata.
+    pub fn arguments(&self) -> Option<Vec<String>> {
+        expand_exec(
+            &self.exec,
+            Some(self.name.as_str()).filter(|name| !name.is_empty()),
+            Some(self.icon.as_str()).filter(|icon| !icon.is_empty()),
+            self.path.as_deref(),
+        )
+    }
 }
 
 pub fn shell_quote(value: &str) -> String {
@@ -66,8 +78,14 @@ pub fn shell_quote(value: &str) -> String {
 }
 
 /// Desktop Exec uses double quotes and backslash, not shell substitution.
-/// File/URL/metadata field codes disappear; %% denotes a literal percent.
-pub fn exec_arguments(exec: &str) -> Option<Vec<String>> {
+/// File/URL field codes disappear; metadata codes expand into their values and
+/// `%%` denotes a literal percent.
+fn expand_exec(
+    exec: &str,
+    name: Option<&str>,
+    icon: Option<&str>,
+    path: Option<&Path>,
+) -> Option<Vec<String>> {
     let mut args = Vec::new();
     let mut arg = String::new();
     let mut quoted = false;
@@ -83,12 +101,44 @@ pub fn exec_arguments(exec: &str) -> Option<Vec<String>> {
                 arg.push(chars.next()?);
                 started = true;
             }
-            '%' => {
-                if chars.next()? == '%' {
+            '%' => match chars.next()? {
+                // A literal percent.
+                '%' => {
                     arg.push('%');
                     started = true;
                 }
-            }
+                // The application name is a single argument even if it has
+                // spaces; it expands in place so `--title=%c` keeps meaning.
+                'c' => {
+                    if let Some(name) = name {
+                        arg.push_str(name);
+                        started = true;
+                    }
+                }
+                // An icon expands to the two arguments `--icon <Icon>`, and is
+                // omitted entirely when the entry has no icon.
+                'i' => {
+                    if let Some(icon) = icon {
+                        if started {
+                            args.push(std::mem::take(&mut arg));
+                            started = false;
+                        }
+                        args.push("--icon".into());
+                        args.push(icon.into());
+                    }
+                }
+                // The desktop file path expands in place.
+                'k' => {
+                    if let Some(path) = path {
+                        arg.push_str(&path.to_string_lossy());
+                        started = true;
+                    }
+                }
+                // File, URL and deprecated field codes are removed.
+                'f' | 'F' | 'u' | 'U' | 'd' | 'D' | 'n' | 'N' | 'v' | 'm' => {}
+                // Unknown field codes are discarded with their code letter.
+                _ => {}
+            },
             c if c.is_whitespace() && !quoted => {
                 if started {
                     args.push(std::mem::take(&mut arg));
@@ -179,9 +229,9 @@ fn load(dirs: &[PathBuf]) -> Vec<DesktopEntry> {
             if !seen.insert(id.clone()) {
                 continue;
             }
-            if let Some(entry) = std::fs::read_to_string(path)
+            if let Some(entry) = std::fs::read_to_string(&path)
                 .ok()
-                .and_then(|s| DesktopEntry::parse(&id, &s))
+                .and_then(|s| DesktopEntry::parse(&id, &s, Some(&path)))
             {
                 result.push(entry);
             }
@@ -194,24 +244,83 @@ fn load(dirs: &[PathBuf]) -> Vec<DesktopEntry> {
 mod tests {
     use super::*;
     #[test]
-    fn parses_only_main_group_and_strips_field_codes() {
-        let e = DesktopEntry::parse("org.test.desktop", "[Desktop Entry]\nType=Application\nName=Test App\nExec=\"/opt/Test App/run\" --new %U %f %% %i\nIcon=test\nStartupWMClass=TEST\n[Desktop Action New]\nExec=wrong").unwrap();
+    fn parses_only_main_group_and_expands_field_codes() {
+        let e = DesktopEntry::parse(
+            "org.test.desktop",
+            "[Desktop Entry]\nType=Application\nName=Test App\nExec=\"/opt/Test App/run\" --new %U %f %% %i\nIcon=test\nStartupWMClass=TEST\n[Desktop Action New]\nExec=wrong",
+            Some(Path::new("/usr/share/applications/org.test.desktop")),
+        )
+        .unwrap();
         assert_eq!(e.id, "org.test");
         assert_eq!(e.startup_wm_class, "TEST");
         assert_eq!(
-            exec_arguments(&e.exec).unwrap(),
-            ["/opt/Test App/run", "--new", "%"]
+            e.arguments().unwrap(),
+            ["/opt/Test App/run", "--new", "%", "--icon", "test"]
         );
         assert_eq!(
-            exec_arguments("app \"a b\" x\\ y --file=%u").unwrap(),
+            expand_exec("app \"a b\" x\\ y --file=%u %c %i %k", None, None, None).unwrap(),
             ["app", "a b", "x y", "--file="]
         );
-        assert_eq!(exec_arguments("app \"unterminated"), None);
-        assert_eq!(exec_arguments("app %"), None);
+        assert_eq!(expand_exec("app \"unterminated", None, None, None), None);
+        assert_eq!(expand_exec("app %", None, None, None), None);
         assert_eq!(
             shell_quote("a'$(touch /tmp/no)"),
             "'a'\\''$(touch /tmp/no)'"
         );
-        assert!(DesktopEntry::parse("hidden", "[Desktop Entry]\nExec=x\nHidden=true").is_none());
+        assert!(
+            DesktopEntry::parse("hidden", "[Desktop Entry]\nExec=x\nHidden=true", None).is_none()
+        );
+    }
+    #[test]
+    fn metadata_field_codes_keep_argument_boundaries() {
+        let exec = "app --title %c --new %i --file=%k %f %F %u %U %d %D %n %N %v %m %%";
+        let e = DesktopEntry::parse(
+            "org.test",
+            &format!(
+                "[Desktop Entry]\nType=Application\nName=My App\nIcon=my-icon\nExec={exec}"
+            ),
+            Some(Path::new("/usr/share/applications/org.test.desktop")),
+        )
+        .unwrap();
+        assert_eq!(
+            e.arguments().unwrap(),
+            [
+                "app",
+                "--title",
+                "My App",
+                "--new",
+                "--icon",
+                "my-icon",
+                "--file=/usr/share/applications/org.test.desktop",
+                "%",
+            ]
+        );
+
+        // %i expands to nothing (not an empty argument) when Icon is absent.
+        let no_icon = DesktopEntry::parse(
+            "no-icon",
+            "[Desktop Entry]\nName=No Icon\nExec=app %i --new",
+            None,
+        )
+        .unwrap();
+        assert_eq!(no_icon.arguments().unwrap(), ["app", "--new"]);
+
+        // %k expands to nothing when the desktop file path is unknown.
+        let no_path = DesktopEntry::parse(
+            "no-path",
+            "[Desktop Entry]\nName=No Path\nExec=app %k --new",
+            None,
+        )
+        .unwrap();
+        assert_eq!(no_path.arguments().unwrap(), ["app", "--new"]);
+
+        // %c is one argument even when the name contains spaces.
+        let spaced = DesktopEntry::parse(
+            "spaced",
+            "[Desktop Entry]\nName=Two  Words\nExec=app --name=%c",
+            None,
+        )
+        .unwrap();
+        assert_eq!(spaced.arguments().unwrap(), ["app", "--name=Two  Words"]);
     }
 }
