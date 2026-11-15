@@ -115,6 +115,7 @@ fn render(gv: &mut Gavno) {
             &mut gv.cursor,
             time,
             gv.greeter.as_mut(),
+            &gv.protocols.locks,
         );
         data.damage_tracker
             .render_output(renderer, &mut framebuffer, age, &elements, render::CLEAR_COLOR)
@@ -122,10 +123,16 @@ fn render(gv: &mut Gavno) {
     };
     match result {
         Ok((damage, states)) => {
+            let mut submitted = true;
             if let Some(damage) = damage {
                 if let Err(err) = data.backend.submit(Some(&damage)) {
+                    submitted = false;
                     tracing::warn!(?err, "winit submit failed");
                 }
+            }
+            if submitted {
+                gv.protocols.locks.submitted(&output);
+                gv.protocols.locks.presented(&output);
             }
             render::post_render(gv, &output, &states, None);
             if gv.is_animating() {

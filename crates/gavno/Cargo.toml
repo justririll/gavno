@@ -31,3 +31,9 @@ features = [
     "backend_libinput",
     "backend_session_libseat",
 ]
+
+# Exercise the real Smithay one-shot idle timers over an in-process socket.
+# These crates are already part of Smithay's dependency graph.
+[dev-dependencies]
+wayland-client = "0.31.10"
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }

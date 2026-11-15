@@ -149,6 +149,7 @@ impl Gavno {
 
     /// Gives keyboard focus to a layer surface that accepts it (click on it).
     pub fn focus_layer(&mut self, layer: &LayerSurface) {
+        if self.protocols.locks.locked { return; }
         if !layer.can_receive_keyboard_focus() {
             return;
         }

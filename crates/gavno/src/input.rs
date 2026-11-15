@@ -9,7 +9,9 @@ use smithay::{
     },
     reexports::wayland_protocols::xdg::shell::server::xdg_toplevel,
     utils::{Logical, Point, Rectangle, SERIAL_COUNTER},
-    wayland::shell::wlr_layer::Layer,
+    wayland::{shell::wlr_layer::Layer,
+        keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitorSeat,
+        pointer_constraints::{with_pointer_constraint, PointerConstraint, PointerConstraintsHandler}},
 };
 
 use crate::{
@@ -37,6 +39,9 @@ pub enum Action {
 
 impl Gavno {
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
+        if !matches!(&event, InputEvent::DeviceAdded { .. } | InputEvent::DeviceRemoved { .. }) {
+            self.protocols.idle_policy.activity();
+        }
         match event {
             InputEvent::Keyboard { event, .. } => self.on_keyboard::<I>(event),
             InputEvent::PointerMotion { event, .. } => self.on_pointer_motion::<I>(event),
@@ -90,6 +95,15 @@ impl Gavno {
                     return FilterResult::Intercept(None);
                 }
 
+                // The emergency chord and VT switching remain compositor-owned.
+                if mods.ctrl && mods.alt && handle.modified_sym().raw() == keysyms::KEY_Delete {
+                    gv.suppressed_keys.push(raw_code);
+                    return FilterResult::Intercept(Some(Action::Quit));
+                }
+                if gv.protocols.locks.locked || gv.seat.keyboard_shortcuts_inhibited() {
+                    return FilterResult::Forward;
+                }
+
                 // Binds match the latin layout, so they work with ru active too.
                 let Some(sym) = handle.raw_latin_sym_or_raw_current_sym() else {
                     return FilterResult::Forward;
@@ -109,6 +123,9 @@ impl Gavno {
             },
         );
 
+        if action.is_none() {
+            self.record_activation_serial(keyboard.current_focus(), serial);
+        }
         if let Some(Some(action)) = action {
             self.run_action(action);
         }
@@ -176,31 +193,48 @@ impl Gavno {
 
     fn on_pointer_motion<I: InputBackend>(&mut self, event: I::PointerMotionEvent) {
         let pointer = self.seat.get_pointer().unwrap();
-        let mut pos = pointer.current_location() + event.delta();
-        if let Some(bbox) = self.outputs_bbox() {
-            pos = clamp_to(pos, bbox);
+        let current = pointer.current_location();
+        let under = self.surface_under(current);
+        let focus = self.seat.get_keyboard().and_then(|k| k.current_focus());
+        let mut locked = false;
+        let mut confined = false;
+        let mut region = None;
+        if let Some((surface, origin)) = &under {
+            self.new_constraint(surface, &pointer);
+            with_pointer_constraint(surface, &pointer, |constraint| {
+                let Some(c) = constraint else { return };
+                if focus.as_ref() != Some(surface) {
+                    if c.is_active() { c.deactivate(); }
+                    return;
+                }
+                if c.is_active() && c.region().is_none_or(|r| r.contains((current - *origin).to_i32_floor())) {
+                    locked = matches!(&*c, PointerConstraint::Locked(_));
+                    confined = matches!(&*c, PointerConstraint::Confined(_));
+                    region = c.region().cloned();
+                }
+            });
+        }
+        // Relative input belongs to the old focus and remains live while locked.
+        pointer.relative_motion(self, under.clone(), &RelativeMotionEvent {
+            delta: event.delta(), delta_unaccel: event.delta_unaccel(), utime: event.time(),
+        });
+        if locked { pointer.frame(self); return; }
+        let mut pos = current + event.delta();
+        if let Some(bbox) = self.outputs_bbox() { pos = clamp_to(pos, bbox); }
+        let new_under = self.surface_under(pos);
+        if confined {
+            if let Some((surface, origin)) = &under {
+                if new_under.as_ref().map(|(s, _)| s) != Some(surface)
+                    || region.as_ref().is_some_and(|r| !r.contains((pos - *origin).to_i32_floor())) {
+                    pointer.frame(self);
+                    return;
+                }
+            }
         }
         let serial = SERIAL_COUNTER.next_serial();
-        let under = self.surface_under(pos);
-        pointer.motion(
-            self,
-            under.clone(),
-            &MotionEvent {
-                location: pos,
-                serial,
-                time: event.time_msec(),
-            },
-        );
-        pointer.relative_motion(
-            self,
-            under,
-            &RelativeMotionEvent {
-                delta: event.delta(),
-                delta_unaccel: event.delta_unaccel(),
-                utime: event.time(),
-            },
-        );
+        pointer.motion(self, new_under.clone(), &MotionEvent { location: pos, serial, time: event.time_msec() });
         pointer.frame(self);
+        if let Some((surface, _)) = new_under { self.new_constraint(&surface, &pointer); }
         if self.greeter.is_some() {
             self.greeter_pointer(false);
         }
@@ -237,6 +271,15 @@ impl Gavno {
         let serial = SERIAL_COUNTER.next_serial();
         let button = event.button_code();
         let button_state = event.state();
+
+        if self.protocols.locks.locked {
+            self.refresh_lock();
+            let under = self.lock_surface_under(pointer.current_location());
+            pointer.motion(self, under, &MotionEvent { location: pointer.current_location(), serial, time: event.time_msec() });
+            pointer.button(self, &ButtonEvent { button, state: button_state, serial, time: event.time_msec() });
+            pointer.frame(self);
+            return;
+        }
 
         if self.greeter.is_some() {
             if button_state == ButtonState::Pressed {
@@ -303,6 +346,7 @@ impl Gavno {
             }
         }
 
+        self.record_activation_serial(pointer.current_focus(), serial);
         pointer.button(
             self,
             &ButtonEvent {
