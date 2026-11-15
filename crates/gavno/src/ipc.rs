@@ -137,6 +137,7 @@ fn screen(gv: &Gavno) -> Value {
             Some(
                 json!({"name": output.name(), "x": geo.loc.x, "y": geo.loc.y,
             "w": geo.size.w, "h": geo.size.h, "scale": output.current_scale().fractional_scale(),
+            "hdr": crate::backend::udev::hdr_status(&gv.backend, output),
             "workspace": gv.workspaces.get(output).map(|o| o.list.active).unwrap_or(0),
             "workspaces": gv.workspaces.get(output).map(|o| o.list.items.len()).unwrap_or(1)}),
             )
@@ -187,6 +188,13 @@ fn screen(gv: &Gavno) -> Value {
 fn dispatch(gv: &mut Gavno, method: &str, params: &Value) -> Result<Value, String> {
     if method == "screen" {
         return Ok(screen(gv));
+    }
+    if method == "set_hdr" {
+        let output = params.get("output").and_then(Value::as_str).ok_or("output must be a connector name")?;
+        let enabled = params.get("enabled").and_then(Value::as_bool).ok_or("enabled must be a boolean")?;
+        audit(method, params).map_err(|e| format!("cannot append agent audit log: {e}"))?;
+        crate::backend::udev::set_hdr(gv, output, enabled)?;
+        return Ok(json!({"queued": true, "output": output, "enabled": enabled}));
     }
     if method == "workspace" {
         let output = if let Some(name) = params.get("output").and_then(Value::as_str) {

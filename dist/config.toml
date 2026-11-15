@@ -32,6 +32,14 @@
 # Values outside 0.5..=4.0 are clamped. Default: 1.75.
 # internal_scale = 1.75
 
+# Preferred mode by default. To request the built-in panel at 120 Hz, add:
+# mode = "2880x1620@120"
+# Omit @HZ to select the highest refresh at that resolution.
+# HDR defaults to off; unsupported hardware falls back to SDR with a warning.
+# hdr = false
+# SDR content white in HDR mode, clamped to 80..=400 cd/m².
+# sdr_white_nits = 203
+
 # [keyboard]
 # XKB layout(s) passed to the seat keyboard. Default: "us,ru".
 # layout = "us,ru"
