@@ -31,6 +31,17 @@ What works today:
   snap it from the keyboard. A snap preview shows the target zone
   (`crates/gavno/src/snap.rs`, `crates/gavno/src/overlay.rs`,
   `crates/gavno/src/grabs/move_grab.rs`).
+- Dynamic per-output workspaces with a sliding strip; Mod+1..9 selects and
+  Mod+Shift+1..9 moves a window (`crates/gavno/src/workspace.rs`).
+- Overview with live window content, window titles and workspace thumbnails;
+  click to focus, drag a window onto a thumbnail to move it, middle click to
+  close (`crates/gavno/src/overview.rs`).
+- 3-finger touchpad gestures: horizontal swipes switch workspaces, vertical
+  swipes open and close the overview, hold catches an animation
+  (`crates/gavno/src/gesture.rs`).
+- TOML configuration: mod key, terminal, launcher, gap, output scale and
+  keyboard layout, with `GAVNO_*` environment overrides
+  (`crates/gavno/src/config.rs`, [docs/config.md](docs/config.md)).
 - Alt+Tab switcher with a text list in most-recently-used order.
 - Protocols: cursor-shape, xdg-activation, xdg-decoration (client-side),
   data-control, primary selection, relative pointer, pointer constraints,
@@ -42,12 +53,12 @@ What works today:
 
 Keyboard binds: [docs/keybinds.md](docs/keybinds.md)
 
+Configuration: [docs/config.md](docs/config.md)
+
 ## Not yet
 
-- Workspaces and overview.
-- Touchpad gestures.
 - Dock and top bar.
-
+- 4-finger window gestures.
 - Dwindle tiling.
 - Screencopy.
 
