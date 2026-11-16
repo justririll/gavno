@@ -21,6 +21,7 @@ mod greeter;
 mod lock;
 mod launcher;
 mod notify;
+mod media;
 mod grabs;
 mod handlers;
 mod input;

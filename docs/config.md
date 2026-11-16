@@ -138,6 +138,7 @@ ipc = true
 screencopy = true
 launcher = true
 notifications = true
+media = true
 ```
 
 `dock.enabled` and `bar.enabled` still work: a feature is off if either its legacy
@@ -250,3 +251,23 @@ visible, unhovered cards have an expiry timer, so hidden queues do not poll.
 Supported hints are `urgency`, `desktop-entry`, and `image-path`. Bodies display
 plain text after simple markup/entity removal. Image-data hints are ignored.
 Set `[modules] notifications = false` to disable the server and all its UI.
+
+## Now playing (MPRIS)
+
+`[modules] media = true` (the default) discovers session-bus MPRIS players such
+as Firefox, Spotify and mpv. A playing or paused player appears in a capsule
+between the clock and status area. Click it to toggle playback. Quick settings
+shows its title, artist, 48 px art and previous / play-pause / next controls.
+Unavailable actions are dimmed and ignored. The built-in lock screen shows the
+same track and controls beneath its clock; media keys work while locked too.
+
+The most recently started playing player is active. If none is playing, the
+most recently updated paused player is active. Stopped and vanished players do
+not appear. Startup cannot recover historical playback order, so simultaneous
+already-playing players use a deterministic discovery order.
+
+Only local `file://` album art is loaded, with percent escapes decoded. Remote
+art URLs are ignored; the desktop application's icon is used instead, with a
+music glyph as the final fallback. The existing PNG/SVG icon loader decodes art
+and app icons on the worker thread. No position tracking or polling is used.
+Disable `modules.media` to remove the controls and pass playback keys to clients.
