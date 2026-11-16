@@ -489,7 +489,11 @@ impl Gavno {
             return;
         }
         if button_state==ButtonState::Released && self.suppressed_buttons.contains(&button) {
-            self.suppressed_buttons.retain(|b|*b!=button);return;
+            self.suppressed_buttons.retain(|b|*b!=button);
+            // Shell presses (bar sliders, dock) are suppressed too; their
+            // release still has to end the bar drag.
+            self.bar_release(button);
+            return;
         }
         if button_state==ButtonState::Pressed && self.exit_resize_mode() {
             self.suppressed_buttons.push(button);return;
