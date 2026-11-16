@@ -83,13 +83,27 @@ impl Dock {
         let body = gtk::Box::new(gtk::Orientation::Vertical, 0);
         body.add_css_class("dock");
         body.append(&head);
-        body.append(&terminal);
+        // VTE asks for its current row count as natural height, so a dock
+        // could only ever grow. The scrolled window hides that request and
+        // the dock's height comes from the drag alone.
+        let scroller = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::External)
+            .vexpand(true)
+            .child(&terminal)
+            .build();
+        body.append(&scroller);
         body.set_height_request(DEFAULT_HEIGHT);
+        // The terminal expands inside the dock only; without this the
+        // expand flag propagates up and the dock takes the window's spare
+        // height from the file view, so its height ignores the drag.
+        body.set_vexpand(false);
         let revealer = gtk::Revealer::builder()
             .transition_type(gtk::RevealerTransitionType::SlideUp)
             .transition_duration(260)
             .reveal_child(false)
             .child(&body)
+            .vexpand(false)
             .build();
 
         let this = Rc::new(Self {
@@ -103,14 +117,25 @@ impl Dock {
         });
 
         // Resize by dragging the header; dragging it nearly flat hides it.
+        // The header moves with the drag, so offsets are measured in window
+        // coordinates: header-relative offsets would cancel themselves out.
         let drag = gtk::GestureDrag::new();
-        let start = Rc::new(Cell::new(DEFAULT_HEIGHT));
+        let start = Rc::new(Cell::new((DEFAULT_HEIGHT, 0.0f32)));
+        let window_y = |widget: &gtk::Widget, x: f64, y: f64| {
+            let root = widget.root()?;
+            widget
+                .compute_point(&root, &gtk::graphene::Point::new(x as f32, y as f32))
+                .map(|p| p.y())
+        };
         drag.connect_drag_begin(glib::clone!(
             #[weak]
             this,
             #[strong]
             start,
-            move |_, _, _| start.set(this.height.get())
+            move |gesture, x, y| {
+                let Some(widget) = gesture.widget() else { return };
+                start.set((this.height.get(), window_y(&widget, x, y).unwrap_or(0.0)));
+            }
         ));
         drag.connect_drag_update(glib::clone!(
             #[weak]
@@ -119,8 +144,14 @@ impl Dock {
             body,
             #[strong]
             start,
-            move |_, _, dy| {
-                let height = (start.get() - dy as i32).clamp(HIDE_HEIGHT - 20, 900);
+            move |gesture, dx, dy| {
+                let (Some(widget), Some((x, y))) = (gesture.widget(), gesture.start_point()) else { return };
+                let Some(now) = window_y(&widget, x + dx, y + dy) else { return };
+                let (height, from) = start.get();
+                // Never taller than the window allows: a larger request would
+                // grow the window instead of moving only the dragged edge.
+                let max = widget.root().map_or(900, |r| r.height() - 160).max(MIN_HEIGHT);
+                let height = (height - (now - from).round() as i32).clamp(HIDE_HEIGHT - 20, max);
                 body.set_height_request(height.max(MIN_HEIGHT));
                 this.height.set(height);
             }
