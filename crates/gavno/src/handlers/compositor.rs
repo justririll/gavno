@@ -7,7 +7,10 @@ use smithay::{
     },
     wayland::{
         buffer::BufferHandler,
-        compositor::{get_parent, is_sync_subsurface, CompositorClientState, CompositorHandler, CompositorState},
+        compositor::{
+            get_parent, is_sync_subsurface, with_states, CompositorClientState, CompositorHandler, CompositorState,
+            Damage, SurfaceAttributes,
+        },
         shm::{ShmHandler, ShmState},
     },
 };
@@ -25,6 +28,7 @@ impl CompositorHandler for Gavno {
     }
 
     fn commit(&mut self, surface: &WlSurface) {
+        drop_empty_damage(surface);
         on_commit_buffer_handler::<Self>(surface);
         let mut root = surface.clone();
         while let Some(parent) = get_parent(&root) { root = parent; }
@@ -84,3 +88,15 @@ impl ShmHandler for Gavno {
 
 delegate_compositor!(Gavno);
 delegate_shm!(Gavno);
+
+/// Clients may damage zero-height or zero-width rectangles (Firefox does).
+/// Smithay keeps them through clipping, and the kernel rejects the whole page
+/// flip when such a rectangle reaches FB_DAMAGE_CLIPS ("invalid damage clip").
+fn drop_empty_damage(surface: &WlSurface) {
+    with_states(surface, |states| {
+        states.cached_state.get::<SurfaceAttributes>().current().damage.retain(|damage| match damage {
+            Damage::Surface(rect) => !rect.is_empty(),
+            Damage::Buffer(rect) => !rect.is_empty(),
+        });
+    });
+}
