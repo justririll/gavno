@@ -1109,3 +1109,51 @@ fn navigation_cancels_search_debounce_and_rejects_stale_callbacks() {
     settle(&mut h);
     assert!(fake.calls("Browse").iter().all(|(v, _)| v != "search"));
 }
+
+#[test]
+fn stale_daemon_volume_does_not_pull_back_the_slider() {
+    let Some((_bus, address)) = bus() else { return };
+    let (fake, connection) = fake(&address, true);
+    let (mut h, output) = setup(&address);
+    h.gv.toggle_music(&output);
+    ready(&mut h);
+    let mut renderer = renderer();
+    draw(&mut h, &mut renderer, &output);
+    click(&mut h, Hit::Volume);
+    assert!(session(&h.gv).state.volume < 0.1);
+    // A coalesced StateChanged sampled before the drag still says 0.5.
+    let mut state = fake.0.lock().unwrap().state.clone();
+    state.volume = 0.5;
+    emit_state(&fake, &connection, state);
+    settle(&mut h);
+    assert!(session(&h.gv).state.volume < 0.1, "slider jumped back to the stale volume");
+}
+
+#[test]
+fn dj_row_plays_the_dj_without_a_context() {
+    let Some((_bus, address)) = bus() else { return };
+    let (fake, _connection) = fake(&address, true);
+    let (mut h, output) = setup(&address);
+    h.gv.toggle_music(&output);
+    ready(&mut h);
+    {
+        let mut media = h.gv.now_playing.borrow_mut();
+        let s = media.music.session.as_mut().unwrap();
+        s.page.items.insert(
+            0,
+            Item {
+                uri: "spotify:playlist:37i9dQZF1EYkqdzj48dyYq".into(),
+                kind: "dj".into(),
+                title: "DJ".into(),
+                ..Default::default()
+            },
+        );
+        s.selected = 0;
+    }
+    key(&mut h.gv, keysyms::KEY_Return);
+    pump(&mut h, |_| !fake.calls("Play").is_empty());
+    assert_eq!(
+        fake.calls("Play"),
+        [("spotify:playlist:37i9dQZF1EYkqdzj48dyYq".into(), String::new())]
+    );
+}

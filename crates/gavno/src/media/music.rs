@@ -13,8 +13,11 @@ use smithay::{
 };
 use std::{
     collections::HashMap,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+
+/// How long a slider keeps its local value after the last change.
+const SLIDER_HOLD: Duration = Duration::from_millis(1500);
 
 #[cfg(test)]
 #[path = "music_tests.rs"]
@@ -119,6 +122,10 @@ pub struct Session {
     browse_id: u64,
     loading: bool,
     drag: Option<(Rect, Hit)>,
+    /// Local slider values win over daemon state until these deadlines:
+    /// coalesced StateChanged replies lag the drag and would pull it back.
+    volume_hold: Option<Instant>,
+    seek_hold: Option<Instant>,
 }
 struct HistoryEntry {
     page: Page,
@@ -141,6 +148,7 @@ impl Session {
             self.send(worker::Command::Seek(position));
             self.state.position_ms = position;
             self.state.position_at_ms = epoch_ms();
+            self.seek_hold = Some(Instant::now() + SLIDER_HOLD);
         } else {
             let volume = (fraction * 100.0).round() / 100.0;
             if (self.state.volume - volume).abs() < 0.001 {
@@ -148,6 +156,7 @@ impl Session {
             }
             self.send(worker::Command::Volume(volume));
             self.state.volume = volume;
+            self.volume_hold = Some(Instant::now() + SLIDER_HOLD);
         }
         self.dirty = true;
     }
@@ -230,6 +239,8 @@ impl Session {
                 item.uri.clone(),
                 self.page.play_uri.clone().unwrap_or_default(),
             )),
+            // The daemon starts the DJ (music plus narration) from its URI alone.
+            "dj" => self.send(worker::Command::Play(item.uri.clone(), String::new())),
             "album" | "playlist" | "artist" | "show" => {
                 let uri = item.uri.clone();
                 self.cancel_search(handle);
@@ -315,6 +326,8 @@ impl Gavno {
                 browse_id: 0,
                 loading: false,
                 drag: None,
+                volume_hold: None,
+                seek_hold: None,
             });
             drop(media);
             match gv.loop_handle.insert_source(rx, move |event, _, gv| {
@@ -395,7 +408,17 @@ impl Gavno {
             return;
         };
         match event {
-            worker::Event::State(state) => {
+            worker::Event::State(mut state) => {
+                let now = Instant::now();
+                let dragging = |hit| matches!(s.drag, Some((_, h)) if h == hit);
+                if dragging(Hit::Volume) || s.volume_hold.is_some_and(|t| now < t) {
+                    state.volume = s.state.volume;
+                }
+                let same_item = state.item.as_ref().map(|i| &i.uri) == s.state.item.as_ref().map(|i| &i.uri);
+                if same_item && (dragging(Hit::Seek) || s.seek_hold.is_some_and(|t| now < t)) {
+                    state.position_ms = s.state.position_ms;
+                    state.position_at_ms = s.state.position_at_ms;
+                }
                 let logged_in = state.logged_in && !s.state.logged_in;
                 if s.state.logged_in && !state.logged_in {
                     s.clear_account(&self.loop_handle);
