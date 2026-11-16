@@ -288,7 +288,7 @@ impl Session {
                 Hit::Login,
             );
         } else {
-            if !self.back.is_empty() || self.search_origin.is_some() {
+            if !self.back.is_empty() {
                 button(view, renderer, rect(x, row_y, 64, 30), "Back", Hit::Back);
             }
             label(

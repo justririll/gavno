@@ -60,6 +60,7 @@ struct FakeData {
     sender: String,
     slow_complete: bool,
     slow_reply: Option<async_channel::Sender<()>>,
+    control_reply: Option<async_channel::Sender<()>>,
 }
 #[derive(Clone, Default)]
 struct Fake(Arc<Mutex<FakeData>>);
@@ -109,6 +110,7 @@ fn page(title: &str) -> Page {
 #[zbus::interface(name = "org.gavno.Music1")]
 impl Fake {
     fn state(&self, #[zbus(header)] header: zbus::message::Header<'_>) -> String {
+        self.record("State", "", "");
         let mut data = self.0.lock().unwrap();
         data.sender = header.sender().unwrap().to_string();
         serde_json::to_string(&data.state).unwrap()
@@ -145,8 +147,13 @@ impl Fake {
     fn play(&self, uri: &str, context_uri: &str) {
         self.record("Play", uri, context_uri);
     }
-    fn control(&self, command: &str) {
+    async fn control(&self, command: &str) {
         self.record("Control", command, "");
+        if command == "slow" {
+            let (tx, rx) = async_channel::bounded(1);
+            self.0.lock().unwrap().control_reply = Some(tx);
+            let _ = rx.recv().await;
+        }
     }
     fn seek(&self, position_ms: u32) {
         self.record("Seek", &position_ms.to_string(), "");
@@ -157,6 +164,24 @@ impl Fake {
     fn login(&self) {
         self.record("Login", "", "");
     }
+    async fn logout(
+        &self,
+        #[zbus(signal_emitter)] emitter: zbus::object_server::SignalEmitter<'_>,
+    ) -> zbus::fdo::Result<()> {
+        self.record("Logout", "", "");
+        let json = {
+            let mut data = self.0.lock().unwrap();
+            data.state = State::default();
+            serde_json::to_string(&data.state).unwrap()
+        };
+        Self::state_changed(&emitter, &json).await?;
+        Ok(())
+    }
+    #[zbus(signal)]
+    async fn state_changed(
+        emitter: &zbus::object_server::SignalEmitter<'_>,
+        state: &str,
+    ) -> zbus::Result<()>;
 }
 fn setup(address: &str) -> (Harness, Output) {
     let mut h = Harness::new();
@@ -748,4 +773,339 @@ fn discovers_activatable_service_without_starting_it() {
         .name_has_owner(zbus::names::BusName::try_from("org.gavno.Music").unwrap())
         .unwrap());
     std::fs::remove_dir_all(directory).unwrap();
+}
+
+fn session(gv: &Gavno) -> std::cell::Ref<'_, Session> {
+    std::cell::Ref::map(gv.now_playing.borrow(), |media| {
+        media.music.session.as_ref().unwrap()
+    })
+}
+
+fn ready(h: &mut Harness) {
+    pump(h, |gv| {
+        let media = gv.now_playing.borrow();
+        let s = media.music.session.as_ref().unwrap();
+        s.state.logged_in && !s.loading && !s.page.title.is_empty()
+    });
+}
+fn switch_tab(gv: &mut Gavno, index: usize) {
+    gv.music_key(
+        Keysym::from(keysyms::KEY_1 + index as u32),
+        None,
+        &ModifiersState {
+            ctrl: true,
+            ..Default::default()
+        },
+    );
+}
+fn back(gv: &mut Gavno) {
+    gv.music_key(
+        Keysym::from(keysyms::KEY_Left),
+        None,
+        &ModifiersState {
+            alt: true,
+            ..Default::default()
+        },
+    );
+}
+fn emit_state(fake: &Fake, connection: &zbus::blocking::Connection, state: State) {
+    let json = serde_json::to_string(&state).unwrap();
+    fake.0.lock().unwrap().state = state;
+    connection
+        .emit_signal(
+            None::<&str>,
+            "/org/gavno/Music",
+            "org.gavno.Music1",
+            "StateChanged",
+            &(json,),
+        )
+        .unwrap();
+}
+fn settle(h: &mut Harness) {
+    let deadline = Instant::now() + Duration::from_millis(400);
+    while Instant::now() < deadline {
+        h.event_loop
+            .dispatch(Some(Duration::from_millis(10)), &mut h.gv)
+            .unwrap();
+    }
+}
+
+#[test]
+fn logout_clears_account_caches_and_invalidates_pending_work() {
+    let Some((_bus, address)) = bus() else { return };
+    let (fake, connection) = fake(&address, true);
+    let (mut h, output) = setup(&address);
+    h.gv.toggle_music(&output);
+    ready(&mut h);
+    for tab in [1, 2, 0] {
+        switch_tab(&mut h.gv, tab);
+        ready(&mut h);
+    }
+    let path = std::env::temp_dir().join(format!("gavno-music-logout-{}.png", std::process::id()));
+    {
+        let mut encoder = png::Encoder::new(std::fs::File::create(&path).unwrap(), 1, 1);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder
+            .write_header()
+            .unwrap()
+            .write_image_data(&[10, 20, 30, 255])
+            .unwrap();
+    }
+    let cover = || {
+        connection
+            .emit_signal(
+                None::<&str>,
+                "/org/gavno/Music",
+                "org.gavno.Music1",
+                "CoverReady",
+                &("https://test.invalid/cover", path.to_str().unwrap()),
+            )
+            .unwrap();
+    };
+    cover();
+    pump(&mut h, |gv| !session(gv).view.covers.is_empty());
+    text(&mut h.gv, "account");
+    pump(&mut h, |gv| session(gv).page.title == "search");
+    h.gv.now_playing
+        .borrow_mut()
+        .music
+        .session
+        .as_mut()
+        .unwrap()
+        .selected = 2;
+    key(&mut h.gv, keysyms::KEY_Return);
+    ready(&mut h);
+    text(&mut h.gv, "slow");
+    pump(&mut h, |_| fake.0.lock().unwrap().slow_reply.is_some());
+    text(&mut h.gv, "!");
+    let (generation, id, debounce) = {
+        let media = h.gv.now_playing.borrow();
+        let s = media.music.session.as_ref().unwrap();
+        assert!(s.tabs.iter().all(Option::is_some));
+        assert!(!s.back.is_empty());
+        (s.generation, s.browse_id, s.debounce.unwrap())
+    };
+    let proxy = zbus::blocking::Proxy::new(
+        &connection,
+        "org.gavno.Music",
+        "/org/gavno/Music",
+        "org.gavno.Music1",
+    )
+    .unwrap();
+    proxy.call::<_, _, ()>("Logout", &()).unwrap();
+    pump(&mut h, |gv| !session(gv).state.logged_in);
+    {
+        let media = h.gv.now_playing.borrow();
+        let s = media.music.session.as_ref().unwrap();
+        assert_ne!(s.browse_id, id);
+        assert!(s.page.items.is_empty());
+        assert!(s.tabs.iter().all(Option::is_none));
+        assert!(s.back.is_empty());
+        assert!(s.query.is_empty());
+        assert!(!s.searching);
+        assert!(s.view.covers.is_empty());
+        assert!(s.debounce.is_none());
+        assert!(!s.loading);
+    }
+    assert!(h.gv.loop_handle.update(&debounce).is_err());
+    // Even a reply already queued on the compositor channel cannot restore the account.
+    h.gv.music_event(
+        generation,
+        worker::Event::Page(id, false, Ok(page("obsolete"))),
+    );
+    fake.0
+        .lock()
+        .unwrap()
+        .slow_reply
+        .take()
+        .unwrap()
+        .try_send(())
+        .unwrap();
+    pump(&mut h, |_| fake.0.lock().unwrap().slow_complete);
+    settle(&mut h);
+    assert!(session(&h.gv).page.items.is_empty());
+    emit_state(
+        &fake,
+        &connection,
+        State {
+            logged_in: true,
+            ..Default::default()
+        },
+    );
+    ready(&mut h);
+    switch_tab(&mut h.gv, 1);
+    ready(&mut h);
+    for view in ["home", "library"] {
+        assert_eq!(
+            fake.calls("Browse")
+                .iter()
+                .filter(|(v, _)| v == view)
+                .count(),
+            2
+        );
+    }
+    cover();
+    pump(&mut h, |gv| !session(gv).view.covers.is_empty());
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn daemon_owner_loss_cancels_calls_and_new_owner_refreshes_state() {
+    let Some((_bus, address)) = bus() else { return };
+    let (old, connection) = fake(&address, true);
+    old.0.lock().unwrap().state.playing = true;
+    old.0.lock().unwrap().state.position_at_ms = epoch_ms();
+    let (mut h, output) = setup(&address);
+    h.gv.toggle_music(&output);
+    ready(&mut h);
+    text(&mut h.gv, "slow");
+    pump(&mut h, |_| old.0.lock().unwrap().slow_reply.is_some());
+    session(&h.gv).send(worker::Command::Control("slow".into()));
+    pump(&mut h, |_| old.0.lock().unwrap().control_reply.is_some());
+    let before = old.calls("State").len();
+    let browse_calls = old.calls("Browse").len();
+    assert!(connection.release_name("org.gavno.Music").unwrap());
+    pump(&mut h, |gv| !session(gv).state.logged_in);
+    {
+        let media = h.gv.now_playing.borrow();
+        let s = media.music.session.as_ref().unwrap();
+        assert!(s.state.item.is_none());
+        assert!(!s.state.playing);
+        assert!(s.state.upcoming.is_empty());
+        assert!(s.tick.is_none());
+        assert!(!s.loading);
+        assert!(s.page.items.is_empty());
+        assert!(s.tabs.iter().all(Option::is_none));
+        assert!(!s.error.is_empty());
+    }
+    // The old owner is still connected and can finish calls after losing its name.
+    old.0
+        .lock()
+        .unwrap()
+        .slow_reply
+        .take()
+        .unwrap()
+        .try_send(())
+        .unwrap();
+    old.0
+        .lock()
+        .unwrap()
+        .control_reply
+        .take()
+        .unwrap()
+        .try_send(())
+        .unwrap();
+    pump(&mut h, |_| old.0.lock().unwrap().slow_complete);
+    settle(&mut h);
+    assert!(session(&h.gv).page.items.is_empty());
+    assert_eq!(old.calls("State").len(), before);
+    assert_eq!(old.calls("Browse").len(), browse_calls);
+    let (new, _new_connection) = fake(&address, true);
+    ready(&mut h);
+    assert!(!new.calls("State").is_empty());
+    assert_eq!(new.calls("Browse"), [("home".into(), "".into())]);
+    assert_eq!(old.calls("State").len(), before);
+}
+
+#[test]
+fn back_restores_search_query_before_returning_home() {
+    let Some((_bus, address)) = bus() else { return };
+    let (_fake, _connection) = fake(&address, true);
+    let (mut h, output) = setup(&address);
+    h.gv.toggle_music(&output);
+    ready(&mut h);
+    text(&mut h.gv, "albums");
+    pump(&mut h, |gv| session(gv).page.title == "search");
+    h.gv.now_playing
+        .borrow_mut()
+        .music
+        .session
+        .as_mut()
+        .unwrap()
+        .selected = 2;
+    key(&mut h.gv, keysyms::KEY_Return);
+    pump(&mut h, |gv| session(gv).page.title == "Album tracks");
+    back(&mut h.gv);
+    {
+        let media = h.gv.now_playing.borrow();
+        let s = media.music.session.as_ref().unwrap();
+        assert_eq!(s.page.title, "search");
+        assert_eq!(s.query, "albums");
+        assert!(s.searching);
+        assert_eq!(s.back.len(), 1);
+    }
+    back(&mut h.gv);
+    let media = h.gv.now_playing.borrow();
+    let s = media.music.session.as_ref().unwrap();
+    assert_eq!(s.page.title, "home");
+    assert!(s.query.is_empty());
+    assert!(!s.searching);
+    assert!(s.back.is_empty());
+}
+
+#[test]
+fn navigation_cancels_search_debounce_and_rejects_stale_callbacks() {
+    let Some((_bus, address)) = bus() else { return };
+    let (fake, _connection) = fake(&address, true);
+    let (mut h, output) = setup(&address);
+    h.gv.toggle_music(&output);
+    ready(&mut h);
+    let mut renderer = renderer();
+    for action in [
+        "entity key",
+        "entity click",
+        "tab key",
+        "tab click",
+        "back key",
+        "back click",
+    ] {
+        switch_tab(&mut h.gv, 0);
+        ready(&mut h);
+        text(&mut h.gv, "pending");
+        let (generation, navigation, debounce) = {
+            let mut media = h.gv.now_playing.borrow_mut();
+            let s = media.music.session.as_mut().unwrap();
+            s.selected = 2;
+            (s.generation, s.navigation, s.debounce.unwrap())
+        };
+        match action {
+            "entity key" => key(&mut h.gv, keysyms::KEY_Return),
+            "tab key" => switch_tab(&mut h.gv, 1),
+            "back key" => back(&mut h.gv),
+            _ => {
+                draw(&mut h, &mut renderer, &output);
+                click(
+                    &mut h,
+                    match action {
+                        "entity click" => Hit::Row(2),
+                        "tab click" => Hit::Tab(1),
+                        _ => Hit::Back,
+                    },
+                );
+            }
+        }
+        assert!(h.gv.loop_handle.update(&debounce).is_err(), "{action}");
+        assert!(session(&h.gv).debounce.is_none(), "{action}");
+        // Simulate an already-dispatched callback as well as waiting past its deadline.
+        h.gv.music_search(generation, navigation);
+        ready(&mut h);
+        settle(&mut h);
+        assert!(
+            fake.calls("Browse").iter().all(|(v, _)| v != "search"),
+            "{action}"
+        );
+        text(&mut h.gv, "new");
+        let current = session(&h.gv).debounce.unwrap();
+        h.gv.music_search(generation, navigation);
+        assert_eq!(session(&h.gv).debounce, Some(current));
+    }
+    h.gv.close_music();
+    h.gv.toggle_music(&output);
+    ready(&mut h);
+    // A callback belonging to a closed panel must also leave the new session alone.
+    let generation = session(&h.gv).generation;
+    h.gv.music_search(generation.wrapping_sub(1), 0);
+    settle(&mut h);
+    assert!(fake.calls("Browse").iter().all(|(v, _)| v != "search"));
 }

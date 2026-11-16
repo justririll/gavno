@@ -7,7 +7,7 @@ use smithay::{
     reexports::calloop::{
         channel,
         timer::{TimeoutAction, Timer},
-        RegistrationToken,
+        LoopHandle, RegistrationToken,
     },
     utils::{Logical, Point},
 };
@@ -102,8 +102,8 @@ pub struct Session {
     pub page: Page,
     tabs: [Option<Page>; 3],
     pub tab: usize,
-    back: Vec<Page>,
-    search_origin: Option<Page>,
+    back: Vec<HistoryEntry>,
+    searching: bool,
     pub query: String,
     pub error: String,
     pub selected: usize,
@@ -115,9 +115,14 @@ pub struct Session {
     debounce: Option<RegistrationToken>,
     tick: Option<RegistrationToken>,
     generation: u64,
+    navigation: u64,
     browse_id: u64,
     loading: bool,
     drag: Option<(Rect, Hit)>,
+}
+struct HistoryEntry {
+    page: Page,
+    query: String,
 }
 impl Drop for Session {
     fn drop(&mut self) {
@@ -164,31 +169,54 @@ impl Session {
         self.browse_id = self.browse_id.wrapping_add(1);
         self.loading = false;
     }
-    fn tab(&mut self, tab: usize) {
+    fn cancel_search(&mut self, handle: &LoopHandle<'_, Gavno>) {
+        self.navigation = self.navigation.wrapping_add(1);
+        if let Some(token) = self.debounce.take() {
+            handle.remove(token);
+        }
+    }
+    fn clear_account(&mut self, handle: &LoopHandle<'_, Gavno>) {
+        self.cancel_search(handle);
+        self.invalidate_browse();
+        self.page = Page::default();
+        self.tabs = Default::default();
+        self.back.clear();
+        self.searching = false;
+        self.query.clear();
+        self.error.clear();
+        self.scroll = 0;
+        self.selected = 0;
+        self.drag = None;
+        self.view = Default::default();
+    }
+    fn tab(&mut self, tab: usize, handle: &LoopHandle<'_, Gavno>) {
+        self.cancel_search(handle);
+        self.invalidate_browse();
         self.tab = tab;
         self.query.clear();
         self.back.clear();
-        self.search_origin = None;
+        self.searching = false;
         self.scroll = 0;
         self.selected = 0;
-        self.invalidate_browse();
         self.page = self.tabs[tab].clone().unwrap_or_default();
         if self.tabs[tab].is_none() {
             self.browse(["home", "library", "playlists"][tab], String::new());
         }
         self.dirty = true;
     }
-    fn back(&mut self) {
-        self.query.clear();
-        if let Some(page) = self.search_origin.take().or_else(|| self.back.pop()) {
-            self.page = page;
+    fn back(&mut self, handle: &LoopHandle<'_, Gavno>) {
+        self.cancel_search(handle);
+        if let Some(entry) = self.back.pop() {
+            self.invalidate_browse();
+            self.page = entry.page;
+            self.query = entry.query;
+            self.searching = !self.query.is_empty();
             self.scroll = 0;
             self.selected = 0;
-            self.invalidate_browse();
             self.dirty = true;
         }
     }
-    fn activate(&mut self, index: usize) {
+    fn activate(&mut self, index: usize, handle: &LoopHandle<'_, Gavno>) {
         let Some(item) = self.page.items.get(index) else {
             if index == self.page.items.len() && !self.loading {
                 if let Some(next) = self.page.next.clone() {
@@ -204,7 +232,12 @@ impl Session {
             )),
             "album" | "playlist" | "artist" | "show" => {
                 let uri = item.uri.clone();
-                self.back.push(self.page.clone());
+                self.cancel_search(handle);
+                self.back.push(HistoryEntry {
+                    page: self.page.clone(),
+                    query: std::mem::take(&mut self.query),
+                });
+                self.searching = false;
                 self.scroll = 0;
                 self.selected = 0;
                 self.browse("entity", uri);
@@ -220,8 +253,7 @@ impl Session {
         }
         for page in std::iter::once(&mut self.page)
             .chain(self.tabs.iter_mut().flatten())
-            .chain(self.back.iter_mut())
-            .chain(self.search_origin.iter_mut())
+            .chain(self.back.iter_mut().map(|entry| &mut entry.page))
         {
             for item in &mut page.items {
                 update(item, url, path);
@@ -267,7 +299,7 @@ impl Gavno {
                 tabs: Default::default(),
                 tab: 0,
                 back: Vec::new(),
-                search_origin: None,
+                searching: false,
                 query: String::new(),
                 error: String::new(),
                 selected: 0,
@@ -279,6 +311,7 @@ impl Gavno {
                 debounce: None,
                 tick: None,
                 generation,
+                navigation: 0,
                 browse_id: 0,
                 loading: false,
                 drag: None,
@@ -310,7 +343,7 @@ impl Gavno {
                 .session
                 .as_mut()
                 .unwrap()
-                .tab(0);
+                .tab(0, &gv.loop_handle);
             gv.cancel_shell_tap();
             gv.queue_redraw_all();
         });
@@ -364,6 +397,9 @@ impl Gavno {
         match event {
             worker::Event::State(state) => {
                 let logged_in = state.logged_in && !s.state.logged_in;
+                if s.state.logged_in && !state.logged_in {
+                    s.clear_account(&self.loop_handle);
+                }
                 s.state = state;
                 if logged_in && s.tabs[s.tab].is_none() && !s.loading {
                     s.browse(["home", "library", "playlists"][s.tab], String::new());
@@ -389,6 +425,11 @@ impl Gavno {
                 }
             }
             worker::Event::Page(..) => return,
+            worker::Event::Unavailable => {
+                s.clear_account(&self.loop_handle);
+                s.state = State::default();
+                s.error = "Music daemon unavailable".into();
+            }
             worker::Event::Cover(url, path, image) => {
                 s.cover_ready(&url, &path);
                 if let Some(image) = image {
@@ -444,37 +485,49 @@ impl Gavno {
         let Some(s) = media.music.session.as_mut() else {
             return;
         };
-        if let Some(token) = s.debounce.take() {
-            self.loop_handle.remove(token);
-        }
+        s.cancel_search(&self.loop_handle);
         s.invalidate_browse();
         if s.query.is_empty() {
-            if let Some(page) = s.search_origin.take() {
-                s.page = page;
-                s.selected = 0;
-                s.scroll = 0;
+            if s.searching {
+                s.back(&self.loop_handle);
             }
             return;
         }
-        if s.search_origin.is_none() {
-            s.search_origin = Some(s.page.clone());
+        if !s.searching {
+            s.back.push(HistoryEntry {
+                page: s.page.clone(),
+                query: String::new(),
+            });
+            s.searching = true;
         }
+        let generation = s.generation;
+        let navigation = s.navigation;
         s.debounce = self
             .loop_handle
             .insert_source(
                 Timer::from_duration(Duration::from_millis(300)),
-                |_, _, gv| {
+                move |_, _, gv| {
                     gv.guard(Feature::Media, (), |gv| {
-                        if let Some(s) = gv.now_playing.borrow_mut().music.session.as_mut() {
-                            s.debounce = None;
-                            s.browse("search", s.query.clone());
-                        }
-                        gv.queue_redraw_all();
+                        gv.music_search(generation, navigation)
                     });
                     TimeoutAction::Drop
                 },
             )
             .ok();
+    }
+    fn music_search(&mut self, generation: u64, navigation: u64) {
+        if let Some(s) = self
+            .now_playing
+            .borrow_mut()
+            .music
+            .session
+            .as_mut()
+            .filter(|s| s.generation == generation && s.navigation == navigation && s.searching)
+        {
+            s.debounce = None;
+            s.browse("search", s.query.clone());
+        }
+        self.queue_redraw_all();
     }
     pub fn music_key(&mut self, sym: Keysym, ch: Option<char>, mods: &ModifiersState) {
         self.guard(Feature::Media, (), |gv| {
@@ -489,18 +542,12 @@ impl Gavno {
             let mut edited = false;
             match sym.raw() {
                 keysyms::KEY_1..=keysyms::KEY_3 if mods.ctrl => {
-                    if let Some(token) = s.debounce.take() {
-                        gv.loop_handle.remove(token);
-                    }
-                    s.tab((sym.raw() - keysyms::KEY_1) as usize);
+                    s.tab((sym.raw() - keysyms::KEY_1) as usize, &gv.loop_handle);
                 }
                 keysyms::KEY_Left if mods.alt => {
-                    if let Some(token) = s.debounce.take() {
-                        gv.loop_handle.remove(token);
-                    }
-                    s.back();
+                    s.back(&gv.loop_handle);
                 }
-                keysyms::KEY_BackSpace if s.query.is_empty() => s.back(),
+                keysyms::KEY_BackSpace if s.query.is_empty() => s.back(&gv.loop_handle),
                 keysyms::KEY_BackSpace => {
                     s.query.pop();
                     edited = true;
@@ -529,7 +576,9 @@ impl Gavno {
                         s.scroll = s.selected + 1 - visible;
                     }
                 }
-                keysyms::KEY_Return | keysyms::KEY_KP_Enter => s.activate(s.selected),
+                keysyms::KEY_Return | keysyms::KEY_KP_Enter => {
+                    s.activate(s.selected, &gv.loop_handle)
+                }
                 _ => {
                     if let Some(c) = ch.filter(|c| !c.is_control() && !mods.ctrl && !mods.alt) {
                         if s.query.len() < 1024 {
@@ -570,18 +619,12 @@ impl Gavno {
                     return true;
                 }
                 Some((_, Hit::Back)) => {
-                    if let Some(token) = s.debounce.take() {
-                        gv.loop_handle.remove(token);
-                    }
-                    s.back();
+                    s.back(&gv.loop_handle);
                 }
                 Some((_, Hit::Tab(tab))) => {
-                    if let Some(token) = s.debounce.take() {
-                        gv.loop_handle.remove(token);
-                    }
-                    s.tab(tab);
+                    s.tab(tab, &gv.loop_handle);
                 }
-                Some((_, Hit::Row(index))) => s.activate(index),
+                Some((_, Hit::Row(index))) => s.activate(index, &gv.loop_handle),
                 Some((_, Hit::More)) => {
                     if !s.loading {
                         if let Some(next) = s.page.next.clone() {
