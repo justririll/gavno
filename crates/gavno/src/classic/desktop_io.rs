@@ -299,6 +299,9 @@ impl Gavno {
             if !needed {
                 if gv.classic.desktop.active {
                     gv.stop_classic_desktop();
+                    gv.classic.taskbar.release_caches();
+                    gv.classic.start.release_caches();
+                    crate::release_free_heap();
                 }
                 return;
             }

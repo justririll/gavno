@@ -474,11 +474,18 @@ impl Gavno {
     }
 }
 
-/// Runs `cmd` through `sh -c`, detached from GAVNO. The child is reaped on a
-/// helper thread so it never becomes a zombie.
+/// The shell script that runs `cmd` in a background subshell, so the shell
+/// exits at once and the app is adopted by init (or the session's subreaper).
+/// Newlines keep a trailing `#` comment in `cmd` from swallowing the `) &`.
+fn detached_script(cmd: &str) -> String {
+    format!("(\n{cmd}\n) &")
+}
+
+/// Runs `cmd` through `sh -c`, detached from GAVNO. Only the short-lived shell
+/// is GAVNO's child: no thread per running app waits for it to exit.
 pub fn spawn_shell(cmd: &str) {
     tracing::info!(cmd, "spawning");
-    match std::process::Command::new("sh").arg("-c").arg(cmd).spawn() {
+    match std::process::Command::new("sh").arg("-c").arg(detached_script(cmd)).spawn() {
         Ok(mut child) => {
             std::thread::spawn(move || {
                 let _ = child.wait();

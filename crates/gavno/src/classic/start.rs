@@ -57,6 +57,20 @@ pub struct Start {
     cached: Vec<CachedElement>,
     cache_key: Option<(u64, u64, i32, i32, u64)>,
 }
+impl Start {
+    /// Drop render caches after leaving Classic. The app list stays, so the
+    /// next Start opens without a rescan.
+    pub fn release_caches(&mut self) {
+        if self.open {
+            return;
+        }
+        self.canvas = Default::default();
+        self.icons = Default::default();
+        self.cached = Vec::new();
+        self.cache_key = None;
+        self.hits = Vec::new();
+    }
+}
 impl Default for Start {
     fn default() -> Self {
         Self {

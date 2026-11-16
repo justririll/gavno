@@ -426,7 +426,31 @@ impl Request {
     }
 }
 
+/// GTK's software renderer for this small, mostly static window: it starts
+/// faster and keeps about 100 MB less than the GL or Vulkan renderers
+/// (measured on the Snapdragon laptop). An explicit GSK_RENDERER still wins.
+fn prefer_software_rendering() {
+    if std::env::var_os("GSK_RENDERER").is_none() {
+        std::env::set_var("GSK_RENDERER", "cairo");
+    }
+}
+
+/// Cap glibc malloc at two arenas. Every helper thread (Mesa shader queues,
+/// D-Bus workers) otherwise gets its own arena; in the compositor that was
+/// ~58 MB of idle RSS. An explicit MALLOC_ARENA_MAX still wins.
+fn limit_malloc_arenas() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    if std::env::var_os("MALLOC_ARENA_MAX").is_none() {
+        // SAFETY: mallopt only adjusts allocator tuning; called before any thread starts.
+        unsafe {
+            libc::mallopt(libc::M_ARENA_MAX, 2);
+        }
+    }
+}
+
 fn main() -> glib::ExitCode {
+    limit_malloc_arenas();
+    prefer_software_rendering();
     let app = adw::Application::builder()
         .application_id("org.gavno.PolkitAgent")
         .build();

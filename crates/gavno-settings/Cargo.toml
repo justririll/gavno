@@ -6,6 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+libc = "0.2"
 gtk = { package = "gtk4", version = "0.10", features = ["v4_18"] }
 adw = { package = "libadwaita", version = "0.8", features = ["v1_6"] }
 gio = "0.21"

@@ -51,7 +51,31 @@ use smithay::reexports::{calloop::EventLoop, wayland_server::Display};
 
 pub use state::Gavno;
 
+/// Cap glibc malloc at two arenas. Every helper thread (Mesa shader queues,
+/// D-Bus workers) otherwise gets its own arena; in the compositor that was
+/// ~58 MB of idle RSS. An explicit MALLOC_ARENA_MAX still wins.
+/// Return freed heap pages to the kernel after a large cache is dropped
+/// (leaving Classic). glibc keeps them otherwise.
+pub(crate) fn release_free_heap() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    // SAFETY: malloc_trim only releases free allocator pages.
+    unsafe {
+        libc::malloc_trim(0);
+    }
+}
+
+fn limit_malloc_arenas() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    if std::env::var_os("MALLOC_ARENA_MAX").is_none() {
+        // SAFETY: mallopt only adjusts allocator tuning; called before any thread starts.
+        unsafe {
+            libc::mallopt(libc::M_ARENA_MAX, 2);
+        }
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    limit_malloc_arenas();
     init_logging();
     crash_log::install();
 

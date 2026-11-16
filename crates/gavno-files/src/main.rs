@@ -18,7 +18,21 @@ mod views;
 mod window;
 use adw::prelude::*;
 
+/// Cap glibc malloc at two arenas. Every helper thread (Mesa shader queues,
+/// D-Bus workers) otherwise gets its own arena; in the compositor that was
+/// ~58 MB of idle RSS. An explicit MALLOC_ARENA_MAX still wins.
+fn limit_malloc_arenas() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    if std::env::var_os("MALLOC_ARENA_MAX").is_none() {
+        // SAFETY: mallopt only adjusts allocator tuning; called before any thread starts.
+        unsafe {
+            libc::mallopt(libc::M_ARENA_MAX, 2);
+        }
+    }
+}
+
 fn main() -> glib::ExitCode {
+    limit_malloc_arenas();
     // `--daemon` keeps a windowless instance resident so later launches only
     // ask it over D-Bus for a window instead of starting GTK again.
     let mut args: Vec<String> = std::env::args().collect();

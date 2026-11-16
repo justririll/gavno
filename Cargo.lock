@@ -933,6 +933,7 @@ dependencies = [
  "glib",
  "gtk4",
  "libadwaita",
+ "libc",
  "serde",
  "serde_json",
  "toml_edit 0.23.10+spec-1.0.0",

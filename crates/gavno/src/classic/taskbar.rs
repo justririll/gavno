@@ -99,6 +99,15 @@ pub struct Taskbar {
     revision: u64,
     model_key: Option<u64>,
 }
+impl Taskbar {
+    /// Drop per-output render caches and icons after leaving Classic.
+    pub fn release_caches(&mut self) {
+        self.views = Vec::new();
+        self.icons = Default::default();
+        self.model_key = None;
+        self.revision = self.revision.wrapping_add(1);
+    }
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Click {
     Launch,

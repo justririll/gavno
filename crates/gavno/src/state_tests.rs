@@ -550,3 +550,22 @@ fn new_floating_windows_cascade_instead_of_stacking() {
     assert!(geo.contains(b));
 }
 
+
+#[test]
+fn spawned_commands_detach_and_survive_comments() {
+    let dir = std::env::temp_dir().join(format!("gavno-detach-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let marker = dir.join("ran");
+    let cmd = format!("sleep 0.2; touch '{}' # trailing comment", marker.display());
+    let started = std::time::Instant::now();
+    let status = std::process::Command::new("sh").arg("-c").arg(super::detached_script(&cmd)).status().unwrap();
+    assert!(status.success());
+    assert!(started.elapsed() < std::time::Duration::from_millis(150), "the shell must not wait for the app");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !marker.exists() {
+        assert!(std::time::Instant::now() < deadline, "detached command never ran");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
