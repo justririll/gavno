@@ -938,10 +938,14 @@ impl Gavno {
         let Some(app) = self.dock.apps.iter().find(|a| a.id == id) else {
             return;
         };
-        let Some(command) = app
-            .entry
-            .as_ref()
-            .and_then(|e| e.command(&self.config.terminal))
+        // The pinned foot entry opens through the foot server when it runs.
+        let terminal = &self.config.terminal;
+        let command = if id == "foot" && terminal.starts_with("footclient") {
+            Some(terminal.clone())
+        } else {
+            app.entry.as_ref().and_then(|e| e.command(terminal))
+        };
+        let Some(command) = command
         else {
             tracing::warn!(app=%id,"desktop entry has no launch command");
             return;
@@ -1344,5 +1348,15 @@ impl Gavno {
         self.reflow_tiling(false);
         // The dock no longer reserves space: grow maximized/snapped windows.
         self.loop_handle.insert_idle(|gv| gv.refit_fixed_windows());
+    }
+}
+
+impl Dock {
+    /// Re-read pins and drop theme caches without restoring minimized windows.
+    pub(crate) fn configuration_changed(&mut self) {
+        self.initialized = false;
+        self.icons = Default::default();
+        self.entries = Default::default();
+        self.menu = None;
     }
 }

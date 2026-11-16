@@ -630,7 +630,7 @@ impl Desktop {
                 }
             }
             self.widgets
-                .prepare(&mut self.layer, &self.positions.widgets, self.size, accent);
+                .prepare(&mut self.layer, &self.positions.widgets, self.size, accent, theme);
             if let Some(drag) = &self.drag {
                 if matches!(drag.kind, DragKind::Rubber(_)) && drag.moved {
                     self.layer.panel(

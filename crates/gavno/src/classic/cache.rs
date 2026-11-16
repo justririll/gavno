@@ -151,6 +151,19 @@ impl Layer {
         self.primitives
             .push(Primitive::Box(r, radius, color, border));
     }
+    pub fn tinted_icon(&mut self, name: &str, theme: &str, r: Rect, color: [u8; 3]) {
+        let px = (r.size.w as f64 * self.scale).ceil() as u32;
+        if let Some(buffer) = self.icons.get_tinted_color(name, px, theme, color) {
+            self.primitives.push(Primitive::Image(
+                r,
+                Image {
+                    buffer,
+                    physical: (px as i32, px as i32),
+                    logical: (r.size.w, r.size.h),
+                },
+            ));
+        }
+    }
     pub fn icon(&mut self, name: &str, theme: &str, r: Rect) {
         let px = (r.size.w as f64 * self.scale).ceil() as u32;
         let buffer = self

@@ -42,6 +42,7 @@ pub struct Gavno {
     pub loop_signal: LoopSignal,
     pub config: Config,
     pub ipc: crate::ipc::IpcState,
+    pub(crate) screencopy_global: Option<smithay::reexports::wayland_server::backend::GlobalId>,
 
     /// Mapped windows. A toplevel joins the space on its first buffer commit.
     pub space: Space<Window>,
@@ -94,6 +95,8 @@ pub struct Gavno {
     pub lock: crate::lock::Lock,
     pub launcher: crate::launcher::Launcher,
     pub notifications: crate::notify::Shared,
+    pub now_playing: crate::media::Shared,
+    pub(crate) media_generation: u64,
 }
 
 impl Gavno {
@@ -115,7 +118,7 @@ impl Gavno {
         let presentation_state = PresentationState::new::<Self>(&dh, clock.id() as u32);
         let fractional_scale_state = FractionalScaleManagerState::new::<Self>(&dh);
 
-        let protocols = crate::handlers::protocols::Protocols::new(&dh, event_loop.handle(), &primary_selection_state);
+        let protocols = crate::handlers::protocols::Protocols::new(&dh, event_loop.handle(), &primary_selection_state, config.modules.color_management);
 
         let mut seat_state = SeatState::new();
         let mut seat: Seat<Self> = seat_state.new_wl_seat(&dh, "seat0");
@@ -134,8 +137,10 @@ impl Gavno {
 
         let socket_name = Self::init_wayland_listener(display, event_loop);
         let notifications = crate::notify::Shared::default();
+        let now_playing = crate::media::Shared::default();
         let mut topbar = crate::topbar::TopBar::default();
         topbar.notifications = notifications.clone();
+        topbar.now_playing = now_playing.clone();
 
         Self {
             protocols,
@@ -149,6 +154,7 @@ impl Gavno {
             classic: crate::classic::Classic::new(config.modules.classic && config.classic.start_in_classic),
             config,
             ipc: crate::ipc::IpcState::default(),
+            screencopy_global: None,
             space: Space::default(),
             window_animations: Default::default(),
             window_decor: Default::default(),
@@ -159,6 +165,8 @@ impl Gavno {
             dock: Default::default(),
             topbar,
             notifications,
+            now_playing,
+            media_generation: 0,
             media: Default::default(),
             gestures: Default::default(),
             window_gestures: Default::default(),
@@ -248,6 +256,7 @@ impl Gavno {
         self.refresh_shell();
         self.refresh_classic_desktop();
         self.refresh_notifications();
+        self.refresh_media();
         self.finish_dock_launches();
         self.refresh_idle();
         self.popups.cleanup();
@@ -492,3 +501,37 @@ impl ClientData for ClientState {
 #[cfg(test)]
 #[path = "state_tests.rs"]
 pub(crate) mod tests;
+
+impl Gavno {
+    /// Refit floating windows as well as fixed/tiling windows after a scale or
+    /// timing change. Panel and dock geometry is derived from the output size.
+    pub(crate) fn output_settings_changed(&mut self, output: &Output) {
+        self.space.refresh();
+        self.arrange_layers_all();
+        let area = self.work_area(output);
+        let mut windows: Vec<_> = self.space.elements().filter(|w| self.output_for_window(w).as_ref() == Some(output)).cloned().collect();
+        for owned in self.workspaces.all() {
+            if self.workspaces.membership(&owned.window).is_some_and(|(o, _)| o == *output) && !windows.contains(&owned.window) {
+                windows.push(owned.window.clone());
+            }
+        }
+        for window in windows {
+            let mode = crate::window_mode::mode_state(&window).mode;
+            if mode != crate::window_mode::WindowMode::Floating { continue; }
+            let size = window.geometry().size;
+            let size = smithay::utils::Size::from((size.w.clamp(1, area.size.w.max(1)), size.h.clamp(1, area.size.h.max(1))));
+            let loc = self.space.element_location(&window).or_else(|| self.workspaces.location(&window)).unwrap_or(area.loc);
+            let loc = Point::from((loc.x.clamp(area.loc.x, area.loc.x + (area.size.w - size.w).max(0)),
+                loc.y.clamp(area.loc.y, area.loc.y + (area.size.h - size.h).max(0))));
+            let mapped = self.space.element_location(&window).is_some();
+            self.configure_slot(&window, Rectangle::new(loc, size), mode);
+            if !mapped { self.space.unmap_elem(&window); }
+            for owner in &mut self.workspaces.outputs {
+                for workspace in &mut owner.list.items {
+                    for owned in &mut workspace.windows { if owned.window == window { owned.location = loc; } }
+                }
+            }
+        }
+        self.queue_redraw_all();
+    }
+}

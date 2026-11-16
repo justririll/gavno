@@ -325,6 +325,8 @@ fn crash_feature(h: &mut Harness, id: Feature, output: &Output) {
         Feature::Launcher => h.gv.toggle_launcher(),
         Feature::Notifications => h.gv.refresh_notifications(),
         Feature::Classic => h.gv.set_shell_mode(crate::classic::ShellMode::Classic),
+        Feature::Media => h.gv.refresh_media(),
+        Feature::ColorManagement => h.gv.guard(Feature::ColorManagement, (), |_| ()),
     }
     h.gv.run_feature_resets();
     h.event_loop.dispatch(Duration::ZERO, &mut h.gv).unwrap();
@@ -464,6 +466,8 @@ fn all_config_switches_disable_features_without_reserves_or_idle_animation() {
             Feature::Launcher => "launcher",
             Feature::Notifications => "notifications",
             Feature::Classic => "classic",
+            Feature::Media => "media",
+            Feature::ColorManagement => "color_management",
         };
         let mut h = Harness::new();
         let output = feature_output(&mut h);

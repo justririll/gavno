@@ -29,6 +29,8 @@ use std::{
 #[derive(Default)]
 pub struct Lock {
     internal: bool,
+    media_canvas: crate::topbar::Canvas,
+    media_icons: crate::icons::Icons,
     authenticated: bool,
     failed: bool,
     ui_panics: u8,
@@ -118,6 +120,23 @@ impl Lock {
             self.ui = None;
         }
         elements
+    }
+    pub(crate) fn clear_media(&mut self) {
+        self.media_canvas = Default::default();
+        self.media_icons = Default::default();
+    }
+    pub(crate) fn media_elements(
+        &mut self, renderer: &mut GlesRenderer, size: Size<i32, Logical>, scale: f64,
+        snapshot: &crate::media::Snapshot, theme: &str,
+    ) -> Vec<GavnoRenderElement> {
+        if self.failed || self.authenticated || self.ui.is_none() { return Vec::new(); }
+        let Some(player) = &snapshot.player else { return Vec::new(); };
+        let Some((line, buttons)) = crate::media::ui::lock_geometry(size) else { return Vec::new(); };
+        let c = &mut self.media_canvas;
+        c.begin(renderer, scale);
+        c.label(renderer, &player.label(), line.loc.x, line.loc.y, line.size.w, 12.0);
+        for (command, area) in buttons { crate::media::ui::button(c, renderer, &mut self.media_icons, theme, player, command, area, false); }
+        c.finish()
     }
     pub fn key(&mut self, sym: Keysym, ch: Option<char>, mods: &ModifiersState) {
         if self.accepts_input() {
@@ -416,12 +435,20 @@ impl Gavno {
     }
     pub(crate) fn lock_pointer(&mut self, click: bool) {
         let pos = self.pointer_location();
-        let origin = self
-            .space
-            .outputs()
-            .filter_map(|o| self.space.output_geometry(o))
-            .find(|geo| geo.to_f64().contains(pos))
-            .map(|geo| geo.loc);
+        let geometry = self.space.outputs().filter_map(|o| self.space.output_geometry(o))
+            .find(|geo| geo.to_f64().contains(pos));
+        if click && !self.lock.failed && !self.lock.authenticated && self.lock.ui.is_some() {
+            if let Some(geo) = geometry {
+                let local = pos - geo.loc.to_f64();
+                let command = self.features.read(crate::module::Feature::Media, None, || {
+                    self.now_playing.borrow().snapshot.player.as_ref()?;
+                    crate::media::ui::lock_geometry(geo.size)?.1.into_iter()
+                        .find(|(_, area)| area.to_f64().contains(local)).map(|(command, _)| command)
+                });
+                if let Some(command) = command { self.media_command(command); return; }
+            }
+        }
+        let origin = geometry.map(|geo| geo.loc);
         if let Some(origin) = origin {
             if self.lock.pointer(pos - origin.to_f64(), click) || !click {
                 self.queue_redraw_all();
@@ -468,6 +495,39 @@ mod tests {
                 model: "test".into(),
             },
         )
+    }
+    #[test]
+    fn media_buttons_send_commands_without_changing_the_lock_gate() {
+        let mut h = crate::state::tests::Harness::new();
+        let output = output();
+        output.change_current_state(Some(smithay::output::Mode {
+            size: (1646, 926).into(), refresh: 120000,
+        }), None, None, None);
+        h.gv.space.map_output(&output, (0, 0));
+        let (tx, rx) = mpsc::channel();
+        h.gv.now_playing.borrow_mut().worker = Some(tx);
+        h.gv.media_update(crate::media::Snapshot {
+            player: Some(crate::media::Player {
+                playback: crate::media::Playback::Playing,
+                can_next: true, can_previous: true, can_pause: true, ..Default::default()
+            }), ..Default::default()
+        });
+        assert!(h.gv.lock_session());
+        assert!(h.gv.lock.ui.is_some());
+        let generation = h.gv.lock.generation;
+        let pointer = h.gv.seat.get_pointer().unwrap();
+        for (command, area) in crate::media::ui::lock_geometry((1646, 926).into()).unwrap().1 {
+            pointer.motion(&mut h.gv, None, &smithay::input::pointer::MotionEvent {
+                location: (area.loc.x as f64 + 10.0, area.loc.y as f64 + 10.0).into(),
+                serial: smithay::utils::SERIAL_COUNTER.next_serial(), time: 1,
+            });
+            h.gv.lock_pointer(true);
+            assert!(matches!(rx.try_recv(), Ok(crate::media::mpris::Request::Command(c)) if c == command));
+            assert!(h.gv.protocols.locks.locked);
+            assert!(!h.gv.lock.authenticated);
+            assert!(!h.gv.lock.checking);
+            assert_eq!(h.gv.lock.generation, generation);
+        }
     }
     #[test]
     fn sleep_waits_for_presented_frames_and_resume_rearms_inhibitor() {

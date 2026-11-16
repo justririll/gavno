@@ -133,6 +133,18 @@ impl Gavno {
         if self.media.core_keys.contains(&code) {
             return true;
         }
+        let playback = match sym {
+            keysyms::KEY_XF86AudioPlay | keysyms::KEY_XF86AudioPause => Some(crate::media::Command::PlayPause),
+            keysyms::KEY_XF86AudioNext => Some(crate::media::Command::Next),
+            keysyms::KEY_XF86AudioPrev => Some(crate::media::Command::Previous),
+            _ => None,
+        };
+        if let Some(command) = playback {
+            if !self.features.on(crate::module::Feature::Media) { return false; }
+            self.media.core_keys.push(code);
+            self.media_command(command);
+            return true;
+        }
         let media = match sym {
             keysyms::KEY_XF86AudioRaiseVolume => Media::VolumeUp,
             keysyms::KEY_XF86AudioLowerVolume => Media::VolumeDown,
@@ -361,6 +373,68 @@ mod tests {
         h.gv.space.map_output(&output, (0, 0));
         h.gv.workspaces.ensure(&output);
         (h, output)
+    }
+    #[test]
+    fn player_channel_exposes_capsule_and_click_sends_play_pause() {
+        for width in [1280, 1646] {
+            let (mut h, o) = setup();
+            o.change_current_state(Some(Mode { size: (width, 926).into(), refresh: 120000 }), None, None, None);
+            let (tx, rx) = mpsc::channel();
+            h.gv.now_playing.borrow_mut().worker = Some(tx);
+            let events = h.gv.media_events().unwrap();
+            events.send(crate::media::Snapshot {
+                player: Some(crate::media::Player {
+                    name: "org.mpris.MediaPlayer2.test".into(),
+                    metadata: crate::media::Metadata { title: "Track".into(), artists: vec!["Artist".into()], ..Default::default() },
+                    playback: crate::media::Playback::Playing, can_play: true, can_pause: true,
+                    can_next: true, can_previous: true, ..Default::default()
+                }), ..Default::default()
+            }).unwrap();
+            h.event_loop.dispatch(Duration::ZERO, &mut h.gv).unwrap();
+            let (layout, snapshot) = super::super::media_layout(&h.gv.topbar.now_playing, width, 55, true, &h.gv.features);
+            assert_eq!(snapshot.player.as_ref().unwrap().label(), "Track — Artist");
+            let area = layout.media.expect("player update exposes capsule");
+            let mut canvas = Canvas::default();
+            canvas.scale = 1.75;
+            let mut hits = Vec::new();
+            super::super::push_hit(&canvas, &mut hits, area, BarAction::Media(crate::media::Command::PlayPause));
+            h.gv.topbar.views.push(BarView {
+                output: o.clone(), canvas, dots: vec![], hits, visible: true, hover: None,
+                layout: Some(layout), popover: None,
+            });
+            // Exercise the shell's real pointer dispatch with a point inside the capsule.
+            let pointer = h.gv.seat.get_pointer().unwrap();
+            pointer.motion(&mut h.gv, None, &smithay::input::pointer::MotionEvent {
+                location: (area.loc.x as f64 + 10.0, 15.0).into(),
+                serial: smithay::utils::SERIAL_COUNTER.next_serial(), time: 1,
+            });
+            assert!(h.gv.shell_contains(h.gv.pointer_location()));
+            assert!(h.gv.shell_button(0x110, true));
+            assert!(matches!(rx.try_recv(), Ok(crate::media::mpris::Request::Command(crate::media::Command::PlayPause))));
+            h.gv.protocols.locks.locked = true;
+            for (i, (sym, expected)) in [
+                (keysyms::KEY_XF86AudioPlay, crate::media::Command::PlayPause),
+                (keysyms::KEY_XF86AudioPause, crate::media::Command::PlayPause),
+                (keysyms::KEY_XF86AudioNext, crate::media::Command::Next),
+                (keysyms::KEY_XF86AudioPrev, crate::media::Command::Previous),
+            ].into_iter().enumerate() {
+                let code = 200 + i as u32;
+                assert!(h.gv.bar_key(sym, code, true));
+                assert!(h.gv.bar_key(sym, code, true));
+                assert!(h.gv.bar_key(0, code, false));
+                assert!(matches!(rx.try_recv(), Ok(crate::media::mpris::Request::Command(c)) if c == expected));
+                assert!(rx.try_recv().is_err());
+                assert!(h.gv.media.repeat.is_none());
+            }
+            h.gv.features.inject_panic(crate::module::Feature::Media);
+            h.gv.media_command(crate::media::Command::PlayPause);
+            assert!(h.gv.now_playing.borrow().snapshot.player.is_none());
+            assert!(h.gv.topbar.views[0].hits.iter().all(|(_, action)| !matches!(action, BarAction::Media(_))));
+            assert!(!h.gv.bar_key(keysyms::KEY_XF86AudioNext, 250, true));
+            events.send(snapshot).unwrap();
+            h.event_loop.dispatch(Duration::ZERO, &mut h.gv).unwrap();
+            assert!(h.gv.now_playing.borrow().snapshot.player.is_none());
+        }
     }
     #[test]
     fn core_keys_work_locked_and_repeat_is_cancelled_on_release() {

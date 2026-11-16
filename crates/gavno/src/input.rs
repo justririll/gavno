@@ -888,3 +888,16 @@ mod screenshot_tests {
         assert!(screenshot_command(false, Some("x; rm -rf ~")).contains(r#"grim  "$f""#));
     }
 }
+
+impl Gavno {
+    pub(crate) fn apply_keyboard_keymap(&mut self, layout: String, variant: String, options: String, keymap: String) -> Result<(), String> {
+        let keyboard = self.seat.get_keyboard().ok_or("seat has no keyboard")?;
+        // The worker already compiled all rules/symbols. Parsing the resulting
+        // text here performs no file I/O and Smithay broadcasts it to clients.
+        keyboard.set_keymap_from_string(self, keymap).map_err(|e| format!("cannot apply keymap: {e}"))?;
+        self.config.xkb_layout = layout;
+        self.config.xkb_variant = variant;
+        self.config.xkb_options = Some(options);
+        Ok(())
+    }
+}

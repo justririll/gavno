@@ -11,6 +11,7 @@ pub struct Layout {
     pub app: Rect,
     pub title: Rect,
     pub clock: Rect,
+    pub media: Option<Rect>,
     pub status: Rect,
     pub layout: Option<Rect>,
     pub network: Rect,
@@ -42,6 +43,7 @@ impl Layout {
             app,
             title,
             clock,
+            media: None,
             status,
             layout: layouts.then(|| rect(status.loc.x + 8, 4, 28, 24)),
             network: rect(x, 8, 16, 16),
@@ -49,9 +51,21 @@ impl Layout {
             battery: rect(x + 64, 8, 56, 16),
         }
     }
+    pub fn with_media(mut self, enabled: bool) -> Self {
+        if enabled {
+            let x = self.clock.loc.x + self.clock.size.w + 12;
+            let width = (self.status.loc.x - x - 12).clamp(0, 260);
+            if width >= 80 { self.media = Some(rect(x, 4, width, 24)); }
+        }
+        self
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Item {
+    MediaInfo,
+    MediaPrevious,
+    MediaPlayPause,
+    MediaNext,
     VolumeIcon,
     Volume,
     Brightness,
@@ -117,6 +131,19 @@ impl PopoverLayout {
         }
         layout
     }
+    pub fn with_media(mut self, enabled: bool) -> Self {
+        if enabled {
+            for (_, area) in &mut self.items { area.loc.y += 116; }
+            let x = self.panel.loc.x + 16;
+            let y = self.panel.loc.y + 16;
+            self.items.push((Item::MediaInfo, rect(x, y, 288, 52)));
+            for (i, item) in [Item::MediaPrevious, Item::MediaPlayPause, Item::MediaNext].into_iter().enumerate() {
+                self.items.push((item, rect(x + 76 + i as i32 * 48, y + 60, 40, 32)));
+            }
+            self.panel.size.h += 116;
+        }
+        self
+    }
     pub fn calendar_notifications(width: i32, count: usize) -> Self {
         let mut layout = Self::calendar(width);
         let x = layout.panel.loc.x;
@@ -162,10 +189,26 @@ mod tests {
         }
     }
     #[test]
+    fn media_capsule_fits_between_clock_and_status() {
+        for width in [1280, 1646] {
+            for layouts in [false, true] {
+                let l = Layout::new(width, 88, layouts).with_media(true);
+                let media = l.media.unwrap();
+                assert!(media.size.w <= 260);
+                for other in [l.workspaces, l.toggle, l.app, l.title, l.clock, l.status] {
+                    assert!(!media.overlaps(other), "{width}: {other:?}");
+                }
+                assert!(rect(0, 0, width, 32).contains_rect(media));
+            }
+        }
+    }
+    #[test]
     fn popover_items_are_inside_panel_and_disjoint() {
         for l in [
             PopoverLayout::quick(800, false),
             PopoverLayout::quick(1646, true),
+            PopoverLayout::quick_notifications(1646, true, true).with_media(true),
+            PopoverLayout::quick_notifications(1280, false, true).with_media(true),
             PopoverLayout::calendar(1280),
             PopoverLayout::calendar_notifications(1280, 4),
             PopoverLayout::quick_notifications(1646, true, true),

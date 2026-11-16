@@ -205,8 +205,16 @@ impl Gavno {
                     gv.classic.desktop.size,
                 )
                 .find(|(_, r)| r.to_f64().contains(p))
-                .map(|(n, r)| (n.to_owned(), [r.loc.x, r.loc.y]));
-            if let Some((name, origin)) = widget {
+                .map(|(n, r)| (n.to_owned(), r));
+            if let Some(command) = widget
+                .as_ref()
+                .filter(|(name, _)| name == "media")
+                .and_then(|(_, r)| super::widgets::media_button(*r, p))
+            {
+                gv.media_command(command);
+                return true;
+            }
+            if let Some((name, origin)) = widget.map(|(n, r)| (n, [r.loc.x, r.loc.y])) {
                 gv.classic.desktop.drag = Some(Drag {
                     origin: p,
                     point: p,

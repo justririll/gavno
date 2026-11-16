@@ -50,6 +50,7 @@ render_elements! {
     Surface = WaylandSurfaceRenderElement<GlesRenderer>,
     Memory = MemoryRenderBufferRenderElement<GlesRenderer>,
     Desktop = crate::classic::cache::CachedElement,
+    Color = crate::hdr::surface::ManagedElement,
     Window = crate::decor::WindowElement,
     Shader = smithay::backend::renderer::gles::element::PixelShaderElement,
     Thumbnail = crate::overview::ThumbnailElement,
@@ -131,6 +132,67 @@ pub fn output_elements(
     launcher: &mut crate::launcher::Launcher,
     classic: &mut crate::classic::Classic,
 ) -> Vec<GavnoRenderElement> {
+    let mut descriptions = std::collections::HashMap::new();
+    if features.on(Feature::ColorManagement) && crate::handlers::color_management::any_tagged() {
+        // The walks below hold each surface's lock: read the locked states,
+        // never call with_states on the same surface (that deadlocks).
+        let mut collect = |surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+                           states: &smithay::wayland::compositor::SurfaceData| {
+            if let Some(description) = crate::handlers::color_management::states_description(states) {
+                descriptions.insert(crate::handlers::color_management::surface_id(surface), description);
+            }
+        };
+        for window in space.elements() { window.with_surfaces(|surface, states| collect(surface, states)); }
+        for layer in layer_map_for_output(output).layers() { layer.with_surfaces(|surface, states| collect(surface, states)); }
+        if let CursorImageStatus::Surface(surface) = cursor_status { with_surfaces_surface_tree(surface, |s, states| collect(s, states)); }
+        if let Some(surface) = locks.surface(output) { with_surfaces_surface_tree(surface, |s, states| collect(s, states)); }
+    }
+    let elements = output_elements_inner(renderer, space, output, pointer_pos, cursor_status, cursor, time, greeter, lock, overlay, window_decor, animations, locks, workspaces, overview, dock, topbar, config, features, osd, launcher, classic);
+    if descriptions.is_empty() { crate::hdr::surface::reset(output); return elements; }
+    let hdr = crate::handlers::color_management::is_hdr(output);
+    if !hdr { descriptions.retain(|_, d| d.tf != crate::color::Transfer::Srgb || d.primaries != crate::color::SRGB); }
+    if descriptions.is_empty() { crate::hdr::surface::reset(output); return elements; }
+    let white = if hdr { crate::handlers::color_management::output_description(output).luminances[2] as f32 } else { config.sdr_white_nits };
+    let converted = features.call(Feature::ColorManagement, Ok(Default::default()), || {
+        crate::hdr::surface::convert(renderer, output, &elements, &descriptions, hdr, white)
+    });
+    match converted {
+        Ok(converted) => {
+            let mut converted = converted.into_iter();
+            elements.into_iter().map(|element| converted.next().flatten()
+                .map(GavnoRenderElement::Color).unwrap_or(element)).collect()
+        },
+        Err(error) => {
+            features.failed(Feature::ColorManagement, format!("surface color conversion failed: {error}"));
+            elements
+        }
+    }
+}
+
+fn output_elements_inner(
+    renderer: &mut GlesRenderer,
+    space: &Space<Window>,
+    output: &Output,
+    pointer_pos: Point<f64, Logical>,
+    cursor_status: &mut CursorImageStatus,
+    cursor: &mut CursorCache,
+    time: Duration,
+    greeter: Option<&mut crate::greeter::Greeter>,
+    lock: &mut crate::lock::Lock,
+    overlay: &mut crate::overlay::Overlay,
+    window_decor: &mut crate::decor::WindowDecor,
+    animations: &mut crate::anim::WindowAnimations,
+    locks: &crate::handlers::session_lock::Locks,
+    workspaces: &mut crate::workspace::Workspaces,
+    overview: &mut crate::overview::Overview,
+    dock: &mut crate::dock::Dock,
+    topbar: &mut crate::topbar::TopBar,
+    config: &crate::config::Config,
+    features: &mut Features,
+    osd: &mut crate::topbar::osd::Osd,
+    launcher: &mut crate::launcher::Launcher,
+    classic: &mut crate::classic::Classic,
+) -> Vec<GavnoRenderElement> {
     let mut elements: Vec<GavnoRenderElement> = Vec::new();
     let Some(output_geo) = space.output_geometry(output) else {
         return elements;
@@ -152,7 +214,13 @@ pub fn output_elements(
                 ) { elements.push(GavnoRenderElement::Memory(cursor)); }
             }
             elements.extend(osd.elements(renderer, output, output_geo.size, time, &config.dock.icon_theme, topbar.accent()));
-            elements.extend(lock.elements(renderer, output_geo.size, scale.x, time));
+            let lock_elements = lock.elements(renderer, output_geo.size, scale.x, time);
+            let media_elements = features.call(Feature::Media, Vec::new(), || {
+                lock.media_elements(renderer, output_geo.size, scale.x, &topbar.now_playing.borrow().snapshot, &config.dock.icon_theme)
+            });
+            // Media is in front of the trusted lock background, beneath its cursor.
+            elements.extend(media_elements);
+            elements.extend(lock_elements);
             // Desktop pixels are permitted only after local PAM success. Input
             // remains blocked until the fade completes on the event loop.
             if !lock.desktop_visible() { return elements; }
@@ -249,7 +317,7 @@ pub fn output_elements(
     let focused = classic.taskbar.focused.clone();
     features.call(Feature::Classic, (), || classic.start.append(renderer, output, output_geo.size, time, config.classic.align, accent, &config.dock.icon_theme, &mut elements));
     features.call(Feature::Classic, (), || classic.taskbar.append(renderer, output, output_geo.size, p, config.classic.align, focused.as_ref(), topbar.status(), accent, &config.dock.icon_theme, shell_visible, &mut elements));
-    elements.extend(features.call(Feature::Bar, Vec::new(), || topbar.elements(renderer, output, output_geo.size.w, workspaces.get(output), time, shell_visible || (p > 0.0 && topbar.menu.as_ref() == Some(output)))));
+    elements.extend(features.read(Feature::Bar, Vec::new(), || topbar.elements(renderer, output, output_geo.size.w, workspaces.get(output), time, shell_visible || (p > 0.0 && topbar.menu.as_ref() == Some(output)), features)));
     elements.extend(features.call(Feature::Dock, Vec::new(), || dock.elements(renderer, output, output_geo.size, pointer_pos - output_geo.loc.to_f64(), time, shell_visible)));
     // Workspace ownership and transitions are core; overview only adds its zoom.
     let mut scene = if features.on(Feature::Overview) {
@@ -381,6 +449,7 @@ pub fn post_render(
                 default_primary_scanout_output_compare,
             );
             if let Some(primary) = surface_primary_scanout_output(surface, surface_states) {
+                crate::handlers::color_management::surface_output(surface_states, &primary);
                 let scale = primary.current_scale().fractional_scale();
                 with_fractional_scale(surface_states, |fs| fs.set_preferred_scale(scale));
             }
@@ -432,6 +501,7 @@ fn layers_post_render(
                 default_primary_scanout_output_compare,
             );
             if let Some(primary) = surface_primary_scanout_output(surface, surface_states) {
+                crate::handlers::color_management::surface_output(surface_states, &primary);
                 let scale = primary.current_scale().fractional_scale();
                 with_fractional_scale(surface_states, |fs| fs.set_preferred_scale(scale));
             }

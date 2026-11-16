@@ -110,13 +110,30 @@ pub struct Widgets {
     date: String,
     pub revision: u64,
     pub refreshing: bool,
+    player: Option<crate::media::Player>,
+}
+const MEDIA_COMMANDS: [crate::media::Command; 3] = [
+    crate::media::Command::Previous,
+    crate::media::Command::PlayPause,
+    crate::media::Command::Next,
+];
+/// Previous / play-pause / next buttons inside a media widget panel.
+fn media_buttons(r: Rect) -> impl Iterator<Item = (crate::media::Command, Rect)> {
+    MEDIA_COMMANDS
+        .into_iter()
+        .enumerate()
+        .map(move |(i, c)| (c, rect(r.loc.x + 16 + i as i32 * 52, r.loc.y + 84, 44, 30)))
+}
+/// The media command under `p` when `r` is the media widget's panel.
+pub fn media_button(r: Rect, p: smithay::utils::Point<f64, Logical>) -> Option<crate::media::Command> {
+    media_buttons(r).find(|(_, b)| b.to_f64().contains(p)).map(|(c, _)| c)
 }
 impl Widgets {
     pub fn configure(&mut self, names: &[String]) {
         self.enabled = names
             .iter()
-            .filter(|name| matches!(name.as_str(), "clock" | "system"))
-            .take(2)
+            .filter(|name| matches!(name.as_str(), "clock" | "system" | "media"))
+            .take(3)
             .fold(Vec::new(), |mut out, name| {
                 if !out.contains(name) {
                     out.push(name.clone());
@@ -143,6 +160,12 @@ impl Widgets {
             self.revision = self.revision.wrapping_add(1);
         }
     }
+    pub fn update_player(&mut self, player: Option<&crate::media::Player>) {
+        if self.player.as_ref() != player {
+            self.player = player.cloned();
+            self.revision = self.revision.wrapping_add(1);
+        }
+    }
     pub fn receive(&mut self, s: Sample) {
         self.sampling = false;
         let cpu = self
@@ -165,7 +188,7 @@ impl Widgets {
     ) -> impl Iterator<Item = (&'a str, Rect)> + 'a {
         let mut y = 16;
         self.enabled.iter().map(move |name| {
-            let height = if name == "clock" { 132 } else { 170 };
+            let height = match name.as_str() { "clock" => 132, "media" => 128, _ => 170 };
             let p = positions.get(name).copied().unwrap_or([size.w - 296, y]);
             let r = rect(
                 p[0].clamp(0, (size.w - 280).max(0)),
@@ -183,6 +206,7 @@ impl Widgets {
         positions: &BTreeMap<String, [i32; 2]>,
         size: Size<i32, Logical>,
         accent: [f32; 4],
+        theme: &str,
     ) {
         for (name, r) in self.layouts(positions, size) {
             layer.panel(r, 14.0, [0.065, 0.075, 0.10, 0.90], 1.0);
@@ -201,6 +225,20 @@ impl Widgets {
                     1,
                     false,
                 );
+            } else if name == "media" {
+                let Some(player) = self.player.as_ref() else {
+                    layer.label("Nothing playing", rect(r.loc.x + 16, r.loc.y + 12, 248, 22), 14.0, 1, false);
+                    continue;
+                };
+                layer.label(player.title(), rect(r.loc.x + 16, r.loc.y + 12, 248, 24), 15.0, 1, false);
+                let artist = player.artist();
+                let artist = if artist.is_empty() { player.identity.clone() } else { artist };
+                layer.label(&artist, rect(r.loc.x + 16, r.loc.y + 44, 248, 20), 12.0, 1, false);
+                for (command, b) in media_buttons(r) {
+                    let alpha = if player.allows(command) { 0.16 } else { 0.05 };
+                    layer.panel(b, 9.0, [1.0, 1.0, 1.0, alpha], 0.0);
+                    layer.tinted_icon(crate::media::ui::icon(player, command), theme, rect(b.loc.x + 14, b.loc.y + 7, 16, 16), crate::media::ui::ICON_COLOR);
+                }
             } else {
                 layer.label(
                     "System",
@@ -301,6 +339,8 @@ impl Gavno {
             return;
         }
         w.update_status(&self.media.status);
+        let player = self.now_playing.borrow().snapshot.player.clone();
+        w.update_player(player.as_ref());
         if !w.refreshing {
             w.update_clock();
             w.refreshing = true;
@@ -361,6 +401,23 @@ impl Gavno {
 mod tests {
     use super::*;
     #[test]
+    fn media_widget_tracks_the_player_and_maps_buttons() {
+        let mut w = Widgets::default();
+        w.configure(&["media".into(), "clock".into(), "media".into(), "weather".into()]);
+        assert_eq!(w.enabled, ["media", "clock"]);
+        let before = w.revision;
+        let player = crate::media::Player { name: "p".into(), can_next: true, ..Default::default() };
+        w.update_player(Some(&player));
+        assert!(w.revision > before);
+        let after = w.revision;
+        w.update_player(Some(&player));
+        assert_eq!(w.revision, after, "an unchanged player must not re-prepare the layer");
+        let r = rect(100, 50, 280, 128);
+        assert_eq!(media_button(r, (100.0 + 16.0 + 52.0 * 2.0 + 5.0, 50.0 + 90.0).into()), Some(crate::media::Command::Next));
+        assert_eq!(media_button(r, (100.0 + 16.0 + 5.0, 50.0 + 90.0).into()), Some(crate::media::Command::Previous));
+        assert_eq!(media_button(r, (110.0, 60.0).into()), None);
+    }
+    #[test]
     fn cpu_delta_ignores_guest_and_handles_resets() {
         let a = parse_cpu("cpu 100 0 50 800 50 0 0 0 10 0\ncpu0 1 0 0 2").unwrap();
         let b = parse_cpu("cpu 120 0 60 860 60 0 0 0 90 0").unwrap();
@@ -406,7 +463,7 @@ mod tests {
         h.gv.reconcile_classic_widgets();
         assert!(h.gv.classic.desktop.widgets.clock_timer.is_some());
         assert!(h.gv.classic.desktop.widgets.system_timer.is_some());
-        assert_eq!(h.gv.classic.desktop.widgets.enabled, ["clock", "system"]);
+        assert_eq!(h.gv.classic.desktop.widgets.enabled, ["clock", "system", "media"]);
         let w = h.window();
         h.gv.map_new_window(w.clone());
         h.gv.set_window_mode(&w, crate::window_mode::WindowMode::Maximized, None);

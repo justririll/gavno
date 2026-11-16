@@ -11,13 +11,15 @@ uniform sampler2D tex;
 #endif
 uniform float alpha;
 uniform float white_nits;
+uniform float extended_input;
 varying vec2 v_coords;
 #ifdef DEBUG_FLAGS
 uniform float tint;
 #endif
 // COLOR_CONSTANTS
 vec3 srgb_linear(vec3 c) {
-    return mix(c / srgb_slope, pow((c + srgb_offset) / srgb_scale, vec3(srgb_exponent)), step(vec3(srgb_break), c));
+    vec3 a = abs(c);
+    return sign(c) * mix(a / srgb_slope, pow((a + srgb_offset) / srgb_scale, vec3(srgb_exponent)), step(vec3(srgb_break), a));
 }
 vec3 pq(vec3 nits) {
     vec3 p = pow(clamp(nits / 10000.0, 0.0, 1.0), vec3(pq_m1));
@@ -26,7 +28,8 @@ vec3 pq(vec3 nits) {
 }
 void main() {
     // SDR composition is opaque, including the NO_ALPHA shader variant.
-    vec3 color = clamp(texture2D(tex, v_coords).rgb, 0.0, 1.0);
+    vec3 color = texture2D(tex, v_coords).rgb;
+    if (extended_input < 0.5) color = clamp(color, 0.0, 1.0);
 #ifdef DEBUG_FLAGS
     if (tint == 1.0) color = mix(color, vec3(0.0, 1.0, 0.0), 0.2);
 #endif

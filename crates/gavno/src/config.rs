@@ -3,12 +3,11 @@
 //! Values come from, in increasing priority: built-in defaults, a TOML file
 //! (`$GAVNO_CONFIG` if set, else `$XDG_CONFIG_HOME/gavno/config.toml`, else
 //! `$HOME/.config/gavno/config.toml`) and the `GAVNO_*` environment variables.
-//! Live reload of the file is planned but not implemented yet; keep the field
-//! names stable.
+//! Startup tolerates invalid files; explicit reload validates before mutation.
 
-use std::{ffi::OsString, path::PathBuf};
+use std::{collections::BTreeMap, ffi::OsString, path::PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use smithay::input::keyboard::ModifiersState;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -24,10 +23,14 @@ pub struct Config {
     pub file_manager: String,
     /// Session polkit agent started with the session; empty disables it.
     pub polkit_agent: String,
+    /// Commands started with a TTY session (when their program is installed),
+    /// by default resident servers that make apps open instantly.
+    pub autostart: Vec<String>,
     /// Output scale for built-in panels (eDP). External outputs use 1.0.
     pub internal_scale: f64,
     pub output_mode: Option<crate::hdr::mode::ModeRequest>,
     pub output_hdr: bool,
+    pub outputs: BTreeMap<String, OutputConfig>,
     pub sdr_white_nits: f32,
     pub repeat_delay: i32,
     pub repeat_rate: i32,
@@ -45,7 +48,19 @@ pub struct Config {
     pub notifications: NotificationsConfig,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+/// Connector overrides; absent values inherit the global output settings.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct OutputConfig {
+    pub mode: Option<String>,
+    pub scale: Option<f64>,
+    pub hdr: Option<bool>,
+    pub enabled: Option<bool>,
+    #[serde(flatten)]
+    unknown: toml::Table,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct LockConfig {
     pub after_idle_secs: u32,
@@ -56,7 +71,7 @@ impl Default for LockConfig {
     fn default() -> Self { Self { after_idle_secs: 300, unknown: Default::default() } }
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct DockConfig {
     pub enabled: bool,
@@ -70,7 +85,7 @@ pub struct DockConfig {
 impl Default for DockConfig {
     fn default() -> Self { Self { enabled: true, pinned: vec!["foot".into(), "firefox".into()], magnify: true, autohide: false, icon_theme: "Adwaita".into(), unknown: Default::default() } }
 }
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct BarConfig {
     pub enabled: bool,
@@ -81,7 +96,7 @@ impl Default for BarConfig {
     fn default() -> Self { Self { enabled: true, unknown: Default::default() } }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct TilingConfig {
     pub default: bool,
@@ -89,7 +104,7 @@ pub struct TilingConfig {
     unknown: toml::Table,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ModKey {
     Super,
@@ -105,6 +120,13 @@ impl ModKey {
     }
 }
 
+/// A foot server makes `footclient` windows open in a few milliseconds, and
+/// all terminal windows share one process and glyph cache, which also saves
+/// memory. Heavier resident helpers (`gavno-files --daemon`) are opt-in.
+pub fn default_autostart() -> Vec<String> {
+    vec!["foot --server".into()]
+}
+
 #[derive(Default, Deserialize)]
 #[serde(default)]
 struct FileConfig {
@@ -113,8 +135,10 @@ struct FileConfig {
     launcher: Option<String>,
     file_manager: Option<String>,
     polkit_agent: Option<String>,
+    autostart: Option<Vec<String>>,
     gap: Option<i64>,
     output: Output,
+    outputs: BTreeMap<String, OutputConfig>,
     keyboard: Keyboard,
     modules: ModulesConfig,
     classic: crate::classic::ClassicConfig,
@@ -151,24 +175,69 @@ struct Keyboard {
 }
 
 impl Config {
+    pub fn output_settings(&self, name: &str, internal: bool) -> (Option<crate::hdr::mode::ModeRequest>, f64, bool, bool) {
+        let output = self.outputs.get(name);
+        (output.and_then(|o| o.mode.as_ref()).and_then(|m| m.parse().ok()).or(self.output_mode),
+         output.and_then(|o| o.scale).unwrap_or(if internal { self.internal_scale } else { 1.0 }),
+         output.and_then(|o| o.hdr).unwrap_or(self.output_hdr),
+         output.and_then(|o| o.enabled).unwrap_or(true))
+    }
+
     pub fn load(nested: bool) -> Self {
-        let path = config_path(|name| std::env::var_os(name));
-        let text = path.as_ref().and_then(|path| match std::fs::read_to_string(path) {
-            Ok(text) => Some(text),
-            Err(error) => {
-                if error.kind() == std::io::ErrorKind::NotFound {
-                    tracing::debug!(path = %path.display(), "no config file");
-                } else {
-                    tracing::warn!(path = %path.display(), %error, "cannot read config file");
+        Self::load_checked(nested).unwrap_or_else(|error| {
+            tracing::warn!(%error, "cannot load configuration; using defaults and environment");
+            Self::build(nested, None, |name| std::env::var(name).ok()).0
+        })
+    }
+
+    /// Called by a one-shot IPC worker, never by the compositor event loop.
+    pub(crate) fn load_checked(nested: bool) -> Result<Self, String> {
+        let path = config_path(|name|std::env::var_os(name));
+        let text = if let Some(path) = path {
+            use std::io::Read;
+            match std::fs::File::open(&path) {
+                Ok(file) => {
+                    let mut text = String::new();
+                    file.take(1024 * 1024 + 1).read_to_string(&mut text).map_err(|e| format!("{}: {e}", path.display()))?;
+                    if text.len() > 1024 * 1024 { return Err("config file exceeds 1 MiB".into()); }
+                    text
                 }
-                None
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+                Err(e) => return Err(format!("{}: {e}", path.display())),
             }
-        });
-        let (config, warnings) = Self::build(nested, text.as_deref(), |name| std::env::var(name).ok());
-        for warning in warnings {
-            tracing::warn!(?path, "{warning}");
+        } else { String::new() };
+        Self::parse_checked(nested, &text, |name| std::env::var(name).ok())
+    }
+
+    pub(crate) fn parse_checked(nested: bool, text: &str, env: impl Fn(&str) -> Option<String>) -> Result<Self, String> {
+        let file: FileConfig = toml::from_str(text).map_err(|error: toml::de::Error| {
+            let offset = error.span().map_or(0, |span| span.start).min(text.len());
+            let prefix = &text.as_bytes()[..offset];
+            let line = prefix.iter().filter(|b| **b == b'\n').count() + 1;
+            let column = prefix.iter().rposition(|b| *b == b'\n').map_or(offset + 1, |i| offset - i);
+            format!("{error}\nline {line}, column {column}")
+        })?;
+        if file.output.internal_scale.is_some_and(|v| !v.is_finite()) || file.output.sdr_white_nits.is_some_and(|v| !v.is_finite()) {
+            let key=if file.output.internal_scale.is_some_and(|v|!v.is_finite()) {"internal_scale"} else {"sdr_white_nits"};
+            let line=text.lines().position(|line|line.split_once('=').is_some_and(|(name,_)|name.trim()==key)).map_or(1,|i|i+1);
+            return Err(format!("output.{key} must be finite (line {line}, column 1)"));
         }
-        config
+        let (config, warnings) = Self::build(nested, Some(text), env);
+        for warning in warnings { tracing::warn!(%warning, "configuration warning"); }
+        Ok(config)
+    }
+
+    /// Effective configuration in TOML path shape, used only on explicit
+    /// schema/reload requests and by tests, never by the render/idle paths.
+    pub(crate) fn values(&self) -> serde_json::Value {
+        use serde_json::json;
+        let mode = self.output_mode.map(|m| format!("{}x{}{}", m.width, m.height,
+            m.refresh.map(|r| format!("@{}", f64::from(r)/1000.0)).unwrap_or_default()));
+        json!({"mod_key":self.mod_key, "terminal":self.terminal, "launcher":self.launcher,
+            "file_manager":self.file_manager,"polkit_agent":self.polkit_agent,"autostart":self.autostart,"gap":self.gap,
+            "output":{"internal_scale":self.internal_scale,"mode":mode,"hdr":self.output_hdr,"sdr_white_nits":self.sdr_white_nits},
+            "keyboard":{"layout":self.xkb_layout,"variant":self.xkb_variant,"options":self.xkb_options,"repeat_delay":self.repeat_delay,"repeat_rate":self.repeat_rate},
+            "modules":self.modules,"classic":self.classic,"dock":self.dock,"bar":self.bar,"tiling":self.tiling,"lock":self.lock,"notifications":self.notifications,"outputs":self.outputs})
     }
 
     /// Pure merge: defaults < file < environment. Empty environment values are unset.
@@ -188,6 +257,19 @@ impl Config {
             [("", &file.unknown), ("output.", &file.output.unknown), ("keyboard.", &file.keyboard.unknown), ("classic.", &file.classic.unknown), ("dock.", &file.dock.unknown), ("bar.", &file.bar.unknown), ("tiling.", &file.tiling.unknown), ("notifications.", &file.notifications.unknown), ("lock.", &file.lock.unknown), ("modules.", &file.modules.unknown)]
         {
             unknown.extend(extra.keys().map(|key| format!("{prefix}{key}")));
+        }
+        for (name, output) in &file.outputs {
+            unknown.extend(output.unknown.keys().map(|key| format!("outputs.{name}.{key}")));
+        }
+        for (name, output) in &mut file.outputs {
+            if output.scale.is_some_and(|s| !s.is_finite() || !(0.5..=3.0).contains(&s)) {
+                warnings.push(format!("invalid outputs.{name}.scale; using global fallback"));
+                output.scale = None;
+            }
+            if output.mode.as_ref().is_some_and(|m| m.parse::<crate::hdr::mode::ModeRequest>().is_err()) {
+                warnings.push(format!("invalid outputs.{name}.mode; using global fallback"));
+                output.mode = None;
+            }
         }
         if !unknown.is_empty() {
             warnings.push(format!("unknown config keys ignored: {}", unknown.join(", ")));
@@ -248,9 +330,11 @@ impl Config {
                     .polkit_agent
                     .map(|s| s.trim().to_owned())
                     .unwrap_or_else(|| "gavno-polkit-agent".into()),
+                autostart: file.autostart.unwrap_or_else(default_autostart),
                 internal_scale: scale_clamped,
                 output_mode,
                 output_hdr,
+                outputs: file.outputs,
                 sdr_white_nits,
                 repeat_delay: file.keyboard.repeat_delay.unwrap_or(300).clamp(0, 5000),
                 repeat_rate: file.keyboard.repeat_rate.unwrap_or(30).clamp(0, 100),
@@ -323,9 +407,11 @@ options = "caps:escape"
             launcher: None,
             file_manager: "gavno-files".into(),
             polkit_agent: "gavno-polkit-agent".into(),
+            autostart: default_autostart(),
             internal_scale: 1.75,
             output_mode: None,
             output_hdr: false,
+            outputs: Default::default(),
             sdr_white_nits: 203.0,
             repeat_delay: 300,
             repeat_rate: 30,
@@ -363,9 +449,11 @@ options = "caps:escape"
             launcher: Some("rofi".into()),
             file_manager: "gavno-files".into(),
             polkit_agent: "gavno-polkit-agent".into(),
+            autostart: default_autostart(),
             internal_scale: 2.0,
             output_mode: None,
             output_hdr: false,
+            outputs: Default::default(),
             sdr_white_nits: 203.0,
             repeat_delay: 300,
             repeat_rate: 30,
@@ -539,10 +627,11 @@ options = "caps:escape"
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct ModulesConfig {
     pub classic: bool,
+    pub color_management: bool,
     pub dock: bool,
     pub bar: bool,
     pub overview: bool,
@@ -558,12 +647,13 @@ pub struct ModulesConfig {
     pub screencopy: bool,
     pub launcher: bool,
     pub notifications: bool,
+    pub media: bool,
     #[serde(flatten)]
     unknown: toml::Table,
 }
 impl Default for ModulesConfig {
     fn default() -> Self {
-        Self { classic: true, dock: true, bar: true, overview: true, tiling: true, snap: true, switcher: true, gestures: true, window_gestures: true, resize_mode: true, animations: true, decorations: true, ipc: true, screencopy: true, launcher: true, notifications: true, unknown: Default::default() }
+        Self { classic: true, dock: true, bar: true, overview: true, tiling: true, snap: true, switcher: true, gestures: true, window_gestures: true, resize_mode: true, animations: true, decorations: true, ipc: true, screencopy: true, launcher: true, notifications: true, media: true, color_management: true, unknown: Default::default() }
     }
 }
 
@@ -589,7 +679,7 @@ mod module_tests {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct NotificationsConfig {
     pub timeout_ms: u64,
@@ -615,5 +705,44 @@ mod notification_tests {
         assert_eq!(config.notifications.max_visible, 1);
         assert_eq!(config.notifications.timeout_ms, 5000);
         assert_eq!(warnings.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod output_settings_tests {
+    use super::*;
+    #[test]
+    fn connector_overrides_and_global_fallbacks() {
+        let (config, warnings) = Config::build(false, Some(r#"
+[output]
+internal_scale = 2.0
+mode = "2880x1620@120"
+hdr = true
+[outputs."eDP-1"]
+mode = "1920x1080@59.94"
+scale = 1.75
+hdr = false
+enabled = false
+[outputs."DP-2"]
+scale = 1.25
+"#), |_| None);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let (mode, scale, hdr, enabled) = config.output_settings("eDP-1", true);
+        assert_eq!(mode.unwrap().refresh, Some(59940));
+        assert_eq!((scale, hdr, enabled), (1.75, false, false));
+        assert_eq!(config.output_settings("DP-2", false), (config.output_mode, 1.25, true, true));
+        assert_eq!(config.output_settings("DP-3", false), (config.output_mode, 1.0, true, true));
+        assert_eq!(config.output_settings("eDP-2", true), (config.output_mode, 2.0, true, true));
+    }
+    #[test]
+    fn invalid_connector_values_use_fallbacks() {
+        let (config, warnings) = Config::build(false, Some("[outputs.'eDP-1']\nmode = 'bad'\nscale = nan\nunknown = 1"), |_| None);
+        assert_eq!(warnings.len(), 3);
+        assert_eq!(config.output_settings("eDP-1", true), (None, 1.75, false, true));
+        for scale in [0.49, 3.01, f64::INFINITY] {
+            let (config, warnings) = Config::build(false, Some(&format!("[outputs.'DP-1']\nscale = {scale}")), |_| None);
+            assert!(!warnings.is_empty());
+            assert_eq!(config.output_settings("DP-1", false).1, 1.0);
+        }
     }
 }
