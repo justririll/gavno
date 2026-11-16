@@ -192,6 +192,12 @@ fn relevant(message: &zbus::Message) -> bool {
     keys.iter()
         .any(|k| changed.contains_key(*k) || invalidated.iter().any(|v| v == k))
 }
+/// Called once, lazily when MPRIS has no active player. This never activates a name.
+pub(super) fn discover_music(bus: &zbus::blocking::fdo::DBusProxy<'_>) -> bool {
+    bus.list_activatable_names().map(|names| names.iter().any(|n| n.as_str() == "org.gavno.Music")).unwrap_or(false)
+        || bus.list_names().map(|names| names.iter().any(|n| n.as_str() == "org.gavno.Music")).unwrap_or(false)
+}
+
 fn run(
     connection: Connection,
     events: channel::Sender<Snapshot>,
@@ -215,6 +221,8 @@ fn run(
         }
     }
     let mut previous = None;
+    let mut music_available = None;
+    let mut previous_available = false;
     let mut icons = crate::icons::Icons::default();
     let mut entries = crate::desktop_entry::DesktopEntries::default();
     // Image keys are cached independently of changing playback/capabilities.
@@ -228,7 +236,11 @@ fn run(
             player.started = 0;
             player.updated = 0;
         }
-        if selected != previous {
+        if selected.is_none() && music_available.is_none() {
+            music_available = Some(discover_music(&bus));
+        }
+        let available = music_available.unwrap_or(false);
+        if selected != previous || available != previous_available {
             let key = selected
                 .as_ref()
                 .map(|p| (p.metadata.art_url.clone(), p.desktop.clone()))
@@ -248,12 +260,14 @@ fn run(
                 .send(Snapshot {
                     player: selected.clone(),
                     image: image.clone(),
+                    music_available: available,
                 })
                 .is_err()
             {
                 break;
             }
             previous = selected;
+            previous_available = available;
         }
         match rx.recv() {
             Ok(Request::Command(command)) => {

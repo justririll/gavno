@@ -268,6 +268,7 @@ impl Gavno {
         self.refresh_shell();
         self.refresh_classic_desktop();
         self.refresh_notifications();
+        self.refresh_music_gate();
         self.refresh_media();
         self.finish_dock_launches();
         self.refresh_idle();

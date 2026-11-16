@@ -337,3 +337,10 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 }
+
+/// Music covers are decoded only on the music worker, then uploaded by the renderer.
+pub(crate) fn music_cover(path: &str) -> Option<MemoryRenderBuffer> {
+    let path = Path::new(path);
+    if !path.is_absolute() || path.extension()?.to_str()? != "png" || std::fs::metadata(path).ok()?.len() > 16 * 1024 * 1024 { return None; }
+    raster(path, 96, false)
+}

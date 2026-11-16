@@ -1,5 +1,6 @@
 //! Event-driven MPRIS state shared by the bar and the built-in lock UI.
 pub(crate) mod mpris;
+pub(crate) mod music;
 pub(crate) mod ui;
 
 use crate::{module::Feature, Gavno};
@@ -92,9 +93,11 @@ pub fn active_player(players: &[Player]) -> Option<&Player> {
 pub struct Snapshot {
     pub player: Option<Player>,
     pub image: Option<MemoryRenderBuffer>,
+    pub music_available: bool,
 }
 #[derive(Default)]
 pub struct Media {
+    pub music: music::Panel,
     pub snapshot: Snapshot,
     pub worker: Option<mpsc::Sender<mpris::Request>>,
     started: bool,
@@ -157,6 +160,7 @@ impl Gavno {
         });
     }
     pub(crate) fn reset_media(&mut self) {
+        self.close_music();
         self.now_playing.borrow_mut().snapshot = Snapshot::default();
         self.topbar.clear_media_hits();
         self.lock.clear_media();

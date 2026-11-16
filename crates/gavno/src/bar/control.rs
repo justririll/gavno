@@ -393,7 +393,7 @@ mod tests {
                 }), ..Default::default()
             }).unwrap();
             h.event_loop.dispatch(Duration::ZERO, &mut h.gv).unwrap();
-            let (layout, snapshot) = super::super::media_layout(&h.gv.topbar.now_playing, width, 55, true, &h.gv.features);
+            let (layout, snapshot) = super::super::media_layout(&h.gv.topbar.now_playing, width, 55, true, true, &h.gv.features);
             assert_eq!(snapshot.player.as_ref().unwrap().label(), "Track — Artist");
             let area = layout.media.expect("player update exposes capsule");
             let mut canvas = Canvas::default();

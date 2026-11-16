@@ -307,6 +307,10 @@ fn feature_output(h: &mut Harness) -> Output {
 }
 
 fn crash_feature(h: &mut Harness, id: Feature, output: &Output) {
+    if id == Feature::Media {
+        h.gv.now_playing.borrow_mut().music.bus_address = Some("unix:path=/nonexistent/music-recovery-test".into());
+        h.gv.toggle_music(output);
+    }
     h.gv.features.inject_panic(id);
     match id {
         Feature::Tiling => h.gv.reflow_tiling(false),
@@ -333,6 +337,7 @@ fn crash_feature(h: &mut Harness, id: Feature, output: &Output) {
     h.event_loop.dispatch(Duration::ZERO, &mut h.gv).unwrap();
     assert!(matches!(h.gv.features.state(id), crate::module::FeatureState::Crashed { .. }), "{id:?}");
     assert!(!h.gv.features.on(id));
+    if id == Feature::Media { assert!(h.gv.now_playing.borrow().music.session.is_none()); }
     assert!(h.gv.features.reset_count[id as usize] > 0, "{id:?}");
     assert!(h.gv.pointer_buttons.is_empty());
     assert!(!h.gv.seat.get_pointer().unwrap().is_grabbed());

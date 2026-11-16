@@ -117,6 +117,22 @@ impl Gavno {
                     gv.classic.switcher_win = false;
                 }
                 let sym = handle.modified_sym().raw();
+                // Modal music input precedes shell shortcuts and modifier-tap binds.
+                if gv.music_open() && !gv.polkit_visible() && !gv.protocols.locks.locked
+                    && gv.greeter.is_none() && !(mods.ctrl && mods.alt)
+                    && !(keysyms::KEY_XF86Switch_VT_1..=keysyms::KEY_XF86Switch_VT_12).contains(&sym) {
+                    if key_state == KeyState::Pressed {
+                        gv.suppressed_keys.push(raw_code);
+                        let sym = handle.modified_sym();
+                        gv.music_key(sym, sym.key_char(), mods);
+                    } else {
+                        // Balance a press delivered before the panel opened.
+                        let captured = gv.suppressed_keys.contains(&raw_code);
+                        gv.suppressed_keys.retain(|k| *k != raw_code);
+                        return if captured { FilterResult::Intercept(None) } else { FilterResult::Forward };
+                    }
+                    return FilterResult::Intercept(None);
+                }
                 if gv.bar_key(sym, raw_code, key_state == KeyState::Pressed) {
                     if key_state == KeyState::Pressed && !gv.suppressed_keys.contains(&raw_code) { gv.suppressed_keys.push(raw_code); }
                     if key_state == KeyState::Released { gv.suppressed_keys.retain(|k| *k != raw_code); }
@@ -447,6 +463,12 @@ impl Gavno {
             self.lock_pointer(false);
             return;
         }
+        if self.music_motion(pos) {
+            pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time: event.time_msec() });
+            pointer.frame(self);
+            self.queue_redraw_all();
+            return;
+        }
         self.pressure_motion(current,proposed,pos);
         let allowed = self.pointer_motion_allowed(pos);
         // Relative input belongs to the old focus and remains live while locked.
@@ -487,6 +509,13 @@ impl Gavno {
             pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time: event.time_msec() });
             pointer.frame(self);
             self.lock_pointer(false);
+            return;
+        }
+        if self.music_motion(pos) {
+            let pointer = self.seat.get_pointer().unwrap();
+            pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time: event.time_msec() });
+            pointer.frame(self);
+            self.queue_redraw_all();
             return;
         }
         if !self.pointer_motion_allowed(pos) {
@@ -574,9 +603,14 @@ impl Gavno {
             // Shell presses (bar sliders, dock) are suppressed too; their
             // release still has to end the bar drag.
             self.bar_release(button);
+            self.music_release();
             return;
         }
         if self.polkit_button(pointer.current_location(), button_state == ButtonState::Pressed) {
+            if button_state == ButtonState::Pressed { self.suppressed_buttons.push(button); }
+            return;
+        }
+        if self.music_button(pointer.current_location(), button_state == ButtonState::Pressed) {
             if button_state == ButtonState::Pressed { self.suppressed_buttons.push(button); }
             return;
         }
@@ -738,6 +772,8 @@ impl Gavno {
             .amount(Axis::Vertical)
             .unwrap_or_else(|| event.amount_v120(Axis::Vertical).unwrap_or(0.0) * 15.0 / 120.);
 
+        if self.polkit_visible() { return; }
+        if self.greeter.is_none() && !self.protocols.locks.locked && self.music_axis(vertical) { return; }
         if self.greeter.is_none() && !self.protocols.locks.locked && source==AxisSource::Finger {
             if self.precision_scroll((-horizontal,-vertical).into(),[event.amount(Axis::Horizontal),event.amount(Axis::Vertical)]) {return;}
         }

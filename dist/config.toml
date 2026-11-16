@@ -68,3 +68,9 @@
 
 # [lock]
 # after_idle_secs = 300 # 0 disables automatic locking; idle inhibitors are respected.
+
+# Built-in Spotify popover (requires the org.gavno.Music daemon).
+# Click the media title/artist, or the music icon when no player is active.
+# Disable to retain the old media capsule click behavior.
+# [media]
+# music_panel = true

@@ -130,6 +130,7 @@ impl SessionLockHandler for Gavno {
 }
 impl Gavno {
     pub(crate) fn secure_lock_input(&mut self) {
+        self.close_music();
         let serial = SERIAL_COUNTER.next_serial();
         if let Some(keyboard) = self.seat.get_keyboard() {
             keyboard.unset_grab(self);

@@ -371,6 +371,7 @@ pub enum PowerAction {
 pub enum BarAction {
     Tiling,
     Media(crate::media::Command),
+    MusicPanel,
     Workspace(usize),
     Layout,
     PowerMenu,
@@ -402,6 +403,7 @@ struct BarView {
     popover: Option<PopoverLayout>,
 }
 pub struct TopBar {
+    music_panel: bool,
     pub shell_progress: f64,
     pub shell_height: i32,
     pub notifications: crate::notify::Shared,
@@ -456,6 +458,7 @@ impl Default for TopBar {
             icon_theme: crate::config::DockConfig::default().icon_theme,
             menu: None,
             popover: Popover::Quick,
+            music_panel: true,
             popover_output: None,
             opening: Spring::new(0.0, SpringParams::SNAPPY),
             month: (today.year, today.month),
@@ -470,7 +473,7 @@ impl TopBar {
     pub fn status(&self) -> &status::Snapshot { &self.status }
     pub(crate) fn clear_media_hits(&mut self) {
         for view in &mut self.views {
-            view.hits.retain(|(_, action)| !matches!(action, BarAction::Media(_)));
+            view.hits.retain(|(_, action)| !matches!(action, BarAction::Media(_) | BarAction::MusicPanel));
         }
     }
     pub fn accent(&self) -> [f32; 4] {
@@ -552,7 +555,7 @@ impl TopBar {
         c.alpha = (1.0 - self.shell_progress) as f32;
         v.hits.clear();
         let count = owner.map(|o| o.list.items.len()).unwrap_or(1);
-        let (l, media) = media_layout(&self.now_playing, width, count as i32 * 12 + 31, self.multiple_layouts, features);
+        let (l, media) = media_layout(&self.now_playing, width, count as i32 * 12 + 31, self.multiple_layouts, self.music_panel, features);
         if self.shell_progress < 0.999 {
         c.rect(rect(0, 0, width, PANEL), 0.0, GLASS, 0.0, LINE);
         c.rect(
@@ -702,7 +705,15 @@ impl TopBar {
                 capsule(c, area, v.hover == Some(action.clone()));
                 c.colored_icon(renderer, &mut self.icons, &[crate::media::ui::icon(player, crate::media::Command::PlayPause)], &self.icon_theme, rect(area.loc.x + 9, 8, 14, 14), Some(crate::media::ui::ICON_COLOR));
                 c.label(renderer, &player.label(), area.loc.x + 30, 7, area.size.w - 38, 12.0);
-                push_hit(c, &mut v.hits, area, action);
+                if self.music_panel {
+                    push_hit(c, &mut v.hits, rect(area.loc.x, area.loc.y, 28, area.size.h), action);
+                    push_hit(c, &mut v.hits, rect(area.loc.x + 28, area.loc.y, area.size.w - 28, area.size.h), BarAction::MusicPanel);
+                } else { push_hit(c, &mut v.hits, area, action); }
+            } else if let Some(area) = l.media.filter(|_| self.music_panel && media.music_available) {
+                let area = rect(area.loc.x, area.loc.y, 28, area.size.h);
+                capsule(c, area, v.hover == Some(BarAction::MusicPanel));
+                c.colored_icon(renderer, &mut self.icons, &["audio-x-generic-symbolic"], &self.icon_theme, rect(area.loc.x + 6, 8, 16, 16), Some(crate::media::ui::ICON_COLOR));
+                push_hit(c, &mut v.hits, area, BarAction::MusicPanel);
             }
         });
         if self.shell_progress >= 0.999 { v.hits.clear(); }
@@ -765,11 +776,15 @@ impl TopBar {
     }
 }
 fn media_layout(
-    media: &crate::media::Shared, width: i32, workspace_width: i32, layouts: bool,
+    media: &crate::media::Shared, width: i32, workspace_width: i32, layouts: bool, music_panel: bool,
     features: &crate::module::Features,
 ) -> (Layout, crate::media::Snapshot) {
     let snapshot = features.read(crate::module::Feature::Media, Default::default(), || media.borrow().snapshot.clone());
-    let layout = Layout::new(width, workspace_width, layouts).with_media(snapshot.player.is_some());
+    let mut layout = Layout::new(width, workspace_width, layouts).with_media(snapshot.player.is_some());
+    if snapshot.player.is_none() && music_panel && snapshot.music_available {
+        let x = layout.clock.loc.x + layout.clock.size.w + 12;
+        if layout.status.loc.x - x >= 40 { layout.media = Some(rect(x, 4, 28, 24)); }
+    }
     (layout, snapshot)
 }
 
@@ -792,7 +807,7 @@ fn capsule(c: &mut Canvas, r: Rect, hover: bool) {
 }
 fn item_action(item: Item) -> BarAction {
     match item {
-        Item::MediaInfo => BarAction::Consume,
+        Item::MediaInfo => BarAction::MusicPanel,
         Item::MediaPrevious => BarAction::Media(crate::media::Command::Previous),
         Item::MediaPlayPause => BarAction::Media(crate::media::Command::PlayPause),
         Item::MediaNext => BarAction::Media(crate::media::Command::Next),
@@ -1156,6 +1171,7 @@ impl Gavno {
         self.topbar.title = title;
         self.topbar.layout = layout;
         self.topbar.enabled = self.config.bar.enabled;
+        self.topbar.music_panel = self.config.media.music_panel;
         self.topbar.icon_theme = self.config.dock.icon_theme.clone();
         self.topbar.views.retain(|v| outputs.contains(&v.output));
         let visible = outputs.iter().any(|o| self.shell_visible(o));
@@ -1221,6 +1237,7 @@ impl Gavno {
         match action {
             BarAction::Tiling => self.toggle_workspace_tiling(output),
             BarAction::Media(command) => self.media_command(command),
+            BarAction::MusicPanel => self.toggle_music(output),
             BarAction::Workspace(i) => {
                 self.switch_workspace(output, i);
             }
@@ -1418,5 +1435,38 @@ fn short_layout(layout: &str) -> String {
         "us" | "gb" => "EN".into(),
         "ru" => "RU".into(),
         other => other.chars().take(2).collect::<String>().to_uppercase(),
+    }
+}
+
+#[cfg(test)]
+mod music_panel_tests {
+    use super::*;
+    #[test]
+    fn installed_daemon_icon_and_media_title_open_panel_with_legacy_opt_out() {
+        use smithay::backend::egl::{native::EGLSurfacelessDisplay, EGLContext, EGLDisplay};
+        let display = unsafe { EGLDisplay::new(EGLSurfacelessDisplay) }.unwrap();
+        let mut renderer = unsafe { GlesRenderer::new(EGLContext::new(&display).unwrap()) }.unwrap();
+        let mut h = crate::state::tests::Harness::new();
+        let output = Output::new("music-bar".into(), smithay::output::PhysicalProperties { size: (0,0).into(), subpixel: smithay::output::Subpixel::Unknown, make: "test".into(), model: "test".into() });
+        output.change_current_state(Some(smithay::output::Mode { size: (1280,800).into(), refresh: 60000 }), None, None, None);
+        h.gv.space.map_output(&output, (0,0));
+        h.gv.now_playing.borrow_mut().music.bus_address = Some("unix:path=/nonexistent/music-test".into());
+        h.gv.media_update(crate::media::Snapshot { music_available: true, ..Default::default() });
+        let (layout, _) = media_layout(&h.gv.now_playing, 1280, 43, false, true, &h.gv.features);
+        let area = layout.media.unwrap(); assert_eq!(area.size.w, 28);
+        let _ = h.gv.topbar.elements(&mut renderer, &output, 1280, None, Duration::ZERO, true, &h.gv.features);
+        let action = h.gv.topbar.action(&output, (area.loc.x as f64 + 6.0, 15.0).into()).unwrap();
+        assert_eq!(action, BarAction::MusicPanel);
+        h.gv.bar_action(&output, action.clone()); assert!(h.gv.music_open());
+        h.gv.bar_action(&output, action); assert!(!h.gv.music_open());
+        h.gv.media_update(crate::media::Snapshot { player: Some(crate::media::Player { metadata: crate::media::Metadata { title: "Song".into(), ..Default::default() }, ..Default::default() }), ..Default::default() });
+        let _ = h.gv.topbar.elements(&mut renderer, &output, 1280, None, Duration::ZERO, true, &h.gv.features);
+        assert_eq!(h.gv.topbar.action(&output, (area.loc.x as f64 + 40.0, 15.0).into()), Some(BarAction::MusicPanel));
+        assert_eq!(h.gv.topbar.action(&output, (area.loc.x as f64 + 10.0, 15.0).into()), Some(BarAction::Media(crate::media::Command::PlayPause)));
+        h.gv.config.media.music_panel = false; h.gv.refresh_shell();
+        let _ = h.gv.topbar.elements(&mut renderer, &output, 1280, None, Duration::ZERO, true, &h.gv.features);
+        assert_eq!(h.gv.topbar.action(&output, (area.loc.x as f64 + 40.0, 15.0).into()), Some(BarAction::Media(crate::media::Command::PlayPause)));
+        h.gv.media_update(Default::default());
+        assert!(media_layout(&h.gv.now_playing, 1280, 43, false, false, &h.gv.features).0.media.is_none());
     }
 }

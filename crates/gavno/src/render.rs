@@ -307,6 +307,13 @@ fn output_elements_inner(
         }
     }
 
+    if !locks.locked && !lock.internal() {
+        elements.extend(features.call(Feature::Media, Vec::new(), || {
+            topbar.now_playing.borrow_mut().music.session.as_mut()
+                .map(|s| s.elements(renderer, output, output_geo.size, scale.x)).unwrap_or_default()
+        }));
+    }
+
     let p = features.call(Feature::Classic, 0.0, || {
         classic.advance(time);
         classic.progress.value.clamp(0.0, 1.0)

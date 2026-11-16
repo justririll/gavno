@@ -323,3 +323,43 @@ fn polkit_dialog_captures_keys_and_clicks_until_it_closes() {
     h.gv.on_keyboard::<TestBackend>(Key(38, KeyState::Released));
     assert_eq!(h.keyboard_keys(), vec![30, 30]);
 }
+
+#[test]
+fn music_panel_captures_xkb_keys_and_outside_clicks_then_releases_input() {
+    let (mut h, output) = setup();
+    let window = h.window();
+    h.gv.map_new_window(window.clone());
+    h.commit_size(&window, 400, 300);
+    h.gv.focus_window(Some(&window));
+    h.keyboard_keys();
+    h.gv.now_playing.borrow_mut().music.bus_address = Some("unix:path=/nonexistent/gavno-music-test".into());
+    h.gv.toggle_music(&output);
+    h.gv.on_keyboard::<TestBackend>(Key(38, KeyState::Pressed));
+    h.gv.on_keyboard::<TestBackend>(Key(38, KeyState::Released));
+    assert!(h.keyboard_keys().is_empty());
+    assert_eq!(h.gv.now_playing.borrow().music.session.as_ref().unwrap().query, "a");
+    // Use the real XKB layout, rather than injecting a Unicode character.
+    let keyboard = h.gv.seat.get_keyboard().unwrap();
+    keyboard.with_xkb_state(&mut h.gv, |mut ctx| ctx.cycle_next_layout());
+    h.gv.on_keyboard::<TestBackend>(Key(38, KeyState::Pressed));
+    h.gv.on_keyboard::<TestBackend>(Key(38, KeyState::Released));
+    assert_eq!(h.gv.now_playing.borrow().music.session.as_ref().unwrap().query, "aф");
+    assert!(h.keyboard_keys().is_empty());
+    // Shell shortcuts and Super taps must not escape modal capture.
+    h.gv.on_keyboard::<TestBackend>(Key(133, KeyState::Pressed));
+    h.gv.on_keyboard::<TestBackend>(Key(133, KeyState::Released));
+    assert!(!h.gv.launcher.open && !h.gv.overview.open());
+    motion(&mut h.gv, None, (5.0, 5.0).into());
+    button(&mut h.gv, BTN_LEFT, ButtonState::Pressed);
+    button(&mut h.gv, BTN_LEFT, ButtonState::Released);
+    assert!(h.pointer_buttons().is_empty());
+    assert!(!h.gv.music_open());
+    h.gv.toggle_music(&output);
+    h.gv.on_keyboard::<TestBackend>(Key(9, KeyState::Pressed));
+    h.gv.on_keyboard::<TestBackend>(Key(9, KeyState::Released));
+    assert!(!h.gv.music_open());
+    assert!(h.keyboard_keys().is_empty());
+    h.gv.on_keyboard::<TestBackend>(Key(38, KeyState::Pressed));
+    h.gv.on_keyboard::<TestBackend>(Key(38, KeyState::Released));
+    assert_eq!(h.keyboard_keys(), vec![30, 30]);
+}

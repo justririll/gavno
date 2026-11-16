@@ -172,3 +172,13 @@ Foundation, either version 3 of the License, or (at your option) any later
 version. It is distributed in the hope that it will be useful, but WITHOUT ANY
 WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
 PARTICULAR PURPOSE. See [COPYING](COPYING) for the full text.
+
+The top bar's media title opens a built-in Spotify panel when `[media] music_panel = true`
+(the default). It needs the separately installed, D-Bus activated `org.gavno.Music` daemon;
+a music icon appears when that service is available and no MPRIS player is active.
+The panel offers Home, Library and Playlists (`Ctrl+1`–`Ctrl+3`), type-to-search,
+track controls, seek and volume. Use Up/Down and Enter to select a row, Alt+Left or
+Backspace with an empty search to go back, and Escape or an outside click to close.
+Login opens the daemon's browser OAuth flow. Errors stay inside the panel.
+Closing releases the panel worker, timers, pages and cover images; the existing
+MPRIS bar and lock-screen controls continue to work independently.

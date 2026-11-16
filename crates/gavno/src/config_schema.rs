@@ -33,6 +33,7 @@ pub struct Key {
     pub live: bool,
 }
 pub const SCHEMA: &[Key] = &[
+    Key { path: "media.music_panel", kind: Kind::Bool, default: Default::Bool(true), description: "Open the built-in Spotify panel from the bar media information area.", section: "Media", live: true },
     Key {
         path: "mod_key",
         kind: Kind::Enum {

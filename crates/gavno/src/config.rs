@@ -46,6 +46,7 @@ pub struct Config {
     pub tiling: TilingConfig,
     pub lock: LockConfig,
     pub notifications: NotificationsConfig,
+    pub media: MediaConfig,
 }
 
 /// Connector overrides; absent values inherit the global output settings.
@@ -147,6 +148,7 @@ struct FileConfig {
     tiling: TilingConfig,
     lock: LockConfig,
     notifications: NotificationsConfig,
+    media: MediaConfig,
     #[serde(flatten)]
     unknown: toml::Table,
 }
@@ -237,7 +239,7 @@ impl Config {
             "file_manager":self.file_manager,"polkit_agent":self.polkit_agent,"autostart":self.autostart,"gap":self.gap,
             "output":{"internal_scale":self.internal_scale,"mode":mode,"hdr":self.output_hdr,"sdr_white_nits":self.sdr_white_nits},
             "keyboard":{"layout":self.xkb_layout,"variant":self.xkb_variant,"options":self.xkb_options,"repeat_delay":self.repeat_delay,"repeat_rate":self.repeat_rate},
-            "modules":self.modules,"classic":self.classic,"dock":self.dock,"bar":self.bar,"tiling":self.tiling,"lock":self.lock,"notifications":self.notifications,"outputs":self.outputs})
+            "media":self.media,"modules":self.modules,"classic":self.classic,"dock":self.dock,"bar":self.bar,"tiling":self.tiling,"lock":self.lock,"notifications":self.notifications,"outputs":self.outputs})
     }
 
     /// Pure merge: defaults < file < environment. Empty environment values are unset.
@@ -254,7 +256,7 @@ impl Config {
         // Capture unknown fields during deserialization, so this list cannot drift from the schema.
         let mut unknown = Vec::new();
         for (prefix, extra) in
-            [("", &file.unknown), ("output.", &file.output.unknown), ("keyboard.", &file.keyboard.unknown), ("classic.", &file.classic.unknown), ("dock.", &file.dock.unknown), ("bar.", &file.bar.unknown), ("tiling.", &file.tiling.unknown), ("notifications.", &file.notifications.unknown), ("lock.", &file.lock.unknown), ("modules.", &file.modules.unknown)]
+            [("", &file.unknown), ("output.", &file.output.unknown), ("keyboard.", &file.keyboard.unknown), ("classic.", &file.classic.unknown), ("dock.", &file.dock.unknown), ("bar.", &file.bar.unknown), ("tiling.", &file.tiling.unknown), ("media.", &file.media.unknown), ("notifications.", &file.notifications.unknown), ("lock.", &file.lock.unknown), ("modules.", &file.modules.unknown)]
         {
             unknown.extend(extra.keys().map(|key| format!("{prefix}{key}")));
         }
@@ -351,6 +353,7 @@ impl Config {
                 tiling: file.tiling,
                 lock: file.lock,
                 notifications: file.notifications,
+                media: file.media,
             },
             warnings,
         )
@@ -425,6 +428,7 @@ options = "caps:escape"
             tiling: Default::default(),
             lock: Default::default(),
             notifications: Default::default(),
+            media: Default::default(),
         };
         assert_eq!(build(false, None, &[]), (expected.clone(), vec![]));
         let example = include_str!("../../../dist/config.toml");
@@ -467,6 +471,7 @@ options = "caps:escape"
             tiling: Default::default(),
             lock: Default::default(),
             notifications: Default::default(),
+            media: Default::default(),
         };
         assert_eq!(build(false, Some(FULL), &[]), (expected, vec![]));
         let mut partial = build(false, None, &[]).0;
@@ -745,5 +750,30 @@ scale = 1.25
             assert!(!warnings.is_empty());
             assert_eq!(config.output_settings("DP-1", false).1, 1.0);
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct MediaConfig {
+    pub music_panel: bool,
+    #[serde(flatten)]
+    unknown: toml::Table,
+}
+impl Default for MediaConfig {
+    fn default() -> Self { Self { music_panel: true, unknown: Default::default() } }
+}
+
+#[cfg(test)]
+mod music_config_tests {
+    use super::*;
+    #[test]
+    fn panel_defaults_on_and_can_be_disabled_on_reload() {
+        assert!(Config::build(false, None, |_| None).0.media.music_panel);
+        let (config, warnings) = Config::build(false, Some("[media]\nmusic_panel = false"), |_| None);
+        assert!(warnings.is_empty());
+        assert!(!config.media.music_panel);
+        assert_eq!(config.values()["media"]["music_panel"], false);
+        assert_eq!(Config::build(false, Some("[media]\nwrong = true"), |_| None).1, ["unknown config keys ignored: media.wrong"]);
     }
 }

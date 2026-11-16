@@ -871,6 +871,7 @@ dependencies = [
  "async-channel",
  "bitflags 2.13.2",
  "fontdue",
+ "futures-lite",
  "libc",
  "png",
  "resvg",
