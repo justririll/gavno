@@ -130,6 +130,8 @@ struct Surface {
     white_nits: f32,
     first_frame_queued: bool,
     first_frame_presented: bool,
+    /// Consecutive failed page flips; reset by a successful one.
+    flip_failures: u32,
 }
 
 impl Drop for Gpu {
@@ -623,6 +625,7 @@ fn connector_connected(gv: &mut Gavno, connector: connector::Info, crtc: crtc::H
             white_nits,
             first_frame_queued: false,
             first_frame_presented: false,
+            flip_failures: 0,
         },
     );
     crate::perf::startup_output("udev.output.hook.begin", &name);
@@ -980,6 +983,7 @@ fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
         }
         match surface.drm_output.queue_frame(Some(feedback)) {
             Ok(()) => {
+                surface.flip_failures = 0;
                 if !surface.first_frame_queued {
                     surface.first_frame_queued = true;
                     crate::perf::startup_output("udev.first_commit.submitted", &output.name());
@@ -989,11 +993,25 @@ fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
                 gv.protocols.locks.submitted(&output);
             },
             Err(err) => {
-                warn!(?err, output = output.name(), "queue_frame failed");
-                surface.redraw = RedrawState::Idle;
+                surface.flip_failures = surface.flip_failures.saturating_add(1);
+                let failures = surface.flip_failures;
+                if failures == 1 || failures % 600 == 0 {
+                    warn!(?err, output = output.name(), failures, "queue_frame failed");
+                }
+                // Re-read the CRTC state from the kernel so the next frame is a
+                // full commit instead of another flip on top of a rejected state.
+                if failures % 3 == 0 {
+                    if let Err(error) = surface.drm_output.with_compositor(|c| c.reset_state()) {
+                        warn!(?error, output = output.name(), "DRM state reset failed");
+                    }
+                }
                 if surface.hdr.is_some() {
                     retry_sdr = change_hdr(surface, &mut gpu.renderer, &gpu.allocator, false).is_ok();
                 }
+                // Retry after one refresh period. Going idle here let every
+                // client commit (sent a frame callback below) trigger another
+                // render and failed flip at once: a busy loop that starved input.
+                surface.redraw = frame_timer(&gv.loop_handle, &output, crtc, true);
             }
         }
     } else {
@@ -1001,19 +1019,7 @@ fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
         gv.protocols.locks.presented(&output);
         // Nothing changed on screen. Pace frame callbacks with a timer of
         // one refresh period instead of spinning.
-        let refresh = output.current_mode().map(|m| m.refresh).unwrap_or(60_000).max(1);
-        let period = Duration::from_micros(1_000_000_000 / refresh as u64);
-        let token = gv
-            .loop_handle
-            .insert_source(Timer::from_duration(period), move |_, _, gv| {
-                on_timer(gv, crtc);
-                TimeoutAction::Drop
-            })
-            .ok();
-        surface.redraw = match token {
-            Some(token) => RedrawState::WaitingForTimer { token, queued: false },
-            None => RedrawState::Idle,
-        };
+        surface.redraw = frame_timer(&gv.loop_handle, &output, crtc, false);
     }
 
     let feedback = surface.feedback.clone();
@@ -1024,6 +1030,20 @@ fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
     if retry_sdr || gv.is_animating() {
         queue_redraw(gv, crtc);
     }
+}
+
+/// Arms a one-refresh-period timer; `queued` redraws when it fires.
+fn frame_timer(handle: &smithay::reexports::calloop::LoopHandle<'static, Gavno>, output: &smithay::output::Output, crtc: crtc::Handle,
+    queued: bool) -> RedrawState {
+    let refresh = output.current_mode().map(|m| m.refresh).unwrap_or(60_000).max(1);
+    let period = Duration::from_micros(1_000_000_000 / refresh as u64);
+    handle
+        .insert_source(Timer::from_duration(period), move |_, _, gv| {
+            on_timer(gv, crtc);
+            TimeoutAction::Drop
+        })
+        .ok()
+        .map_or(RedrawState::Idle, |token| RedrawState::WaitingForTimer { token, queued })
 }
 
 fn on_timer(gv: &mut Gavno, crtc: crtc::Handle) {
