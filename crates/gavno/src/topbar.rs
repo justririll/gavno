@@ -336,9 +336,19 @@ pub fn ellipsize(text: &mut TextRenderer, value: &str, style: TextStyleSpec, wid
         .take(1024)
         .collect();
     if text.measure(&value, style) > width as f32 {
-        while !value.is_empty() && text.measure(&format!("{value}…"), style) > width as f32 {
-            value.pop();
+        // Binary search the longest prefix that still fits with the ellipsis.
+        let ends: Vec<usize> = value.char_indices().map(|(i, c)| i + c.len_utf8()).collect();
+        let prefix = |k: usize| if k == 0 { 0 } else { ends[k - 1] };
+        let (mut lo, mut hi) = (0, ends.len());
+        while lo < hi {
+            let mid = (lo + hi).div_ceil(2);
+            if text.measure(&format!("{}…", &value[..prefix(mid)]), style) <= width as f32 {
+                lo = mid;
+            } else {
+                hi = mid - 1;
+            }
         }
+        value.truncate(prefix(lo));
         value.push('…');
         if text.measure(&value, style) > width as f32 {
             value.clear();

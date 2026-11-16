@@ -97,6 +97,9 @@ struct Key {
 pub struct TextRenderer {
     fonts: HashMap<Weight, Arc<Font>>,
     cache: HashMap<Key, TextImage>,
+    /// Scale of the last render; `measure` lays text out at it, because the
+    /// rasterizer snaps every glyph to whole physical pixels.
+    measure_scale: f64,
 }
 
 impl TextRenderer {
@@ -104,6 +107,7 @@ impl TextRenderer {
         Self {
             fonts: HashMap::new(),
             cache: HashMap::new(),
+            measure_scale: 1.0,
         }
     }
 
@@ -125,15 +129,28 @@ impl TextRenderer {
     /// Logical width of `text`, for layout.
     pub fn measure(&mut self, text: &str, style: TextStyleSpec) -> f32 {
         let Some(font) = self.font(style.weight) else { return 0.0 };
-        let mut width = 0.0;
+        let mut advance = 0.0;
+        let count = text.chars().count();
         for (i, ch) in text.chars().enumerate() {
-            let m = font.metrics(ch, style.size);
-            width += m.advance_width;
-            if i + 1 < text.chars().count() {
-                width += style.tracking;
+            advance += font.metrics(ch, style.size).advance_width;
+            if i + 1 < count {
+                advance += style.tracking;
             }
         }
-        width
+        // The drawn width: glyph positions are snapped to physical pixels,
+        // which makes a line several percent wider than its advances.
+        let scale = self.measure_scale as f32;
+        let tracking = style.tracking * scale;
+        let mut layout = Layout::new(CoordinateSystem::PositiveYDown);
+        layout.reset(&LayoutSettings::default());
+        layout.append(&[font.as_ref()], &TextStyle::new(text, style.size * scale, 0));
+        let ink = layout
+            .glyphs()
+            .iter()
+            .enumerate()
+            .map(|(i, g)| g.x + i as f32 * tracking + g.width as f32)
+            .fold(0.0f32, f32::max);
+        advance.max(ink / scale)
     }
 
     /// Rasterizes `text` at `scale` (physical px per logical px).
@@ -151,6 +168,7 @@ impl TextRenderer {
             return Some(img.clone());
         }
         if self.cache.len() >= 512 { self.cache.clear(); }
+        self.measure_scale = scale.max(0.5);
         let font = self.font(style.weight)?;
         let px = style.size * scale as f32;
         let tracking = style.tracking * scale as f32;
@@ -226,5 +244,21 @@ impl TextRenderer {
         }
         self.cache.insert(key, img.clone());
         Some(img)
+    }
+}
+
+#[cfg(test)]
+mod measure_tests {
+    use super::*;
+    #[test]
+    fn measure_never_underestimates_the_rendered_width() {
+        let mut t = TextRenderer::new();
+        let style = crate::topbar::label_style(12.0);
+        let text = "finally gets cut off with an ellipsis at the end of the third line";
+        for scale in [1.0, 1.75, 2.0] {
+            let Some(image) = t.render(text, style, scale) else { return };
+            // render() pads by 2 physical px and rounds up to a logical px.
+            assert!(t.measure(text, style) + 2.0 >= image.logical_w as f32, "scale {scale}");
+        }
     }
 }
