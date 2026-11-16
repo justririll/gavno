@@ -839,7 +839,7 @@ fn draw_frame(surface: &mut Surface, renderer: &mut GlesRenderer,
         }
         Ok((result.is_empty, states))
     } else {
-        let result = surface.drm_output.render_frame(renderer, elements, render::CLEAR_COLOR, FrameFlags::DEFAULT)
+        let result = surface.drm_output.render_frame(renderer, elements, render::CLEAR_COLOR, SCANOUT_FLAGS)
             .map_err(|e| format!("SDR render: {e:?}"))?;
         // Legacy KMS cannot take an in-fence: wait before queueing the frame.
         if result.needs_sync() {
@@ -876,6 +876,12 @@ fn queue_redraw(gv: &mut Gavno, crtc: crtc::Handle) {
         }
     }
 }
+
+/// Client buffers are always composited: on the Snapdragon X Elite msm
+/// driver, direct scanout of Firefox's buffers passed the atomic test but the
+/// real commit failed with EINVAL, and the retries made the pointer lag.
+/// The cursor plane stays in use.
+const SCANOUT_FLAGS: FrameFlags = FrameFlags::ALLOW_CURSOR_PLANE_SCANOUT;
 
 fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
     let started = std::time::Instant::now();
