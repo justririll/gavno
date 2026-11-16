@@ -7,12 +7,12 @@ use crate::{config::Config, Gavno};
 #[repr(usize)]
 pub enum Feature {
     Dock, Bar, Overview, Tiling, Snap, Switcher, Gestures,
-    WindowGestures, ResizeMode, Animations, Decorations, Ipc, Screencopy, Launcher, Notifications, Media, ColorManagement, Classic,
+    WindowGestures, ResizeMode, Animations, Decorations, Ipc, Screencopy, Launcher, Notifications, Media, ColorManagement, Classic, Polkit,
 }
 impl Feature {
-    pub const ALL: [Self; 18] = [Self::Dock, Self::Bar, Self::Overview, Self::Tiling,
+    pub const ALL: [Self; 19] = [Self::Dock, Self::Bar, Self::Overview, Self::Tiling,
         Self::Snap, Self::Switcher, Self::Gestures, Self::WindowGestures,
-        Self::ResizeMode, Self::Animations, Self::Decorations, Self::Ipc, Self::Screencopy, Self::Launcher, Self::Notifications, Self::Media, Self::ColorManagement, Self::Classic];
+        Self::ResizeMode, Self::Animations, Self::Decorations, Self::Ipc, Self::Screencopy, Self::Launcher, Self::Notifications, Self::Media, Self::ColorManagement, Self::Classic, Self::Polkit];
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -23,25 +23,25 @@ pub enum FeatureState {
 }
 
 pub struct Features {
-    states: [RefCell<FeatureState>; 18],
-    pending: [Cell<bool>; 18],
+    states: [RefCell<FeatureState>; 19],
+    pending: [Cell<bool>; 19],
     resetting: bool,
     #[cfg(test)]
-    injected: [Cell<bool>; 18],
+    injected: [Cell<bool>; 19],
     #[cfg(test)]
-    pub reset_count: [usize; 18],
+    pub reset_count: [usize; 19],
 }
 impl Features {
     pub fn new(config: &Config) -> Self {
         let m = &config.modules;
         let enabled = [m.dock && config.dock.enabled, m.bar && config.bar.enabled,
             m.overview, m.tiling, m.snap, m.switcher, m.gestures, m.window_gestures,
-            m.resize_mode, m.animations, m.decorations, m.ipc, m.screencopy, m.launcher, m.notifications, m.media, m.color_management, m.classic];
+            m.resize_mode, m.animations, m.decorations, m.ipc, m.screencopy, m.launcher, m.notifications, m.media, m.color_management, m.classic, m.polkit];
         Self {
             states: enabled.map(|on| RefCell::new(if on { FeatureState::Enabled } else { FeatureState::Disabled })),
             pending: std::array::from_fn(|_| Cell::new(false)), resetting: false,
             #[cfg(test)] injected: std::array::from_fn(|_| Cell::new(false)),
-            #[cfg(test)] reset_count: [0; 18],
+            #[cfg(test)] reset_count: [0; 19],
         }
     }
     pub fn on(&self, id: Feature) -> bool { matches!(*self.states[id as usize].borrow(), FeatureState::Enabled) }
@@ -167,6 +167,7 @@ impl Gavno {
                 for output in self.space.outputs() { crate::handlers::color_management::reset_output(output); }
             },
             Feature::Classic => self.reset_classic(),
+            Feature::Polkit => self.reset_polkit(),
         }
     }
     fn drop_feature_state(&mut self, id: Feature) {
@@ -204,6 +205,7 @@ impl Gavno {
                 for output in self.space.outputs() { crate::handlers::color_management::reset_output(output); }
             },
             Feature::Classic => self.reset_classic(),
+            Feature::Polkit => self.reset_polkit(),
             Feature::Snap | Feature::Tiling => (),
         }
     }

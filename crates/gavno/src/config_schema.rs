@@ -70,8 +70,8 @@ pub const SCHEMA: &[Key] = &[
     Key {
         path: "polkit_agent",
         kind: Kind::String,
-        default: Default::String("gavno-polkit-agent"),
-        description: "Session authorization agent command; empty disables it.",
+        default: Default::String("builtin"),
+        description: "Password prompts for admin actions: builtin, an external agent command, or empty for none.",
         section: "General",
         live: false,
     },
@@ -326,6 +326,14 @@ pub const SCHEMA: &[Key] = &[
         description: "Enable the Windows-style Classic shell and its three-finger switch gesture.",
         section: "Modules",
         live: true,
+    },
+    Key {
+        path: "modules.polkit",
+        kind: Kind::Bool,
+        default: Default::Bool(true),
+        description: "Enable the built-in polkit password dialog (used when polkit_agent is builtin).",
+        section: "Modules",
+        live: false,
     },
     Key {
         path: "classic.start_in_classic",

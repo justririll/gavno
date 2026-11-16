@@ -101,9 +101,9 @@ fi
 
 # --- polkit -----------------------------------------------------------------
 if pgrep -u "$(id -u)" -x gavno-polkit-ag >/dev/null; then
-    pass polkit-agent "gavno-polkit-agent running"
+    pass polkit-agent "external gavno-polkit-agent running"
 else
-    fail polkit-agent "gavno-polkit-agent not running"
+    log "INFO  polkit-agent: no external agent; the built-in agent answers (default polkit_agent = \"builtin\")"
 fi
 if have pkexec && [ "$AUTO" = 0 ] && ask "Test a password prompt now (pkexec true; type your password)?"; then
     if pkexec true; then pass polkit-prompt; else fail polkit-prompt "pkexec failed or was cancelled"; fi

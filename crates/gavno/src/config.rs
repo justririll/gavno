@@ -329,7 +329,7 @@ impl Config {
                 polkit_agent: file
                     .polkit_agent
                     .map(|s| s.trim().to_owned())
-                    .unwrap_or_else(|| "gavno-polkit-agent".into()),
+                    .unwrap_or_else(|| "builtin".into()),
                 autostart: file.autostart.unwrap_or_else(default_autostart),
                 internal_scale: scale_clamped,
                 output_mode,
@@ -406,7 +406,7 @@ options = "caps:escape"
             terminal: "foot".into(),
             launcher: None,
             file_manager: "gavno-files".into(),
-            polkit_agent: "gavno-polkit-agent".into(),
+            polkit_agent: "builtin".into(),
             autostart: default_autostart(),
             internal_scale: 1.75,
             output_mode: None,
@@ -448,7 +448,7 @@ options = "caps:escape"
             terminal: "kitty".into(),
             launcher: Some("rofi".into()),
             file_manager: "gavno-files".into(),
-            polkit_agent: "gavno-polkit-agent".into(),
+            polkit_agent: "builtin".into(),
             autostart: default_autostart(),
             internal_scale: 2.0,
             output_mode: None,
@@ -631,6 +631,7 @@ options = "caps:escape"
 #[serde(default)]
 pub struct ModulesConfig {
     pub classic: bool,
+    pub polkit: bool,
     pub color_management: bool,
     pub dock: bool,
     pub bar: bool,
@@ -653,7 +654,7 @@ pub struct ModulesConfig {
 }
 impl Default for ModulesConfig {
     fn default() -> Self {
-        Self { classic: true, dock: true, bar: true, overview: true, tiling: true, snap: true, switcher: true, gestures: true, window_gestures: true, resize_mode: true, animations: true, decorations: true, ipc: true, screencopy: true, launcher: true, notifications: true, media: true, color_management: true, unknown: Default::default() }
+        Self { classic: true, polkit: true, dock: true, bar: true, overview: true, tiling: true, snap: true, switcher: true, gestures: true, window_gestures: true, resize_mode: true, animations: true, decorations: true, ipc: true, screencopy: true, launcher: true, notifications: true, media: true, color_management: true, unknown: Default::default() }
     }
 }
 

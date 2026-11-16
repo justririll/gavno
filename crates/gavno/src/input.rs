@@ -171,6 +171,14 @@ impl Gavno {
                     return FilterResult::Intercept(None);
                 }
 
+                // The polkit dialog takes every key except the emergency chord.
+                if gv.polkit_visible() && !(mods.ctrl && mods.alt) {
+                    let sym = handle.modified_sym();
+                    gv.suppressed_keys.push(raw_code);
+                    gv.polkit_key(sym, sym.key_char(), mods);
+                    return FilterResult::Intercept(None);
+                }
+
                 if !gv.protocols.locks.locked && !gv.seat.keyboard_shortcuts_inhibited() {
                     if let Some(sym) = handle.raw_latin_sym_or_raw_current_sym() {
                         let action = gv.features.read(Feature::Classic, None, || crate::classic::binds::binding(sym, mods, gv.config.mod_key, gv.classic_mode()));
@@ -564,6 +572,10 @@ impl Gavno {
             // Shell presses (bar sliders, dock) are suppressed too; their
             // release still has to end the bar drag.
             self.bar_release(button);
+            return;
+        }
+        if self.polkit_button(pointer.current_location(), button_state == ButtonState::Pressed) {
+            if button_state == ButtonState::Pressed { self.suppressed_buttons.push(button); }
             return;
         }
         if button_state==ButtonState::Pressed && self.exit_resize_mode() {

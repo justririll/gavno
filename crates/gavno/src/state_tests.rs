@@ -327,6 +327,7 @@ fn crash_feature(h: &mut Harness, id: Feature, output: &Output) {
         Feature::Classic => h.gv.set_shell_mode(crate::classic::ShellMode::Classic),
         Feature::Media => h.gv.refresh_media(),
         Feature::ColorManagement => h.gv.guard(Feature::ColorManagement, (), |_| ()),
+        Feature::Polkit => h.gv.polkit_key(smithay::input::keyboard::Keysym::from(smithay::input::keyboard::keysyms::KEY_a), Some('a'), &Default::default()),
     }
     h.gv.run_feature_resets();
     h.event_loop.dispatch(Duration::ZERO, &mut h.gv).unwrap();
@@ -468,6 +469,7 @@ fn all_config_switches_disable_features_without_reserves_or_idle_animation() {
             Feature::Classic => "classic",
             Feature::Media => "media",
             Feature::ColorManagement => "color_management",
+            Feature::Polkit => "polkit",
         };
         let mut h = Harness::new();
         let output = feature_output(&mut h);

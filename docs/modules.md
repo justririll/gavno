@@ -126,6 +126,20 @@ controls use snapshots in the bar and enter Notifications guards for mutations.
 A single one-shot expiry timer tracks the earliest visible deadline. Springs
 request frames only while a visible card enters or leaves.
 
+## Polkit
+
+`[modules] polkit = true` enables the built-in authentication agent used when
+`polkit_agent = "builtin"`. A worker thread registers the agent for the login
+session on the system bus and blocks; the dialog is drawn by the compositor
+above every window and shell panel, centred on the active output, and takes
+all keys except VT switching and the Ctrl+Alt emergency chord. The password
+lives in a zeroized buffer and is passed only to the setuid
+`polkit-agent-helper-1`, which runs on a short-lived thread; three wrong
+passwords fail the request. Requests queue one at a time and wait hidden while
+the session is locked. Registration failure (no polkitd, or another agent owns
+the session) logs one warning and leaves the feature idle. A Polkit panic
+cancels every request and stops the worker, which unregisters the agent.
+
 ## Classic
 
 `[modules] classic = true` enables the alternate desktop shell, its taskbar,

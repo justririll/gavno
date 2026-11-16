@@ -1,4 +1,9 @@
-# GAVNO polkit agent
+# GAVNO polkit agent (external fallback)
+
+GAVNO has a built-in polkit agent (`polkit_agent = "builtin"`, the default)
+that draws its dialog in the compositor without a resident process. This
+crate is the optional external GTK agent, for other compositors or when the
+built-in one is disabled.
 
 `gavno-polkit-agent` registers a polkit authentication agent for the whole
 login session, so `pkexec` and other polkit clients can ask for a password.
@@ -7,8 +12,8 @@ window for each request. Passwords are checked by the system's setuid
 `polkit-agent-helper-1`; no polkit policy changes are needed.
 
 GAVNO starts it once its Wayland socket is up, using the `polkit_agent`
-config key (default `gavno-polkit-agent`, an empty string disables it), if
-the binary is in `PATH`. Install a release build:
+config key when it is set to `gavno-polkit-agent` (an empty string runs no
+agent), if the binary is in `PATH`. Install a release build:
 
 ```sh
 install -Dm755 "$CARGO_TARGET_DIR/release/gavno-polkit-agent" /usr/local/bin/gavno-polkit-agent

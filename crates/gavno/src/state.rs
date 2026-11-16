@@ -94,6 +94,7 @@ pub struct Gavno {
     pub greeter: Option<crate::greeter::Greeter>,
     pub lock: crate::lock::Lock,
     pub launcher: crate::launcher::Launcher,
+    pub polkit: crate::polkit::Polkit,
     pub notifications: crate::notify::Shared,
     pub now_playing: crate::media::Shared,
     pub(crate) media_generation: u64,
@@ -198,6 +199,7 @@ impl Gavno {
             greeter: None,
             lock: Default::default(),
             launcher: Default::default(),
+            polkit: Default::default(),
         }
     }
 

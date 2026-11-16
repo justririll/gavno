@@ -219,6 +219,7 @@ fn disabled_feature_bindings_reach_the_real_client() {
             Feature::Classic => m.classic = false,
             Feature::Media => m.media = false,
             Feature::ColorManagement => m.color_management = false,
+            Feature::Polkit => m.polkit = false,
         }
         h.gv.features = Features::new(&h.gv.config);
         h.gv.focus_window(Some(&w));
@@ -291,4 +292,34 @@ fn gavno_mod_tap_opens_launcher_and_run_style_skips_application_scan() {
     assert!(h.gv.launcher.open);assert!(!h.gv.overview.open());
     h.gv.close_launcher();h.gv.launcher=Default::default();
     h.gv.toggle_run_launcher();assert!(h.gv.launcher.open&&h.gv.launcher.run_style);
+}
+
+#[test]
+fn polkit_dialog_captures_keys_and_clicks_until_it_closes() {
+    let (mut h, _) = setup();
+    let w = h.window();
+    h.gv.map_new_window(w.clone());
+    h.commit_size(&w, 400, 300);
+    h.gv.focus_window(Some(&w));
+    h.keyboard_keys();
+    let outcome = crate::polkit::tests::push_dialog(&mut h.gv, "keys", &["admin"]);
+    // 'a' goes to the password field, never to the focused client.
+    h.gv.on_keyboard::<TestBackend>(Key(38, KeyState::Pressed));
+    h.gv.on_keyboard::<TestBackend>(Key(38, KeyState::Released));
+    assert_eq!(h.keyboard_keys(), Vec::<u32>::new());
+    assert_eq!(h.gv.polkit.queue[0].password.as_str(), "a");
+    // Clicks outside the panel do nothing and reach no client.
+    motion(&mut h.gv, None, (5.0, 5.0).into());
+    button(&mut h.gv, BTN_LEFT, ButtonState::Pressed);
+    button(&mut h.gv, BTN_LEFT, ButtonState::Released);
+    assert_eq!(h.pointer_buttons(), Vec::<u32>::new());
+    assert_eq!(h.gv.polkit.queue.len(), 1);
+    // Escape cancels and the keyboard returns to the client.
+    h.gv.on_keyboard::<TestBackend>(Key(9, KeyState::Pressed));
+    h.gv.on_keyboard::<TestBackend>(Key(9, KeyState::Released));
+    assert!(matches!(outcome.try_recv(), Ok(crate::polkit::Outcome::Cancelled)));
+    h.keyboard_keys();
+    h.gv.on_keyboard::<TestBackend>(Key(38, KeyState::Pressed));
+    h.gv.on_keyboard::<TestBackend>(Key(38, KeyState::Released));
+    assert_eq!(h.keyboard_keys(), vec![30, 30]);
 }

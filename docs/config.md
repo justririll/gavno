@@ -37,7 +37,7 @@ default": see `terminal` and `launcher` below.
 | `terminal` | string | `"foot"` | `GAVNO_TERMINAL` |
 | `launcher` | string | unset, Mod+D disabled | `GAVNO_LAUNCHER` |
 | `file_manager` | string | `"gavno-files"` | none |
-| `polkit_agent` | string | `"gavno-polkit-agent"`, `""` disables | none |
+| `polkit_agent` | string | `"builtin"`, a command, or `""` | none |
 | `autostart` | string list | `["foot --server"]` | none |
 | `gap` | integer, logical px | `12` | none |
 | `[tiling] default` | boolean | `false` | none |
@@ -67,8 +67,11 @@ to keep a windowless file manager resident, so Mod+E opens instantly at the
 cost of a few tens of MB of RAM.
 
 `terminal` is started by Mod+Return, `launcher` by Mod+D and `file_manager` by
-Mod+E. `polkit_agent` is started with the session when the program is found;
-it asks for passwords for `pkexec` and other polkit actions. A file value that
+Mod+E. `polkit_agent` asks for passwords for `pkexec` and other polkit actions.
+`"builtin"` uses the compositor's own dialog (no extra process; TTY sessions
+only, or nested with `GAVNO_POLKIT_TEST=1`); any other value is a command
+started with the session when its program is found, such as the GTK fallback
+`gavno-polkit-agent`; `""` runs no agent. A file value that
 is empty (or whitespace only, for `terminal`) falls back to the default, so
 `launcher = ""` disables the bind. `GAVNO_TERMINAL` and `GAVNO_LAUNCHER` are
 used verbatim when non-empty.
@@ -472,7 +475,7 @@ name such as `eDP-1`. Numeric steps describe the editor increments.
 | `terminal` | string | `"foot"` | yes |
 | `launcher` | string | `unset` | yes |
 | `file_manager` | string | `"gavno-files"` | yes |
-| `polkit_agent` | string | `"gavno-polkit-agent"` | after re-login |
+| `polkit_agent` | string | `"builtin"` | after re-login |
 | `autostart` | string_list | `["foot --server"]` | after re-login |
 | `gap` | int (0–64, step 1) | `12` | yes |
 | `output.internal_scale` | float (0.5–4.0, step 0.05) | `1.75` | yes |

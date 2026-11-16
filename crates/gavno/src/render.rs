@@ -131,6 +131,7 @@ pub fn output_elements(
     osd: &mut crate::topbar::osd::Osd,
     launcher: &mut crate::launcher::Launcher,
     classic: &mut crate::classic::Classic,
+    polkit: &mut crate::polkit::Polkit,
 ) -> Vec<GavnoRenderElement> {
     let mut descriptions = std::collections::HashMap::new();
     if features.on(Feature::ColorManagement) && crate::handlers::color_management::any_tagged() {
@@ -147,7 +148,7 @@ pub fn output_elements(
         if let CursorImageStatus::Surface(surface) = cursor_status { with_surfaces_surface_tree(surface, |s, states| collect(s, states)); }
         if let Some(surface) = locks.surface(output) { with_surfaces_surface_tree(surface, |s, states| collect(s, states)); }
     }
-    let elements = output_elements_inner(renderer, space, output, pointer_pos, cursor_status, cursor, time, greeter, lock, overlay, window_decor, animations, locks, workspaces, overview, dock, topbar, config, features, osd, launcher, classic);
+    let elements = output_elements_inner(renderer, space, output, pointer_pos, cursor_status, cursor, time, greeter, lock, overlay, window_decor, animations, locks, workspaces, overview, dock, topbar, config, features, osd, launcher, classic, polkit);
     if descriptions.is_empty() { crate::hdr::surface::reset(output); return elements; }
     let hdr = crate::handlers::color_management::is_hdr(output);
     if !hdr { descriptions.retain(|_, d| d.tf != crate::color::Transfer::Srgb || d.primaries != crate::color::SRGB); }
@@ -192,6 +193,7 @@ fn output_elements_inner(
     osd: &mut crate::topbar::osd::Osd,
     launcher: &mut crate::launcher::Launcher,
     classic: &mut crate::classic::Classic,
+    polkit: &mut crate::polkit::Polkit,
 ) -> Vec<GavnoRenderElement> {
     let mut elements: Vec<GavnoRenderElement> = Vec::new();
     let Some(output_geo) = space.output_geometry(output) else {
@@ -285,6 +287,24 @@ fn output_elements_inner(
         let size = output_geo.size;
         elements.extend(greeter.safe_call(Vec::new(), |g| g.elements(renderer, size, scale.x, time)));
         return elements;
+    }
+
+    // The polkit dialog is modal: above every window and shell panel, beneath
+    // only the cursor and OSD. It waits hidden while the session is locked.
+    if !locks.locked && !lock.internal() && !polkit.queue.is_empty() {
+        let here = match &polkit.output {
+            Some(shown) => shown == output || space.output_geometry(shown).is_none(),
+            None => true,
+        };
+        if here {
+            let crate::polkit::Polkit { queue, view, .. } = polkit;
+            let dialog = &queue[0];
+            let accent = topbar.accent();
+            let theme = &config.dock.icon_theme;
+            elements.extend(features.call(Feature::Polkit, Vec::new(), || {
+                view.elements(renderer, dialog, output_geo.size, scale.x, accent, theme)
+            }));
+        }
     }
 
     let p = features.call(Feature::Classic, 0.0, || {

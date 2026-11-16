@@ -27,6 +27,7 @@ mod lock;
 mod launcher;
 mod notify;
 mod media;
+mod polkit;
 mod grabs;
 mod handlers;
 mod input;
@@ -147,7 +148,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::env::set_var("XDG_SESSION_TYPE", "wayland");
     if !greeter_mode {
         xwayland::start(&mut state);
-        start_polkit_agent(&state.config.polkit_agent);
+        start_polkit_agent(&mut state, backend_choice == BackendChoice::Tty);
         // A nested compositor must not repoint the host session's services.
         if backend_choice == BackendChoice::Tty {
             export_session_environment();
@@ -195,8 +196,24 @@ fn export_session_environment() {
 
 /// Starts the session polkit agent when it is installed, so pkexec and other
 /// polkit prompts work. It registers for the session and waits for requests.
-fn start_polkit_agent(command: &str) {
-    if !spawn_if_installed(command) {
+/// `polkit_agent = "builtin"` registers the compositor's own agent, another
+/// value spawns that external agent, and an empty value runs none. A nested
+/// compositor shares the host session, whose agent already owns it, so the
+/// built-in one registers there only when GAVNO_POLKIT_TEST is set, and with
+/// GAVNO_POLKIT_TEST_PROCESS=<pid> it serves only that process.
+fn start_polkit_agent(state: &mut Gavno, tty: bool) {
+    let command = state.config.polkit_agent.trim().to_owned();
+    if command.is_empty() {
+        return;
+    }
+    if command == "builtin" {
+        if tty || std::env::var_os("GAVNO_POLKIT_TEST").is_some() {
+            let process = std::env::var("GAVNO_POLKIT_TEST_PROCESS").ok().and_then(|p| p.trim().parse().ok());
+            state.start_polkit(polkit::Target { process, ..Default::default() });
+        }
+        return;
+    }
+    if !spawn_if_installed(&command) {
         tracing::info!(%command, "polkit agent not installed; polkit prompts are unavailable");
     }
 }

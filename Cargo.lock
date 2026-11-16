@@ -868,6 +868,7 @@ dependencies = [
 name = "gavno"
 version = "0.1.0"
 dependencies = [
+ "async-channel",
  "bitflags 2.13.2",
  "fontdue",
  "libc",
