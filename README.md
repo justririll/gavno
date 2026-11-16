@@ -76,6 +76,15 @@ What works today:
   Mod+Shift+H toggle and runtime SDR white control
   (`crates/gavno/src/hdr/`, `crates/gavno/src/backend/udev.rs`).
 - Built-in session D-Bus notifications, popup actions, calendar history and Do not disturb.
+- Low battery notifications at 15% and 5% while discharging.
+- Screen sharing (browsers, OBS) through `xdg-desktop-portal-wlr` on top of
+  wlr-screencopy. GAVNO exports its display variables to D-Bus activation; install
+  the portal preference and the xdpw config (output chosen with `slurp`):
+
+  ```sh
+  install -Dm644 dist/xdg-desktop-portal/gavno-portals.conf /usr/share/xdg-desktop-portal/gavno-portals.conf
+  install -Dm644 dist/xdg-desktop-portal-wlr/config ~/.config/xdg-desktop-portal-wlr/config
+  ```
 - Idle means no redraw.
 
 Keyboard binds: [docs/keybinds.md](docs/keybinds.md)
