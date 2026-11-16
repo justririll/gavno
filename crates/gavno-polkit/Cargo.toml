@@ -1,0 +1,17 @@
+[package]
+name = "gavno-polkit"
+description = "Session polkit authentication agent for GAVNO"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "gavno-polkit-agent"
+path = "src/main.rs"
+
+[dependencies]
+gtk = { package = "gtk4", version = "0.10", features = ["v4_18"] }
+adw = { package = "libadwaita", version = "0.8", features = ["v1_6"] }
+gio = "0.21"
+glib = "0.21"
+libc = "0.2"
