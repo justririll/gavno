@@ -98,39 +98,7 @@ fn save_to(path: &std::path::Path, method: &str, params: &Value) -> Result<(), S
         Err(e) => return Err(e.to_string()),
     };
     let text = update(&old, method, params)?;
-    let parent = path.parent().ok_or("config path has no parent")?;
-    let parent = if parent.as_os_str().is_empty() {
-        std::path::Path::new(".")
-    } else {
-        parent
-    };
-    fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    let temp = parent.join(format!(
-        ".config.toml.settings-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|e| e.to_string())?
-            .as_nanos()
-    ));
-    let result = (|| -> std::io::Result<()> {
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&temp)?;
-        if let Ok(meta) = fs::metadata(path) {
-            file.set_permissions(meta.permissions())?;
-        }
-        file.write_all(text.as_bytes())?;
-        file.sync_all()?;
-        fs::rename(&temp, path)?;
-        fs::File::open(parent)?.sync_all()
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(temp);
-    }
-    result.map_err(|e| e.to_string())
+    atomic_write(path, &text)
 }
 #[cfg(test)]
 mod tests {
@@ -309,6 +277,13 @@ pub fn restore(text: &str) -> Result<(), String> {
     atomic_write(&path()?, text)
 }
 fn atomic_write(path: &std::path::Path, text: &str) -> Result<(), String> {
+    // A symlinked config (a dotfiles repo) is written through to its target;
+    // renaming over the link would silently replace it with a plain file.
+    let resolved = fs::symlink_metadata(path)
+        .ok()
+        .filter(|m| m.file_type().is_symlink())
+        .and_then(|_| fs::canonicalize(path).ok());
+    let path = resolved.as_deref().unwrap_or(path);
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -340,6 +315,23 @@ fn atomic_write(path: &std::path::Path, text: &str) -> Result<(), String> {
         let _ = fs::remove_file(temp);
     }
     result.map_err(|e| e.to_string())
+}
+#[cfg(test)]
+mod symlink_tests {
+    #[test]
+    fn saving_keeps_a_symlinked_config_linked() {
+        let dir = std::env::temp_dir().join(format!("gavno-settings-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("dotfiles")).unwrap();
+        let target = dir.join("dotfiles/config.toml");
+        std::fs::write(&target, "# mine\ngap = 8\n").unwrap();
+        let link = dir.join("config.toml");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        super::atomic_write(&link, "# mine\ngap = 20\n").unwrap();
+        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "# mine\ngap = 20\n");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }
 #[cfg(test)]
 mod editor_tests {
