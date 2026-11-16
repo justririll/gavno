@@ -6,7 +6,7 @@ basic surface rendering remain core even when their implementation lives beside
 a feature. Lock and Greeter are always present security boundaries.
 
 The optional features are Dock, Bar, Overview, Tiling, Snap, Switcher,
-Gestures, WindowGestures, ResizeMode, Animations, Decorations, Ipc, Screencopy, Launcher and Notifications.
+Gestures, WindowGestures, ResizeMode, Animations, Decorations, Ipc, Screencopy, Launcher, Notifications and ColorManagement.
 `module.rs` stores their startup state. A feature is enabled, disabled by config,
 or crashed. A crash disables it until the compositor restarts. The registry has
 no timer, animation, or periodic redraw source.
@@ -83,6 +83,7 @@ ipc = true
 screencopy = true
 launcher = true
 notifications = true
+color_management = true
 ```
 
 Legacy `[dock] enabled = false` and `[bar] enabled = false` still disable their
@@ -123,3 +124,47 @@ Notifications guard without changing backend rendering APIs. History and DND
 controls use snapshots in the bar and enter Notifications guards for mutations.
 A single one-shot expiry timer tracks the earliest visible deadline. Springs
 request frames only while a visible card enters or leaves.
+
+## Color management
+
+`[modules] color_management = true` enables the version-1
+`wp_color_manager_v1` global. Disabling it at startup omits the global; recovery
+removes it, clears surface descriptions and drops conversion textures.
+
+The compositor advertises parametric descriptions, explicit primaries and
+luminances, mastering display metadata and extended target volumes. Supported
+named primaries are sRGB, BT.2020 and Display P3; transfer functions are sRGB,
+gamma 2.2, extended linear and ST 2084 PQ. The rendering intent is perceptual.
+ICC profiles and arbitrary power transfer functions are not supported. Invalid
+parameters raise the protocol's errors (the named-primary error is called
+`invalid_primaries_named`); degenerate explicit chromaticities fail description
+creation gracefully. Descriptions apply on surface commit, including synchronized
+subsurfaces. Output and preferred descriptions provide complete parametric
+information and change notifications. As required by protocol version 1,
+client-created descriptions reject `get_information` with `no_information`.
+
+In HDR mode tagged surfaces decode their transfer function, convert primaries
+with a matrix and enter the existing BT.2020/PQ output pass through an extended
+sRGB FP16 intermediate. Relative sRGB/gamma content anchors reference white to
+`output.sdr_white_nits`; PQ retains absolute luminance and extended linear uses
+1.0 = 80 cd/m². The output description identifies the PQ/BT.2020 encoding; its
+target luminance range comes from panel EDID, with the existing SDR-white fallback
+when the panel omits its peak. Changing HDR or SDR white refreshes descriptions.
+
+In SDR mode HDR content uses a simple soft shoulder above 75% of SDR white,
+followed by sRGB encoding. Standard sRGB surfaces retain their existing path;
+untagged surfaces retain the existing behavior in both modes. Conversion uses
+one shader with transfer, matrix and luminance uniforms. Smithay 0.7 decoration
+shaders cannot be nested with another texture override, so tagged elements use
+a cached FP16 staging pass to preserve rounding, opacity and transforms. The
+cache updates on damage or description changes and schedules no idle work.
+If FP16 composition is unavailable, tagged HDR content triggers the existing
+SDR fallback rather than clipping in the 10-bit intermediate. Converted surfaces
+cannot bypass conversion through direct scanout. Blending
+remains in the compositor's existing nonlinear sRGB-compatible working space;
+mastering metadata is retained but this simple mapping does not implement
+scene-dependent tone mapping or panel calibration.
+
+Legacy close-animation snapshots and 8-bit screenshot capture do not yet preserve
+HDR range. Live surfaces, including transformed overview copies, use the color
+conversion path described above.

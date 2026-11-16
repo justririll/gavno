@@ -114,7 +114,7 @@ impl Gavno {
         let presentation_state = PresentationState::new::<Self>(&dh, clock.id() as u32);
         let fractional_scale_state = FractionalScaleManagerState::new::<Self>(&dh);
 
-        let protocols = crate::handlers::protocols::Protocols::new(&dh, event_loop.handle(), &primary_selection_state);
+        let protocols = crate::handlers::protocols::Protocols::new(&dh, event_loop.handle(), &primary_selection_state, config.modules.color_management);
 
         let mut seat_state = SeatState::new();
         let mut seat: Seat<Self> = seat_state.new_wl_seat(&dh, "seat0");

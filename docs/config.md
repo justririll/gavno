@@ -97,8 +97,10 @@ HDR requires atomic modesetting, EDID PQ + BT.2020 RGB + static metadata type 1,
 mutable connector color properties, XR30 scanout, and fp16 or 10-bit offscreen
 rendering. GAVNO warns and keeps SDR when initialization fails. SDR content is
 composed as usual and converted to BT.2020/PQ with `sdr_white_nits` as its white
-level. This value is clamped to 80–400. There is no HDR client protocol yet
-(`wp-color-management-v1` is not implemented).
+level. This value is clamped to 80–400. The optional
+[`wp_color_management_v1` client protocol](modules.md#color-management) accepts
+parametric HDR and wide-gamut surface descriptions; tagged HDR content needs
+FP16 composition. Untagged surfaces retain their existing sRGB behavior.
 
 Mod+Shift+H toggles HDR on the active output. Mod+Shift+F2/F3 adjusts SDR white
 by −10/+10 nits while HDR is enabled. Runtime changes last until output removal
@@ -108,7 +110,8 @@ returns a queued acknowledgement; actual enablement happens after any pending
 page flip. Read `screen.outputs[].hdr` for `enabled`, `pending`, `supported`,
 and `sdr_white_nits` after initialization or fallback. `supported` reports EDID
 and connector-property eligibility; allocation and rendering can still fail.
-Screenshots remain sRGB PNGs of the composition before PQ conversion.
+Screenshots capture the composition before PQ conversion into 8-bit PNGs;
+HDR-tagged pixels may clip in this legacy capture path.
 
 `[keyboard]` values are passed to the seat keyboard. `layout` takes XKB layout
 names such as `"us,ru"`; `variant` takes one variant per layout and is empty by
@@ -138,6 +141,7 @@ ipc = true
 screencopy = true
 launcher = true
 notifications = true
+color_management = true
 ```
 
 `dock.enabled` and `bar.enabled` still work: a feature is off if either its legacy

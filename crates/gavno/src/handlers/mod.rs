@@ -1,3 +1,4 @@
+pub mod color_management;
 pub mod protocols;
 pub mod screencopy;
 mod cursor_shape;

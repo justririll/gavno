@@ -49,6 +49,7 @@ render_elements! {
     Space = SpaceRenderElements<GlesRenderer, WaylandSurfaceRenderElement<GlesRenderer>>,
     Surface = WaylandSurfaceRenderElement<GlesRenderer>,
     Memory = MemoryRenderBufferRenderElement<GlesRenderer>,
+    Color = crate::hdr::surface::ManagedElement,
     Window = crate::decor::WindowElement,
     Shader = smithay::backend::renderer::gles::element::PixelShaderElement,
     Thumbnail = crate::overview::ThumbnailElement,
@@ -107,6 +108,63 @@ impl CursorCache {
 
 /// Everything visible on `output`, front to back.
 pub fn output_elements(
+    renderer: &mut GlesRenderer,
+    space: &Space<Window>,
+    output: &Output,
+    pointer_pos: Point<f64, Logical>,
+    cursor_status: &mut CursorImageStatus,
+    cursor: &mut CursorCache,
+    time: Duration,
+    greeter: Option<&mut crate::greeter::Greeter>,
+    lock: &mut crate::lock::Lock,
+    overlay: &mut crate::overlay::Overlay,
+    window_decor: &mut crate::decor::WindowDecor,
+    animations: &mut crate::anim::WindowAnimations,
+    locks: &crate::handlers::session_lock::Locks,
+    workspaces: &mut crate::workspace::Workspaces,
+    overview: &mut crate::overview::Overview,
+    dock: &mut crate::dock::Dock,
+    topbar: &mut crate::topbar::TopBar,
+    config: &crate::config::Config,
+    features: &mut Features,
+    osd: &mut crate::topbar::osd::Osd,
+    launcher: &mut crate::launcher::Launcher,
+) -> Vec<GavnoRenderElement> {
+    let mut descriptions = std::collections::HashMap::new();
+    if features.on(Feature::ColorManagement) && crate::handlers::color_management::any_tagged() {
+        let mut collect = |surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface| {
+            if let Some(description) = crate::handlers::color_management::surface_description(surface) {
+                descriptions.insert(crate::handlers::color_management::surface_id(surface), description);
+            }
+        };
+        for window in space.elements() { window.with_surfaces(|surface, _| collect(surface)); }
+        for layer in layer_map_for_output(output).layers() { layer.with_surfaces(|surface, _| collect(surface)); }
+        if let CursorImageStatus::Surface(surface) = cursor_status { with_surfaces_surface_tree(surface, |s, _| collect(s)); }
+        if let Some(surface) = locks.surface(output) { with_surfaces_surface_tree(surface, |s, _| collect(s)); }
+    }
+    let elements = output_elements_inner(renderer, space, output, pointer_pos, cursor_status, cursor, time, greeter, lock, overlay, window_decor, animations, locks, workspaces, overview, dock, topbar, config, features, osd, launcher);
+    if descriptions.is_empty() { crate::hdr::surface::reset(output); return elements; }
+    let hdr = crate::handlers::color_management::is_hdr(output);
+    if !hdr { descriptions.retain(|_, d| d.tf != crate::color::Transfer::Srgb || d.primaries != crate::color::SRGB); }
+    if descriptions.is_empty() { crate::hdr::surface::reset(output); return elements; }
+    let white = if hdr { crate::handlers::color_management::output_description(output).luminances[2] as f32 } else { config.sdr_white_nits };
+    let converted = features.call(Feature::ColorManagement, Ok(Default::default()), || {
+        crate::hdr::surface::convert(renderer, output, &elements, &descriptions, hdr, white)
+    });
+    match converted {
+        Ok(converted) => {
+            let mut converted = converted.into_iter();
+            elements.into_iter().map(|element| converted.next().flatten()
+                .map(GavnoRenderElement::Color).unwrap_or(element)).collect()
+        },
+        Err(error) => {
+            features.failed(Feature::ColorManagement, format!("surface color conversion failed: {error}"));
+            elements
+        }
+    }
+}
+
+fn output_elements_inner(
     renderer: &mut GlesRenderer,
     space: &Space<Window>,
     output: &Output,
@@ -341,6 +399,7 @@ pub fn post_render(
                 default_primary_scanout_output_compare,
             );
             if let Some(primary) = surface_primary_scanout_output(surface, surface_states) {
+                crate::handlers::color_management::surface_output(surface, &primary);
                 let scale = primary.current_scale().fractional_scale();
                 with_fractional_scale(surface_states, |fs| fs.set_preferred_scale(scale));
             }
@@ -392,6 +451,7 @@ fn layers_post_render(
                 default_primary_scanout_output_compare,
             );
             if let Some(primary) = surface_primary_scanout_output(surface, surface_states) {
+                crate::handlers::color_management::surface_output(surface, &primary);
                 let scale = primary.current_scale().fractional_scale();
                 with_fractional_scale(surface_states, |fs| fs.set_preferred_scale(scale));
             }

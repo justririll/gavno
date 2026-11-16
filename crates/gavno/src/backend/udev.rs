@@ -394,6 +394,7 @@ fn device_removed(gv: &mut Gavno, node: DrmNode) {
         crate::handlers::layer_shell::close_layers(&surface.output);
         gv.space.unmap_output(&surface.output);
         gv.protocols.screencopy.output_removed(&surface.output);
+        crate::handlers::color_management::output_removed(&surface.output);
         gv.display_handle.remove_global::<Gavno>(surface.global);
     }
     gv.loop_handle.remove(gpu.token);
@@ -602,6 +603,7 @@ pub fn adjust_sdr_white(gv: &mut Gavno, delta: f32) {
     if let Some(hdr) = &mut surface.hdr {
         hdr.adjust_white(delta);
         surface.white_nits = hdr.white_nits;
+        crate::handlers::color_management::output_changed(&surface.output, true, surface.color.as_ref().map(|c| c.caps).unwrap_or_default(), surface.white_nits);
         info!(output = output.name(), nits = surface.white_nits, "HDR SDR white adjusted");
         gv.queue_redraw_all();
     }
@@ -621,6 +623,7 @@ fn change_hdr(surface: &mut Surface, renderer: &mut GlesRenderer,
         if let Ok(color) = &mut surface.color {
             if enabled { color.enable() } else { color.restore() }.map_err(|e| e.to_string())?;
         }
+        crate::handlers::color_management::output_changed(&surface.output, enabled, surface.color.as_ref().map(|c| c.caps).unwrap_or_default(), surface.white_nits);
         return Ok(());
     }
     if enabled {
@@ -645,6 +648,7 @@ fn change_hdr(surface: &mut Surface, renderer: &mut GlesRenderer,
     }
     surface.drm_output.reset_buffers();
     info!(output = surface.output.name(), enabled, nits = surface.white_nits, "HDR output state changed");
+    crate::handlers::color_management::output_changed(&surface.output, enabled, surface.color.as_ref().map(|c| c.caps).unwrap_or_default(), surface.white_nits);
     Ok(())
 }
 
@@ -735,7 +739,7 @@ fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
     }
     let output = surface.output.clone();
 
-    let elements = render::output_elements(
+    let mut elements = render::output_elements(
         &mut gpu.renderer,
         &gv.space,
         &output,
@@ -762,6 +766,9 @@ fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
     if result.is_err() && surface.hdr.is_some() {
         warn!(output = output.name(), error = ?result.as_ref().err(), "HDR render failed; falling back to SDR");
         if change_hdr(surface, &mut gpu.renderer, &gpu.allocator, false).is_ok() {
+            for element in &mut elements {
+                if let GavnoRenderElement::Color(element) = element { element.fallback_sdr(); }
+            }
             result = draw_frame(surface, &mut gpu.renderer, &elements);
         }
     }

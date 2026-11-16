@@ -216,6 +216,7 @@ fn disabled_feature_bindings_reach_the_real_client() {
             Feature::Screencopy => m.screencopy = false,
             Feature::Launcher => m.launcher = false,
             Feature::Notifications => m.notifications = false,
+            Feature::ColorManagement => m.color_management = false,
         }
         h.gv.features = Features::new(&h.gv.config);
         h.gv.focus_window(Some(&w));
