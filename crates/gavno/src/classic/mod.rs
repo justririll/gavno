@@ -190,17 +190,20 @@ pub fn toward_classic_sign(overview: bool) -> f64 {
 }
 
 /// `toward_classic`: the swipe moves in the direction that enters Classic.
+/// `super_held`: the mode switch needs Super held, so a plain three-finger
+/// swipe never flips the whole shell by accident.
 pub fn vertical_route(
     mode: ShellMode,
     toward_classic: bool,
     overview: bool,
     overview_open: bool,
+    super_held: bool,
 ) -> VerticalRoute {
     if overview && overview_open {
         return VerticalRoute::Overview;
     }
     match (mode, toward_classic) {
-        (ShellMode::Gavno, true) | (ShellMode::Classic, false) => VerticalRoute::Mode,
+        (ShellMode::Gavno, true) | (ShellMode::Classic, false) if super_held => VerticalRoute::Mode,
         (ShellMode::Classic, true) => VerticalRoute::ShowDesktop,
         (ShellMode::Gavno, false) if overview => VerticalRoute::Overview,
         _ => VerticalRoute::Ignore,
@@ -308,14 +311,31 @@ impl Gavno {
 mod tests {
     use super::*;
     #[test]
+    fn mode_switch_needs_super() {
+        for overview in [false, true] {
+            assert_eq!(
+                vertical_route(ShellMode::Gavno, true, overview, false, false),
+                VerticalRoute::Ignore
+            );
+            assert_eq!(
+                vertical_route(ShellMode::Classic, false, overview, false, false),
+                VerticalRoute::Ignore
+            );
+            assert_eq!(
+                vertical_route(ShellMode::Classic, true, overview, false, false),
+                VerticalRoute::ShowDesktop
+            );
+        }
+    }
+    #[test]
     fn gesture_routing_table() {
         for overview in [false, true] {
             assert_eq!(
-                vertical_route(ShellMode::Gavno, true, overview, false),
+                vertical_route(ShellMode::Gavno, true, overview, false, true),
                 VerticalRoute::Mode
             );
             assert_eq!(
-                vertical_route(ShellMode::Gavno, false, overview, false),
+                vertical_route(ShellMode::Gavno, false, overview, false, true),
                 if overview {
                     VerticalRoute::Overview
                 } else {
@@ -323,18 +343,18 @@ mod tests {
                 }
             );
             assert_eq!(
-                vertical_route(ShellMode::Classic, false, overview, false),
+                vertical_route(ShellMode::Classic, false, overview, false, true),
                 VerticalRoute::Mode
             );
             assert_eq!(
-                vertical_route(ShellMode::Classic, true, overview, false),
+                vertical_route(ShellMode::Classic, true, overview, false, true),
                 VerticalRoute::ShowDesktop
             );
             if overview {
                 for mode in [ShellMode::Classic, ShellMode::Gavno] {
                     for down in [false, true] {
                         assert_eq!(
-                            vertical_route(mode, down, true, true),
+                            vertical_route(mode, down, true, true, true),
                             VerticalRoute::Overview
                         );
                     }

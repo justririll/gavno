@@ -318,6 +318,7 @@ impl Gavno {
                 return;
             }
             if gv.update_window_drag(delta.upscale(gv.gestures.direction),event.time()) {return;}
+            let super_held = gv.seat.get_keyboard().is_some_and(|k| k.modifier_state().logo);
             let Some(s) = &mut gv.gestures.swipe else {return;};
             s.delta += delta.upscale(gv.gestures.direction);
             if s.axis.is_none() {
@@ -327,7 +328,7 @@ impl Gavno {
             if s.axis == Some(Axis::Vertical) && s.vertical.is_none() {
                 s.vertical = Some(if gv.features.on(crate::module::Feature::Classic) {
                     crate::classic::vertical_route(s.classic_origin, toward_classic * s.delta.y > 0.0,
-                        gv.features.on(crate::module::Feature::Overview), s.overview_origin)
+                        gv.features.on(crate::module::Feature::Overview), s.overview_origin, super_held)
                 } else if gv.features.on(crate::module::Feature::Overview) {
                     crate::classic::VerticalRoute::Overview
                 } else { crate::classic::VerticalRoute::Ignore });

@@ -343,9 +343,13 @@ Classic. Unlisted chords retain their normal GAVNO action.
 
 | Gesture | GAVNO | Classic |
 |---|---|---|
-| Three-finger swipe up | Enter Classic | Toggle show desktop |
-| Three-finger swipe down | Nothing | Return to GAVNO |
+| Super + three-finger swipe up | Enter Classic | Toggle show desktop |
+| Three-finger swipe up | Nothing | Toggle show desktop |
+| Super + three-finger swipe down | Nothing | Return to GAVNO |
 | Super + two-finger swipe | Same routing as three fingers | Same routing as three fingers |
+
+Switching the shell mode needs Super held when the swipe picks its
+direction, so a plain swipe never flips the whole desktop by accident.
 
 With the overview enabled, swipe up in GAVNO opens the overview instead, so
 the Classic directions flip: swipe down enters Classic and toggles show
