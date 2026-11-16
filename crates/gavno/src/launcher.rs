@@ -16,6 +16,10 @@ use smithay::{
     backend::renderer::gles::GlesRenderer,
     input::keyboard::{keysyms, Keysym, ModifiersState},
     output::Output,
+    reexports::calloop::{
+        timer::{TimeoutAction, Timer},
+        RegistrationToken,
+    },
     utils::{Logical, Point, Size},
 };
 use std::time::Duration;
@@ -45,6 +49,8 @@ pub struct Launcher {
     /// Panel and row rectangles from the last frame, output-local.
     panel: Option<Rect>,
     rows: Vec<(Rect, usize)>,
+    /// Held key being repeated: keycode and its repeat timer.
+    repeat: Option<(u32, RegistrationToken)>,
 }
 
 impl Default for Launcher {
@@ -61,6 +67,7 @@ impl Default for Launcher {
             icons: Icons::default(),
             panel: None,
             rows: Vec::new(),
+            repeat: None,
         }
     }
 }
@@ -328,6 +335,49 @@ impl Gavno {
             }
             gv.queue_redraw_all();
         });
+    }
+
+    /// A key press while the launcher is open. Navigation, Backspace and
+    /// typed characters repeat while held, at the keyboard repeat rate:
+    /// compositor-consumed keys never reach a client that would repeat them.
+    pub fn launcher_key_press(&mut self, code: u32, sym: Keysym, ch: Option<char>, mods: &ModifiersState) {
+        self.cancel_launcher_repeat();
+        self.launcher_key(sym, ch, mods);
+        let repeats = !matches!(
+            sym.raw(),
+            keysyms::KEY_Escape | keysyms::KEY_Return | keysyms::KEY_KP_Enter
+        ) && !mods.logo;
+        if !self.launcher.open || !repeats || self.config.repeat_rate <= 0 {
+            return;
+        }
+        let mods = *mods;
+        let delay = Duration::from_millis(self.config.repeat_delay.max(0) as u64);
+        let timer = self.loop_handle.insert_source(Timer::from_duration(delay), move |_, _, gv| {
+            let held = gv.launcher.repeat.as_ref().is_some_and(|(key, _)| *key == code);
+            if !held || !gv.launcher.open || gv.config.repeat_rate <= 0 {
+                gv.launcher.repeat = None;
+                return TimeoutAction::Drop;
+            }
+            gv.launcher_key(sym, ch, &mods);
+            TimeoutAction::ToDuration(Duration::from_secs_f64(1.0 / gv.config.repeat_rate as f64))
+        });
+        match timer {
+            Ok(token) => self.launcher.repeat = Some((code, token)),
+            Err(error) => tracing::warn!(%error, "cannot schedule launcher key repeat"),
+        }
+    }
+
+    /// Stops the repeat when its key is released.
+    pub fn launcher_key_release(&mut self, code: u32) {
+        if self.launcher.repeat.as_ref().is_some_and(|(key, _)| *key == code) {
+            self.cancel_launcher_repeat();
+        }
+    }
+
+    fn cancel_launcher_repeat(&mut self) {
+        if let Some((_, token)) = self.launcher.repeat.take() {
+            self.loop_handle.remove(token);
+        }
     }
 
     /// Pointer buttons while the launcher is open: a row launches, a press

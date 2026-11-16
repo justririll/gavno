@@ -125,6 +125,7 @@ impl Gavno {
                     if is_super { return FilterResult::Intercept(None); }
                 } else { gv.guard(Feature::Gestures, (), |gv| gv.gestures.super_tap.cancel()); }
                 if key_state == KeyState::Released {
+                    gv.launcher_key_release(raw_code);
                     // Swallow the release of a key whose press was a bind.
                     if let Some(i) = gv.suppressed_keys.iter().position(|k| *k == raw_code) {
                         gv.suppressed_keys.swap_remove(i);
@@ -164,7 +165,7 @@ impl Gavno {
                     let sym = handle.modified_sym();
                     let mods = *mods;
                     gv.suppressed_keys.push(raw_code);
-                    gv.launcher_key(sym, sym.key_char(), &mods);
+                    gv.launcher_key_press(raw_code, sym, sym.key_char(), &mods);
                     return FilterResult::Intercept(None);
                 }
 
