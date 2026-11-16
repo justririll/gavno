@@ -38,6 +38,7 @@ default": see `terminal` and `launcher` below.
 | `launcher` | string | unset, Mod+D disabled | `GAVNO_LAUNCHER` |
 | `file_manager` | string | `"gavno-files"` | none |
 | `polkit_agent` | string | `"gavno-polkit-agent"`, `""` disables | none |
+| `autostart` | string list | `["foot --server"]` | none |
 | `gap` | integer, logical px | `12` | none |
 | `[tiling] default` | boolean | `false` | none |
 | `[lock] after_idle_secs` | integer, seconds | `300` | none |
@@ -56,6 +57,14 @@ Nested mode defaults to Alt because the host compositor keeps Super for itself.
 The file accepts only the exact lowercase values `"super"` and `"alt"`.
 `GAVNO_MOD` also accepts only those two; any other value falls back to the
 nested/TTY default, and still overrides the file.
+
+`autostart` commands start with a TTY session, each only when its program is
+installed; `autostart = []` starts nothing. With `foot --server` running (the
+default) and `terminal` left at `"foot"`, Mod+Return and the pinned foot icon
+use `footclient --app-id foot`: a window in milliseconds instead of a new
+process, and one shared process for all terminals. Add `"gavno-files --daemon"`
+to keep a windowless file manager resident, so Mod+E opens instantly at the
+cost of a few tens of MB of RAM.
 
 `terminal` is started by Mod+Return, `launcher` by Mod+D and `file_manager` by
 Mod+E. `polkit_agent` is started with the session when the program is found;

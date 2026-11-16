@@ -122,6 +122,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // A nested compositor must not repoint the host session's services.
         if backend_choice == BackendChoice::Tty {
             export_session_environment();
+            autostart(&mut state);
         }
     }
     tracing::info!(socket = ?state.socket_name, "gavno is listening");
@@ -166,19 +167,46 @@ fn export_session_environment() {
 /// Starts the session polkit agent when it is installed, so pkexec and other
 /// polkit prompts work. It registers for the session and waits for requests.
 fn start_polkit_agent(command: &str) {
+    if !spawn_if_installed(command) {
+        tracing::info!(%command, "polkit agent not installed; polkit prompts are unavailable");
+    }
+}
+
+/// Runs `command` through the shell when its program exists.
+fn spawn_if_installed(command: &str) -> bool {
     let Some(program) = command.split_whitespace().next() else {
-        return;
+        return false;
     };
-    let found = if program.contains('/') {
-        std::path::Path::new(program).is_file()
-    } else {
-        std::env::var_os("PATH").is_some_and(|paths| {
-            std::env::split_paths(&paths).any(|dir| dir.join(program).is_file())
-        })
-    };
+    let found = installed(program);
     if found {
         state::spawn_shell(command);
-    } else {
-        tracing::info!(%program, "polkit agent not installed; polkit prompts are unavailable");
     }
+    found
+}
+
+/// Starts the configured resident helpers. With a foot server running, the
+/// default terminal becomes `footclient`, which opens a window in a few
+/// milliseconds instead of starting a new process.
+fn autostart(state: &mut Gavno) {
+    let mut foot_server = false;
+    for command in state.config.autostart.clone() {
+        let started = spawn_if_installed(&command);
+        let mut words = command.split_whitespace();
+        if started && words.next() == Some("foot") && words.any(|w| w == "--server" || w == "-s") {
+            foot_server = true;
+        }
+    }
+    if foot_server && state.config.terminal == "foot" && installed("footclient") {
+        state.config.terminal = "footclient --app-id foot".into();
+    }
+}
+
+/// Whether `program` (a path, or a name looked up in PATH) is a file.
+fn installed(program: &str) -> bool {
+    if program.contains('/') {
+        return std::path::Path::new(program).is_file();
+    }
+    std::env::var_os("PATH").is_some_and(|paths| {
+        std::env::split_paths(&paths).any(|dir| dir.join(program).is_file())
+    })
 }
