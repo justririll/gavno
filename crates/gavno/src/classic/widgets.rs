@@ -354,6 +354,7 @@ impl Gavno {
             if let Ok(t) =
                 self.loop_handle
                     .insert_source(Timer::from_duration(delay), |_, _, gv| {
+                        let _stall = crate::perf::Stall::new("timer.widget_clock");
                         gv.guard(Feature::Classic, (), |gv| {
                             gv.classic.desktop.widgets.clock_timer = None;
                             if gv.classic_widget_gate().active() {
@@ -384,6 +385,7 @@ impl Gavno {
             if let Ok(t) = self.loop_handle.insert_source(
                 Timer::from_duration(Duration::from_secs(2)),
                 |_, _, gv| {
+                    let _stall = crate::perf::Stall::new("timer.widget_system");
                     gv.guard(Feature::Classic, (), |gv| {
                         gv.classic.desktop.widgets.system_timer = None;
                         gv.reconcile_classic_widgets();

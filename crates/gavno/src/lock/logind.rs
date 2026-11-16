@@ -28,6 +28,7 @@ pub(super) enum Command {
 pub(super) fn spawn(handle: &LoopHandle<'static, Gavno>) -> Option<Sender<Command>> {
     let (events, source) = channel::channel();
     if let Err(error) = handle.insert_source(source, |event, _, gv| {
+        let _stall = crate::perf::Stall::new("dbus.logind");
         if let channel::Event::Msg(signal) = event {
             gv.logind_signal(signal);
         }

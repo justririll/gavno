@@ -30,6 +30,7 @@ pub fn convert(renderer: &mut GlesRenderer, output: &Output, elements: &[GavnoRe
     if cache.as_ref().is_some_and(|c| c.context != renderer.context_id()) { *cache=None; }
     if descriptions.is_empty() { if let Some(c)=cache.as_mut() { c.entries.clear(); } return Ok(Vec::new()); }
     if cache.is_none() {
+        let _startup = crate::perf::Startup::new("color.shader.begin", "color.shader.end");
         let uniforms=[UniformName::new("tf_id",UniformType::_1f),UniformName::new("primary_matrix",UniformType::Matrix3x3),
             UniformName::new("luminance",UniformType::_2f),UniformName::new("white_nits",UniformType::_1f),UniformName::new("hdr_output",UniformType::_1f)];
         *cache=Some(Cache { context: renderer.context_id(), program: renderer.compile_custom_texture_shader(include_str!("surface.frag"),&uniforms)?, entries: HashMap::new() });

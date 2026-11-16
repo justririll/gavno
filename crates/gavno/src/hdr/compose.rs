@@ -35,6 +35,7 @@ impl Composition {
         output: &Output,
         white_nits: f32,
     ) -> Result<Self, String> {
+        let _startup = crate::perf::Startup::new("hdr.composition.begin", "hdr.composition.end");
         let mode = output.current_mode().ok_or("output has no mode")?;
         let size = (mode.size.w, mode.size.h).into();
         let mut texture = None;
@@ -60,6 +61,7 @@ impl Composition {
         let texture: GlesTexture =
             texture.ok_or("neither fp16 nor 10-bit offscreen rendering is supported")?;
         tracing::info!(?texture, "HDR SDR-composition texture ready");
+        crate::perf::startup("hdr.offscreen.ready");
         let program = renderer
             .compile_custom_texture_shader(
                 crate::color::output_shader(),
@@ -67,6 +69,7 @@ impl Composition {
                   UniformName::new("extended_input", UniformType::_1f)],
             )
             .map_err(|e| e.to_string())?;
+        crate::perf::startup("hdr.shader.ready");
         Ok(Self {
             buffer: TextureRenderBuffer::from_texture(
                 renderer,

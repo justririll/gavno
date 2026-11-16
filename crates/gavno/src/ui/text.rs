@@ -128,10 +128,14 @@ impl TextRenderer {
         if let Some(f) = self.fonts.get(&weight) {
             return Some(f.clone());
         }
+        let _startup = crate::perf::Startup::new("font.load.begin", "font.load.end");
         let font = candidates(weight).iter().find_map(|stem| {
             let path = find_font_file(stem)?;
+            tracing::info!(target: "gavno::startup", stage = "font.found", ms = crate::perf::elapsed_ms(), ?weight, path = %path.display());
             let data = std::fs::read(&path).ok()?;
+            crate::perf::startup("font.read");
             let font = Font::from_bytes(data, FontSettings::default()).ok()?;
+            tracing::info!(target: "gavno::startup", stage = "font.parsed", ms = crate::perf::elapsed_ms(), ?weight, path = %path.display());
             tracing::debug!(?path, ?weight, "font loaded");
             Some(Arc::new(font))
         })?;

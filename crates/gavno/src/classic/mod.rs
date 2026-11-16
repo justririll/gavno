@@ -111,6 +111,7 @@ impl Default for Classic {
 }
 impl Classic {
     pub fn new(enabled: bool) -> Self {
+        let _startup = crate::perf::Startup::new("classic.new.begin", "classic.new.end");
         let mode = if enabled {
             ShellMode::Classic
         } else {

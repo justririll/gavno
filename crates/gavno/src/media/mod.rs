@@ -111,6 +111,7 @@ impl Gavno {
                 return;
             }
             gv.now_playing.borrow_mut().started = true;
+            let _startup = crate::perf::Startup::new("dbus.media.spawn.begin", "dbus.media.spawn.end");
             if let Some(tx) = gv.media_events() {
                 gv.now_playing.borrow_mut().worker =
                     mpris::spawn(tx, gv.config.dock.icon_theme.clone());
@@ -121,6 +122,7 @@ impl Gavno {
         let (tx, rx) = channel::channel();
         let generation=self.media_generation;
         match self.loop_handle.insert_source(rx, move |event, _, gv| {
+            let _stall = crate::perf::Stall::new("dbus.media");
             if let channel::Event::Msg(snapshot) = event {
                 if gv.media_generation==generation {gv.media_update(snapshot);}
             }

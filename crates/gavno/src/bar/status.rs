@@ -262,8 +262,10 @@ fn refresh(snapshot: &mut Snapshot, hardware: bool, fallback: bool) {
     }
 }
 pub fn spawn(handle: &LoopHandle<'static, Gavno>, hardware: bool) -> Option<Sender<Command>> {
+    let _startup = crate::perf::Startup::new("dbus.status.spawn.begin", "dbus.status.spawn.end");
     let (events, source) = channel::channel();
     if let Err(error) = handle.insert_source(source, |event, _, gv| {
+        let _stall = crate::perf::Stall::new("dbus.status");
         if let channel::Event::Msg(event) = event {
             gv.bar_status(event);
         }

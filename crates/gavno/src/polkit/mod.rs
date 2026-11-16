@@ -91,6 +91,7 @@ impl Gavno {
         }
         let (tx, rx) = channel::channel();
         if let Err(error) = self.loop_handle.insert_source(rx, |event, _, gv| {
+            let _stall = crate::perf::Stall::new("dbus.polkit");
             if let channel::Event::Msg(request) = event {
                 gv.guard(Feature::Polkit, (), |gv| gv.polkit_request(request));
             }
@@ -99,6 +100,7 @@ impl Gavno {
             return;
         }
         self.polkit.started = true;
+        let _startup = crate::perf::Startup::new("dbus.polkit.spawn.begin", "dbus.polkit.spawn.end");
         self.polkit.stop = dbus::spawn(tx, target);
     }
 

@@ -128,6 +128,8 @@ struct Surface {
     hdr_requested: Option<bool>,
     sdr_format: Fourcc,
     white_nits: f32,
+    first_frame_queued: bool,
+    first_frame_presented: bool,
 }
 
 impl Drop for Gpu {
@@ -169,8 +171,10 @@ impl UdevData {
 }
 
 pub fn init(event_loop: &mut EventLoop<'static, Gavno>, gv: &mut Gavno) -> Result<(), Box<dyn std::error::Error>> {
+    crate::perf::startup("udev.session.begin");
     let (session, notifier) = LibSeatSession::new().map_err(|err| format!("libseat session: {err}"))?;
     info!(seat = session.seat(), "session opened");
+    crate::perf::startup("udev.session.opened");
 
     let primary_gpu = primary_gpu(session.seat())
         .ok()
@@ -178,6 +182,8 @@ pub fn init(event_loop: &mut EventLoop<'static, Gavno>, gv: &mut Gavno) -> Resul
         .and_then(|path| DrmNode::from_path(path).ok())
         .ok_or("no primary GPU found")?;
     info!(?primary_gpu, "primary GPU");
+    crate::perf::startup("udev.primary_gpu.found");
+    crate::perf::startup("udev.libinput.begin");
 
     // Input.
     let mut libinput = Libinput::new_with_udev(LibinputSessionInterface::from(session.clone()));
@@ -188,19 +194,28 @@ pub fn init(event_loop: &mut EventLoop<'static, Gavno>, gv: &mut Gavno) -> Resul
     event_loop
         .handle()
         .insert_source(libinput_backend, |mut event, _, gv| {
+            let _stall = crate::perf::Stall::new("libinput");
+            static FIRST_LIBINPUT: std::sync::Once = std::sync::Once::new();
+            FIRST_LIBINPUT.call_once(|| crate::perf::startup("udev.libinput.first_event"));
             if let InputEvent::DeviceAdded { device } = &mut event {
                 configure_input_device(device);
             }
             gv.process_input_event(event);
         })?;
 
+    crate::perf::startup("udev.libinput.ready");
+
     // Session pause/resume (VT switches).
-    event_loop.handle().insert_source(notifier, |event, _, gv| match event {
-        SessionEvent::PauseSession => on_session_pause(gv),
-        SessionEvent::ActivateSession => on_session_activate(gv),
+    event_loop.handle().insert_source(notifier, |event, _, gv| {
+        let _stall = crate::perf::Stall::new("udev.session");
+        match event {
+            SessionEvent::PauseSession => on_session_pause(gv),
+            SessionEvent::ActivateSession => on_session_activate(gv),
+        }
     })?;
 
     let udev_backend = UdevBackend::new(session.seat())?;
+    crate::perf::startup("udev.enumeration.ready");
     let active = session.is_active();
     let devices: Vec<(DrmNode, std::path::PathBuf)> = udev_backend
         .device_list()
@@ -229,20 +244,23 @@ pub fn init(event_loop: &mut EventLoop<'static, Gavno>, gv: &mut Gavno) -> Resul
         }
     }
 
-    event_loop.handle().insert_source(udev_backend, |event, _, gv| match event {
-        UdevEvent::Added { device_id, path } => {
-            if let Ok(node) = DrmNode::from_dev_id(device_id) {
-                device_added(gv, node, &path);
+    event_loop.handle().insert_source(udev_backend, |event, _, gv| {
+        let _stall = crate::perf::Stall::new("udev.hotplug");
+        match event {
+            UdevEvent::Added { device_id, path } => {
+                if let Ok(node) = DrmNode::from_dev_id(device_id) {
+                    device_added(gv, node, &path);
+                }
             }
-        }
-        UdevEvent::Changed { device_id } => {
-            if let Ok(node) = DrmNode::from_dev_id(device_id) {
-                device_changed(gv, node);
+            UdevEvent::Changed { device_id } => {
+                if let Ok(node) = DrmNode::from_dev_id(device_id) {
+                    device_changed(gv, node);
+                }
             }
-        }
-        UdevEvent::Removed { device_id } => {
-            if let Ok(node) = DrmNode::from_dev_id(device_id) {
-                device_removed(gv, node);
+            UdevEvent::Removed { device_id } => {
+                if let Ok(node) = DrmNode::from_dev_id(device_id) {
+                    device_removed(gv, node);
+                }
             }
         }
     })?;
@@ -299,21 +317,28 @@ fn device_added(gv: &mut Gavno, node: DrmNode, path: &Path) {
 }
 
 fn open_gpu(gv: &mut Gavno, node: DrmNode, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    crate::perf::startup("udev.gpu.open.begin");
     let Some(data) = udev(gv) else { return Ok(()) };
     let fd = data
         .session
         .open(path, OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOCTTY | OFlags::NONBLOCK)?;
     let fd = DrmDeviceFd::new(DeviceFd::from(fd));
 
+    crate::perf::startup("udev.gpu.fd_opened");
     let (drm, notifier) = DrmDevice::new(fd.clone(), true)?;
+    crate::perf::startup("udev.drm.ready");
     let gbm = GbmDevice::new(fd)?;
 
+    crate::perf::startup("udev.gbm.ready");
     let display = unsafe { EGLDisplay::new(gbm.clone())? };
+    crate::perf::startup("udev.egl.display_ready");
     let egl_device = EGLDevice::device_for_display(&display)?;
     let render_node = egl_device.try_get_render_node().ok().flatten().unwrap_or(node);
     let context = EGLContext::new(&display)?;
+    crate::perf::startup("udev.egl.context_ready");
     let renderer = unsafe { GlesRenderer::new(context)? };
     info!(?render_node, "GLES renderer ready");
+    crate::perf::startup("udev.renderer.ready");
 
     let token = gv.loop_handle.insert_source(notifier, move |event, metadata, gv| match event {
         DrmEvent::VBlank(crtc) => on_vblank(gv, crtc, metadata),
@@ -332,14 +357,20 @@ fn open_gpu(gv: &mut Gavno, node: DrmNode, path: &Path) -> Result<(), Box<dyn st
         render_formats,
     );
 
+    crate::perf::startup("udev.output_manager.ready");
+
     // Client buffers: shm formats and a dmabuf global with feedback.
     gv.shm_state.update_formats(renderer.shm_formats());
+    crate::perf::startup("udev.shm_formats.ready");
     let dmabuf_formats = renderer.dmabuf_formats();
+    crate::perf::startup("udev.dmabuf_formats.ready");
     let default_feedback = DmabufFeedbackBuilder::new(render_node.dev_id(), dmabuf_formats).build()?;
+    crate::perf::startup("udev.dmabuf_feedback.ready");
     let global = gv
         .dmabuf_state
         .create_global_with_default_feedback::<Gavno>(&gv.display_handle, &default_feedback);
 
+    crate::perf::startup("udev.dmabuf.ready");
     let Some(data) = udev(gv) else { return Ok(()) };
     data.dmabuf_global = Some(global);
     data.gpu = Some(Gpu {
@@ -367,6 +398,7 @@ fn device_changed(gv: &mut Gavno, node: DrmNode) {
     if gpu.node != node {
         return;
     }
+    crate::perf::startup("udev.connectors.scan.begin");
     let mut events: Vec<DrmScanEvent> = match gpu.scanner.scan_connectors(gpu.manager.device()) {
         Ok(result) => result.into_iter().collect(),
         Err(err) => {
@@ -374,6 +406,7 @@ fn device_changed(gv: &mut Gavno, node: DrmNode) {
             return;
         }
     };
+    crate::perf::startup("udev.connectors.scan.end");
     // Try enabled connectors first, so an explicitly disabled panel is only
     // kept as a safety fallback when no configured output can be initialized.
     events.sort_by_key(|event| match event {
@@ -452,6 +485,7 @@ fn edid_identity(bytes: &[u8]) -> Option<(String, String)> {
 
 fn connector_connected(gv: &mut Gavno, connector: connector::Info, crtc: crtc::Handle) {
     let name = format!("{}-{}", connector.interface().as_str(), connector.interface_id());
+    crate::perf::startup_output("udev.output.begin", &name);
     let internal = matches!(
         connector.interface(),
         connector::Interface::EmbeddedDisplayPort | connector::Interface::LVDS | connector::Interface::DSI
@@ -481,7 +515,9 @@ fn connector_connected(gv: &mut Gavno, connector: connector::Info, crtc: crtc::H
         .max()
         .unwrap_or(0);
 
+    crate::perf::startup_output("udev.output.identity.begin", &name);
     let (make, model) = connector_identity(gv, &connector).unwrap_or_else(|| ("Unknown".into(), name.clone()));
+    crate::perf::startup_output("udev.output.identity.ready", &name);
     let (phys_w, phys_h) = connector.size().unwrap_or((0, 0));
     let output = Output::new(
         name.clone(),
@@ -492,6 +528,7 @@ fn connector_connected(gv: &mut Gavno, connector: connector::Info, crtc: crtc::H
             model,
         },
     );
+    crate::perf::startup_output("udev.output.wayland_created", &name);
     for (index, timing) in connector.modes().iter().enumerate() {
         let wl = WlMode::from(*timing);
         output.add_mode(wl);
@@ -506,6 +543,7 @@ fn connector_connected(gv: &mut Gavno, connector: connector::Info, crtc: crtc::H
                 ConnectorColor::probe(gpu.manager.device().device_fd().clone(), connector.handle())
             } else { Err("HDR requires atomic modesetting".into()) };
             output.user_data().insert_if_missing(|| DisabledHdr(color.is_ok()));
+            crate::perf::startup_output("udev.output.disabled", &name);
             gpu.disabled_outputs.insert(name, output);
         }
         return;
@@ -522,9 +560,11 @@ fn connector_connected(gv: &mut Gavno, connector: connector::Info, crtc: crtc::H
     let Backend::Udev(data) = &mut gv.backend else { return };
     let primary = data.primary_gpu;
     let Some(gpu) = data.gpu.as_mut() else { return };
+    crate::perf::startup_output("udev.output.initialize.begin", &name);
     let initialized = mode::try_modes(&modes, requested, |index| {
         let wl_mode = WlMode::from(connector.modes()[index]);
         output.change_current_state(Some(wl_mode), None, None, None);
+        tracing::info!(target: "gavno::startup", stage = "udev.output.mode_attempt", ms = crate::perf::elapsed_ms(), output = %name, width = wl_mode.size.w, height = wl_mode.size.h, refresh = wl_mode.refresh);
         match gpu.manager.initialize_output::<_, GavnoRenderElement>(
             crtc,
             connector.modes()[index],
@@ -549,15 +589,18 @@ fn connector_connected(gv: &mut Gavno, connector: connector::Info, crtc: crtc::H
         gv.display_handle.remove_global::<Gavno>(global);
         return;
     };
+    crate::perf::startup_output("udev.output.initialize.ready", &name);
     let wl_mode = WlMode::from(connector.modes()[index]);
     // Preferred flags come from the connector, not the selected timing.
     info!(name, width = wl_mode.size.w, height = wl_mode.size.h,
         refresh_hz = f64::from(wl_mode.refresh) / 1000.0, scale, "selected output mode");
     let feedback = surface_dmabuf_feedback(&drm_output, &gpu.renderer, primary, gpu.render_node);
+    crate::perf::startup_output("udev.output.feedback.ready", &name);
     let color = if gpu.manager.device().is_atomic() {
         ConnectorColor::probe(gpu.manager.device().device_fd().clone(), connector.handle())
     } else { Err("HDR requires atomic modesetting".into()) };
     if let Err(reason) = &color { debug!(name, reason, "HDR unavailable on connector"); }
+    crate::perf::startup_output("udev.output.color_probe.ready", &name);
     let sdr_format = drm_output.format();
 
     gpu.surfaces.insert(
@@ -574,9 +617,13 @@ fn connector_connected(gv: &mut Gavno, connector: connector::Info, crtc: crtc::H
             hdr_requested: Some(hdr_requested),
             sdr_format,
             white_nits,
+            first_frame_queued: false,
+            first_frame_presented: false,
         },
     );
+    crate::perf::startup_output("udev.output.hook.begin", &name);
     gv.output_added_hook();
+    crate::perf::startup_output("udev.output.ready", &name);
     queue_redraw(gv, crtc);
 }
 
@@ -827,6 +874,7 @@ fn queue_redraw(gv: &mut Gavno, crtc: crtc::Handle) {
 }
 
 fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
+    let started = std::time::Instant::now();
     let session_active = udev(gv).is_some_and(|d| d.session.is_active());
     let pointer_pos = gv.pointer_location();
     let time = gv.start_time.elapsed();
@@ -834,6 +882,8 @@ fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
     let Backend::Udev(data) = &mut gv.backend else { return };
     let Some(gpu) = data.gpu.as_mut() else { return };
     let Some(surface) = gpu.surfaces.get_mut(&crtc) else { return };
+    let output = surface.output.clone();
+    let _stall = crate::perf::Stall::output_since("udev.render", &output, started);
     if !matches!(surface.redraw, RedrawState::Queued) {
         return;
     }
@@ -857,7 +907,9 @@ fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
             return;
         }
     }
-    let output = surface.output.clone();
+    if !surface.first_frame_queued {
+        crate::perf::startup_output("udev.first_frame.render.begin", &output.name());
+    }
 
     let mut elements = render::output_elements(
         &mut gpu.renderer,
@@ -884,6 +936,9 @@ fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
         &mut gv.classic,
         &mut gv.polkit,
     );
+    if !surface.first_frame_queued {
+        crate::perf::startup_output("udev.first_frame.elements.ready", &output.name());
+    }
     let mut result = draw_frame(surface, &mut gpu.renderer, &elements);
     if result.is_err() && surface.hdr.is_some() {
         warn!(output = output.name(), error = ?result.as_ref().err(), "HDR render failed; falling back to SDR");
@@ -904,11 +959,22 @@ fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
         }
     };
 
+    if !surface.first_frame_queued {
+        crate::perf::startup_output("udev.first_frame.drawn", &output.name());
+    }
     let mut retry_sdr = false;
     if !is_empty {
         let feedback = render::take_presentation_feedback(&gv.space, &output, &states);
+        if !surface.first_frame_queued {
+            crate::perf::startup_output("udev.first_commit.begin", &output.name());
+        }
         match surface.drm_output.queue_frame(Some(feedback)) {
             Ok(()) => {
+                if !surface.first_frame_queued {
+                    surface.first_frame_queued = true;
+                    crate::perf::startup_output("udev.first_commit.submitted", &output.name());
+                    crate::perf::startup_output("udev.first_frame.queued", &output.name());
+                }
                 surface.redraw = RedrawState::WaitingForVBlank { queued: false };
                 gv.protocols.locks.submitted(&output);
             },
@@ -951,6 +1017,7 @@ fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
 }
 
 fn on_timer(gv: &mut Gavno, crtc: crtc::Handle) {
+    let _stall = crate::perf::Stall::new("timer.udev.frame");
     let Some(surface) = surface_mut(&mut gv.backend, crtc) else {
         return;
     };
@@ -963,6 +1030,7 @@ fn on_timer(gv: &mut Gavno, crtc: crtc::Handle) {
 }
 
 fn on_vblank(gv: &mut Gavno, crtc: crtc::Handle, metadata: &mut Option<DrmEventMetadata>) {
+    let _stall = crate::perf::Stall::new("drm.vblank");
     let Some(surface) = surface_mut(&mut gv.backend, crtc) else {
         return;
     };
@@ -987,15 +1055,21 @@ fn on_vblank(gv: &mut Gavno, crtc: crtc::Handle, metadata: &mut Option<DrmEventM
 
     let lock_output = surface.output.clone();
     let mut presented = false;
+    let mut frame_completed = false;
     match surface.drm_output.frame_submitted() {
         Ok(Some(Some(mut feedback))) => {
             presented = true;
+            frame_completed = true;
             feedback.presented(time, Refresh::fixed(period), seq as u64, flags);
         }
         Ok(_) => { presented = true; }
         Err(err) => warn!(?err, "frame_submitted failed"),
     }
 
+    if frame_completed && surface.first_frame_queued && !surface.first_frame_presented {
+        surface.first_frame_presented = true;
+        crate::perf::startup_output("udev.first_frame.presented", &lock_output.name());
+    }
     let queued = matches!(surface.redraw, RedrawState::WaitingForVBlank { queued: true });
     surface.redraw = RedrawState::Idle;
     if presented { gv.protocols.locks.presented(&lock_output); }

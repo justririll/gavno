@@ -964,6 +964,7 @@ impl Gavno {
             .insert_source(
                 Timer::from_duration(Duration::from_secs(3)),
                 move |_, _, gv| {
+                    let _stall = crate::perf::Stall::new("timer.dock_launch");
                     gv.guard(crate::module::Feature::Dock, (), |gv| {
                         gv.dock.launches.retain(|l| l.id != expired);
                     });

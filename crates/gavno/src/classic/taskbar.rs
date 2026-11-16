@@ -561,6 +561,7 @@ impl Gavno {
                 let result = gv.loop_handle.insert_source(
                     Timer::from_duration(Duration::from_millis(500)),
                     move |_, _, gv| {
+                        let _stall = crate::perf::Stall::new("timer.taskbar_hover");
                         gv.guard(Feature::Classic, (), |gv| {
                             gv.classic.taskbar.hover_timer = None;
                             if gv.classic.taskbar.hover == hover {

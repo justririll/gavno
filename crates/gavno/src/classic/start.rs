@@ -541,6 +541,7 @@ impl Gavno {
                     s.loading = true;
                     let (tx, rx) = channel::channel();
                     let result = gv.loop_handle.insert_source(rx, |event, _, gv| {
+                        let _stall = crate::perf::Stall::new("classic.apps_reply");
                         if let channel::Event::Msg(entries) = event {
                             gv.guard(Feature::Classic, (), |gv| {
                                 gv.classic.start.load(

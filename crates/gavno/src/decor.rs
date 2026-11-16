@@ -102,6 +102,7 @@ struct Programs {
 }
 impl Programs {
     fn compile(renderer: &mut GlesRenderer) -> Result<Self, GlesError> {
+        let _startup = crate::perf::Startup::new("decor.programs.begin", "decor.programs.end");
         let u = || {
             vec![
                 UniformName::new("opacity", UniformType::_1f),
@@ -111,9 +112,11 @@ impl Programs {
         };
         let texture =
             renderer.compile_custom_texture_shader(format!("{TEXTURE}{MASK}{SAMPLE}"), &u())?;
+        crate::perf::startup("decor.texture_shader.ready");
         let mut uniforms = u();
         uniforms.push(UniformName::new("solid_color", UniformType::_4f));
         let solid=renderer.compile_custom_pixel_shader(format!("{MASK}\nuniform vec4 solid_color;\nvoid main() {{ gl_FragColor=solid_color*(alpha*opacity*coverage()); }}"),&uniforms)?;
+        crate::perf::startup("decor.solid_shader.ready");
         Ok(Self { texture, solid })
     }
 }

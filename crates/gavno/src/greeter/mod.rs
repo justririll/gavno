@@ -816,6 +816,7 @@ pub fn start(gv: &mut Gavno) {
     let until_next_minute = |t: LocalTime| Duration::from_secs(60 - t.second as u64 % 60) + Duration::from_millis(20);
     let first = until_next_minute(LocalTime::now());
     let _ = gv.loop_handle.insert_source(Timer::from_duration(first), move |_, _, gv| {
+        let _stall = crate::perf::Stall::new("timer.greeter_clock");
         if gv.greeter.as_ref().is_none_or(|g| g.ui_failures >= 2) { return TimeoutAction::Drop; }
         gv.queue_redraw_all();
         TimeoutAction::ToDuration(until_next_minute(LocalTime::now()))

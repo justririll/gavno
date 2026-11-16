@@ -216,6 +216,7 @@ pub fn load_all() -> Vec<DesktopEntry> {
     load(&data_dirs())
 }
 fn load(dirs: &[PathBuf]) -> Vec<DesktopEntry> {
+    let _startup = crate::perf::Startup::new("desktop_entries.load.begin", "desktop_entries.load.end");
     fn walk(root: &Path, dir: &Path, files: &mut Vec<(String, PathBuf)>, depth: usize) {
         if depth > 8 {
             return;
@@ -241,6 +242,7 @@ fn load(dirs: &[PathBuf]) -> Vec<DesktopEntry> {
         let root = dir.join("applications");
         let mut files = Vec::new();
         walk(&root, &root, &mut files, 0);
+        tracing::info!(target: "gavno::startup", stage = "desktop_entries.directory_scanned", ms = crate::perf::elapsed_ms(), path = %root.display(), files = files.len());
         for (id, path) in files {
             // Hidden entries also mask lower-priority system entries.
             if !seen.insert(id.clone()) {
@@ -254,6 +256,7 @@ fn load(dirs: &[PathBuf]) -> Vec<DesktopEntry> {
             }
         }
     }
+    crate::perf::startup("desktop_entries.parsed");
     result
 }
 

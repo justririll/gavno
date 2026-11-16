@@ -119,8 +119,11 @@ impl Gavno {
         let presentation_state = PresentationState::new::<Self>(&dh, clock.id() as u32);
         let fractional_scale_state = FractionalScaleManagerState::new::<Self>(&dh);
 
+        crate::perf::startup("gavno.protocols.begin");
         let protocols = crate::handlers::protocols::Protocols::new(&dh, event_loop.handle(), &primary_selection_state, config.modules.color_management);
 
+        crate::perf::startup("gavno.protocols.ready");
+        crate::perf::startup("gavno.seat.begin");
         let mut seat_state = SeatState::new();
         let mut seat: Seat<Self> = seat_state.new_wl_seat(&dh, "seat0");
         let xkb = XkbConfig {
@@ -135,13 +138,18 @@ impl Gavno {
                 .expect("default xkb keymap must compile");
         }
         seat.add_pointer();
+        crate::perf::startup("gavno.seat.ready");
 
+        crate::perf::startup("gavno.wayland_listener.begin");
         let socket_name = Self::init_wayland_listener(display, event_loop);
+        crate::perf::startup("gavno.wayland_listener.ready");
         let notifications = crate::notify::Shared::default();
         let now_playing = crate::media::Shared::default();
+        crate::perf::startup("gavno.topbar.begin");
         let mut topbar = crate::topbar::TopBar::default();
         topbar.notifications = notifications.clone();
         topbar.now_playing = now_playing.clone();
+        crate::perf::startup("gavno.topbar.ready");
 
         Self {
             protocols,
@@ -216,6 +224,7 @@ impl Gavno {
         #[cfg(not(test))]
         handle
             .insert_source(listening_socket, |client_stream, _, state| {
+                let _stall = crate::perf::Stall::new("wayland.accept");
                 if let Err(err) = state
                     .display_handle
                     .insert_client(client_stream, Arc::new(ClientState::default()))
@@ -227,6 +236,7 @@ impl Gavno {
 
         handle
             .insert_source(Generic::new(display, Interest::READ, Mode::Level), |_, display, state| {
+                let _stall = crate::perf::Stall::new("wayland.dispatch_clients");
                 // Safety: the display is never dropped while the source lives.
                 unsafe {
                     display.get_mut().dispatch_clients(state).unwrap();

@@ -295,6 +295,7 @@ impl Gavno {
                     gv.launcher.loading = true;
                     let (tx,rx)=smithay::reexports::calloop::channel::channel();
                     let result=gv.loop_handle.insert_source(rx,|event,_,gv|{
+                        let _stall = crate::perf::Stall::new("launcher.apps_reply");
                         if let smithay::reexports::calloop::channel::Event::Msg(entries)=event {
                             gv.guard(crate::module::Feature::Launcher,(),|gv|{
                                 gv.launcher.install_entries(entries);
@@ -388,6 +389,7 @@ impl Gavno {
         let mods = *mods;
         let delay = Duration::from_millis(self.config.repeat_delay.max(0) as u64);
         let timer = self.loop_handle.insert_source(Timer::from_duration(delay), move |_, _, gv| {
+            let _stall = crate::perf::Stall::new("timer.launcher_repeat");
             let held = gv.launcher.repeat.as_ref().is_some_and(|(key, _)| *key == code);
             if !held || !gv.launcher.open || gv.config.repeat_rate <= 0 {
                 gv.launcher.repeat = None;

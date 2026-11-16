@@ -135,6 +135,7 @@ impl Icons {
             return buffer.clone();
         }
         let path = self.paths.entry(name.into()).or_insert_with(|| {
+            let _startup = crate::perf::Startup::new("icon.theme_lookup.begin", "icon.theme_lookup.end");
             let mut dirs = crate::desktop_entry::data_dirs();
             if let Some(home) = std::env::var_os("HOME") {
                 dirs.insert(0, PathBuf::from(home).join(".icons").parent()?.to_owned());
@@ -177,12 +178,16 @@ fn raster(path: &Path, size: u32, tint: bool) -> Option<MemoryRenderBuffer> {
     raster_color(path, size, tint, None)
 }
 fn raster_color(path: &Path, size: u32, tint: bool, color: Option<[u8; 3]>) -> Option<MemoryRenderBuffer> {
+    let _startup = crate::perf::Startup::new("image.decode.begin", "image.decode.end");
+    tracing::info!(target: "gavno::startup", stage = "image.decode.path", ms = crate::perf::elapsed_ms(), path = %path.display(), size);
     let mut pixels = if path
         .extension()
         .is_some_and(|e| e == "svg" || e == "svgz")
     {
         let data = read_svg(path)?;
+        crate::perf::startup("image.svg.read");
         let tree = resvg::usvg::Tree::from_data(&data, &resvg::usvg::Options::default()).ok()?;
+        crate::perf::startup("image.svg.parsed");
         let mut pixmap = resvg::tiny_skia::Pixmap::new(size, size)?;
         let s = (size as f32 / tree.size().width()).min(size as f32 / tree.size().height());
         let t = resvg::tiny_skia::Transform::from_row(
@@ -194,6 +199,7 @@ fn raster_color(path: &Path, size: u32, tint: bool, color: Option<[u8; 3]>) -> O
             (size as f32 - tree.size().height() * s) * 0.5,
         );
         resvg::render(&tree, t, &mut pixmap.as_mut());
+        crate::perf::startup("image.svg.rasterized");
         pixmap.take()
     } else {
         let mut decoder = png::Decoder::new(std::fs::File::open(path).ok()?);
@@ -205,6 +211,7 @@ fn raster_color(path: &Path, size: u32, tint: bool, color: Option<[u8; 3]>) -> O
         }
         let mut data = vec![0; reader.output_buffer_size()];
         let info = reader.next_frame(&mut data).ok()?;
+        crate::perf::startup("image.png.decoded");
         let channels = match info.color_type {
             png::ColorType::Rgba => 4,
             png::ColorType::Rgb => 3,

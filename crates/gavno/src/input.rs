@@ -69,6 +69,8 @@ impl Gavno {
         I::GestureSwipeUpdateEvent: 'static,
     {
         if !matches!(&event, InputEvent::DeviceAdded { .. } | InputEvent::DeviceRemoved { .. }) {
+            static FIRST_INPUT: std::sync::Once = std::sync::Once::new();
+            FIRST_INPUT.call_once(|| crate::perf::startup("input.first_event"));
             self.protocols.idle_policy.activity();
         }
         if self.lock.internal() && !matches!(&event, InputEvent::Keyboard { .. } | InputEvent::PointerMotion { .. }

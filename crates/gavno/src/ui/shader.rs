@@ -104,6 +104,7 @@ pub struct Shaders {
 
 impl Shaders {
     pub fn compile(renderer: &mut GlesRenderer) -> Result<Self, smithay::backend::renderer::gles::GlesError> {
+        let _startup = crate::perf::Startup::new("shaders.compile.begin", "shaders.compile.end");
         let u = |name: &'static str, t: UniformType| UniformName::new(name, t);
         let rrect = renderer.compile_custom_pixel_shader(
             format!("{HEADER}{RRECT}"),
@@ -115,6 +116,7 @@ impl Shaders {
                 u("border", UniformType::_1f),
             ],
         )?;
+        crate::perf::startup("shaders.rrect.ready");
         let shadow = renderer.compile_custom_pixel_shader(
             format!("{HEADER}{SHADOW}"),
             &[
@@ -125,6 +127,7 @@ impl Shaders {
                 u("blur", UniformType::_1f),
             ],
         )?;
+        crate::perf::startup("shaders.shadow.ready");
         let background = renderer.compile_custom_pixel_shader(
             format!("{HEADER}{BACKGROUND}"),
             &[
@@ -137,6 +140,7 @@ impl Shaders {
                 u("sun", UniformType::_3f),
             ],
         )?;
+        crate::perf::startup("shaders.background.ready");
         Ok(Self { rrect, shadow, background })
     }
 }

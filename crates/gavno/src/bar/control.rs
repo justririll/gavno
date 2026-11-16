@@ -80,6 +80,7 @@ impl Gavno {
         match self.loop_handle.insert_source(
             Timer::from_duration(Duration::from_millis(1500)),
             |_, _, gv| {
+                let _stall = crate::perf::Stall::new("timer.bar_osd");
                 gv.media.osd_timer = None;
                 gv.media.osd.expire(gv.start_time.elapsed());
                 gv.queue_redraw_all();
@@ -178,6 +179,7 @@ impl Gavno {
             match self
                 .loop_handle
                 .insert_source(Timer::from_duration(delay), move |_, _, gv| {
+                    let _stall = crate::perf::Stall::new("timer.media_repeat");
                     if gv
                         .media
                         .repeat

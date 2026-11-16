@@ -377,6 +377,7 @@ pub fn channel(
 ) -> Option<channel::Sender<Request>> {
     let (tx, rx) = channel::channel();
     match handle.insert_source(rx, |event, _, gv| {
+        let _stall = crate::perf::Stall::new("dbus.notifications");
         if let channel::Event::Msg(request) = event {
             gv.guard(Feature::Notifications, (), |gv| {
                 let now = gv.start_time.elapsed();
@@ -424,6 +425,7 @@ impl Gavno {
             && self.greeter.is_none()
         {
             self.notifications.borrow_mut().started = true;
+            let _startup = crate::perf::Startup::new("dbus.notifications.spawn.begin", "dbus.notifications.spawn.end");
             if let Some(events) = channel(&self.loop_handle) {
                 let mut state = self.notifications.borrow_mut();
                 state.signals = dbus::spawn(events, state.registry.clone(), state.enabled.clone());
@@ -460,6 +462,7 @@ impl Gavno {
                 match self.loop_handle.insert_source(
                     Timer::from_duration(deadline.saturating_sub(now)),
                     |_, _, gv| {
+                        let _stall = crate::perf::Stall::new("timer.notification_expiry");
                         gv.guard(Feature::Notifications, (), |gv| {
                             gv.notifications.borrow_mut().timer = None;
                             gv.refresh_notifications_inner(None);

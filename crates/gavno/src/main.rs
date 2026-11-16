@@ -4,6 +4,7 @@
 //! running on a TTY and a winit backend for running nested during development.
 //! Rendering is on demand: when nothing changes, GAVNO does not draw.
 
+mod perf;
 mod anim;
 mod classic;
 mod decor;
@@ -76,8 +77,11 @@ fn limit_malloc_arenas() {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    perf::start_process();
     limit_malloc_arenas();
     init_logging();
+    perf::configure_stalls();
+    perf::startup("process.started");
     crash_log::install();
 
     let mut args = std::env::args().skip(1);
@@ -118,21 +122,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let mut event_loop: EventLoop<'static, Gavno> = EventLoop::try_new()?;
+    let dispatch_start = perf::watch_dispatch(&event_loop.handle())?;
     let display: Display<Gavno> = Display::new()?;
+    perf::startup("config.begin");
     let config = config::Config::load(backend_choice == BackendChoice::Winit);
+    perf::startup("config.loaded");
+    perf::startup("gavno.new.begin");
     let mut state = Gavno::new(&mut event_loop, display, config);
+
+    perf::startup("gavno.new.end");
 
     match backend_choice {
         BackendChoice::Winit => backend::winit::init(&mut event_loop, &mut state)?,
         BackendChoice::Tty => backend::udev::init(&mut event_loop, &mut state)?,
     }
+    perf::startup("backend.ready");
     // The window IPC lets agents drive the desktop; never on the login screen.
     if !greeter_mode {
         lock::start(&mut state);
+        perf::startup("screencopy.init.begin");
         state.guard(module::Feature::Screencopy, (), handlers::screencopy::init);
+        perf::startup("screencopy.init.end");
+        perf::startup("ipc.init.begin");
         if let Err(err) = state.guard(module::Feature::Ipc, Ok(()), ipc::init) {
             tracing::warn!(?err, "window IPC disabled");
         }
+        perf::startup("ipc.init.end");
     }
 
     if greeter_mode {
@@ -156,6 +171,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     tracing::info!(socket = ?state.socket_name, "gavno is listening");
+    perf::startup("listening");
 
     // Clients such as foot quit when there is no output yet, so the startup
     // command waits for the first one (the TTY backend may still be waiting
@@ -165,7 +181,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         state.output_added_hook();
     }
 
-    event_loop.run(None, &mut state, |state| state.on_loop_idle())?;
+    event_loop.run(None, &mut state, |state| {
+        {
+            let _stall = perf::Stall::new("calloop.on_loop_idle");
+            state.on_loop_idle();
+        }
+        perf::finish_dispatch(&dispatch_start);
+    })?;
     Ok(())
 }
 
@@ -184,6 +206,7 @@ fn init_logging() {
 /// D-Bus activated and systemd user services (xdg-desktop-portal and its
 /// wlr backend for screen sharing, for example) need our display variables.
 fn export_session_environment() {
+    let _startup = perf::Startup::new("session_environment.begin", "session_environment.end");
     let mut names = vec!["WAYLAND_DISPLAY", "XDG_CURRENT_DESKTOP", "XDG_SESSION_TYPE"];
     if std::env::var_os("DISPLAY").is_some() {
         names.push("DISPLAY");
@@ -202,6 +225,7 @@ fn export_session_environment() {
 /// built-in one registers there only when GAVNO_POLKIT_TEST is set, and with
 /// GAVNO_POLKIT_TEST_PROCESS=<pid> it serves only that process.
 fn start_polkit_agent(state: &mut Gavno, tty: bool) {
+    let _startup = crate::perf::Startup::new("polkit.start.begin", "polkit.start.end");
     let command = state.config.polkit_agent.trim().to_owned();
     if command.is_empty() {
         return;
@@ -234,9 +258,11 @@ fn spawn_if_installed(command: &str) -> bool {
 /// default terminal becomes `footclient`, which opens a window in a few
 /// milliseconds instead of starting a new process.
 fn autostart(state: &mut Gavno) {
+    let _startup = crate::perf::Startup::new("autostart.begin", "autostart.end");
     let mut foot_server = false;
     for command in state.config.autostart.clone() {
         let started = spawn_if_installed(&command);
+        tracing::info!(target: "gavno::startup", stage = "autostart.spawn", ms = perf::elapsed_ms(), %command, started);
         let mut words = command.split_whitespace();
         if started && words.next() == Some("foot") && words.any(|w| w == "--server" || w == "-s") {
             foot_server = true;

@@ -27,6 +27,7 @@ impl Cursor {
             .any(|((n, _), images)| n == name && images.len() > 1 && images.iter().any(|i| i.delay > 0))
     }
     pub fn load() -> Cursor {
+        let _startup = crate::perf::Startup::new("cursor.theme.begin", "cursor.theme.end");
         let theme = std::env::var("XCURSOR_THEME").unwrap_or_else(|_| "Adwaita".into());
         let size = std::env::var("XCURSOR_SIZE")
             .ok()
@@ -46,6 +47,7 @@ impl Cursor {
         let key = (name.to_owned(), scale);
         let size = self.size * scale;
         let icons = self.cache.entry(key).or_insert_with(|| {
+            let _startup = crate::perf::Startup::new("cursor.image.begin", "cursor.image.end");
             let names = cursor_names(name);
             let icons = resolve_names(&names, |name| load_icons(&self.theme, name))
                 .or_else(|| resolve_names(&names, |name| load_icons(&self.fallback_theme, name)))

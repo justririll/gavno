@@ -175,6 +175,7 @@ impl Lock {
 }
 
 pub fn start(gv: &mut Gavno) {
+    let _startup = crate::perf::Startup::new("dbus.logind.spawn.begin", "dbus.logind.spawn.end");
     gv.lock.logind = logind::spawn(&gv.loop_handle);
     gv.lock
         .command(logind::Command::Hint(gv.protocols.locks.locked));
@@ -298,6 +299,7 @@ impl Gavno {
             self.lock.retry_timer = self
                 .loop_handle
                 .insert_source(Timer::from_duration(delay), move |_, _, gv| {
+                    let _stall = crate::perf::Stall::new("timer.lock_retry");
                     if gv.lock.generation == generation {
                         gv.lock.retry_timer = None;
                         gv.lock.blocked_until = None;
@@ -356,6 +358,7 @@ impl Gavno {
         self.lock.minute_timer = self
             .loop_handle
             .insert_source(Timer::from_duration(delay), |_, _, gv| {
+                let _stall = crate::perf::Stall::new("timer.lock_clock");
                 gv.lock.minute_timer = None;
                 if gv.lock.internal && !gv.lock.failed {
                     gv.queue_redraw_all();
@@ -383,9 +386,11 @@ impl Gavno {
             self.lock.idle_timer = self
                 .loop_handle
                 .insert_source(Timer::from_duration(delay), move |_, _, gv| {
+                    let _stall = crate::perf::Stall::new("timer.lock_idle");
                     gv.lock.idle_timer = None;
                     // Evaluate inhibitor changes from this same event-loop batch first.
                     gv.loop_handle.insert_idle(move |gv| {
+                        let _stall = crate::perf::Stall::new("idle.lock_idle");
                         gv.refresh_idle();
                         if gv.lock.idle_generation == generation
                             && !gv.protocols.idle.is_inhibited()

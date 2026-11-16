@@ -271,6 +271,7 @@ pub fn spawn_job(gv: &mut Gavno, job: impl FnOnce() -> Reply + Send + 'static) {
     let generation = gv.classic.desktop.generation;
     let (tx, rx) = channel::channel();
     match gv.loop_handle.insert_source(rx, move |event, _, gv| {
+        let _stall = crate::perf::Stall::new("classic.desktop_reply");
         if let channel::Event::Msg(reply) = event {
             gv.guard(Feature::Classic, (), |gv| {
                 if gv.classic.desktop.generation != generation || !gv.classic.desktop.active {
@@ -611,6 +612,7 @@ impl Gavno {
         match self.loop_handle.insert_source(
             Generic::new(fd, Interest::READ, Mode::Level),
             |_, source, gv| {
+                let _stall = crate::perf::Stall::new("classic.desktop_watch");
                 let mut bytes = [0u8; 8192];
                 let mut lost = false;
                 loop {
@@ -665,6 +667,7 @@ impl Gavno {
         if let Ok(t) = self.loop_handle.insert_source(
             Timer::from_duration(Duration::from_millis(100)),
             |_, _, gv| {
+                let _stall = crate::perf::Stall::new("timer.desktop_debounce");
                 gv.guard(Feature::Classic, (), |gv| {
                     gv.classic.desktop.debounce = None;
                     gv.request_desktop_scan();

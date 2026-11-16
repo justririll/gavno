@@ -200,6 +200,7 @@ fn remove_stale_display(dir: &Path, number: u16) {
 }
 
 pub fn start(gv: &mut Gavno) {
+    let _startup = crate::perf::Startup::new("xwayland.start.begin", "xwayland.start.end");
     let Some(executable) = executable_in_path() else {
         tracing::info!("xwayland-satellite is not in PATH; X11 support disabled");
         return;
@@ -208,6 +209,7 @@ pub fn start(gv: &mut Gavno) {
         tracing::warn!("no free X display; X11 support disabled");
         return;
     };
+    crate::perf::startup("xwayland.display_claimed");
     spawn(gv, executable, false, display);
 }
 fn spawn(gv: &mut Gavno, executable: PathBuf, restarted: bool, display: XDisplay) {
@@ -236,6 +238,7 @@ fn spawn(gv: &mut Gavno, executable: PathBuf, restarted: bool, display: XDisplay
             return;
         }
     };
+    crate::perf::startup("xwayland.process_spawned");
     let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, child.id(), 0) };
     if raw < 0 {
         tracing::warn!(error = ?std::io::Error::last_os_error(), "could not supervise xwayland-satellite");
@@ -248,6 +251,7 @@ fn spawn(gv: &mut Gavno, executable: PathBuf, restarted: bool, display: XDisplay
     let process = unsafe { OwnedFd::from_raw_fd(raw as _) };
     let (sender, receiver) = channel::channel();
     let watcher = match gv.loop_handle.insert_source(receiver, |event, _, gv| {
+        let _stall = crate::perf::Stall::new("xwayland.exit");
         if let Event::Msg(status) = event {
             if let Some(mut satellite) = gv.satellite.take() {
                 gv.loop_handle.remove(satellite.watcher);
@@ -282,6 +286,7 @@ fn spawn(gv: &mut Gavno, executable: PathBuf, restarted: bool, display: XDisplay
     });
     std::env::set_var("DISPLAY", &display_name);
     tracing::info!(display = %display_name, "started xwayland-satellite");
+    crate::perf::startup("xwayland.started");
     std::thread::spawn(move || {
         let status = wait_child(&mut child);
         let _ = sender.send(status);

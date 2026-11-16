@@ -1196,6 +1196,7 @@ impl Gavno {
         match self.loop_handle.insert_source(
             Timer::from_duration(next_minute(wall_time())),
             |_, _, gv| {
+                let _stall = crate::perf::Stall::new("timer.bar_clock");
                 gv.guard(crate::module::Feature::Bar, (), |gv| {
                     gv.topbar.clock_timer = None;
                     gv.topbar.update_clock();
