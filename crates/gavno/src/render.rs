@@ -119,6 +119,7 @@ pub fn output_elements(
     config: &crate::config::Config,
     features: &mut Features,
     osd: &mut crate::topbar::osd::Osd,
+    launcher: &mut crate::launcher::Launcher,
 ) -> Vec<GavnoRenderElement> {
     let mut elements: Vec<GavnoRenderElement> = Vec::new();
     let Some(output_geo) = space.output_geometry(output) else {
@@ -208,6 +209,10 @@ pub fn output_elements(
     }
 
     elements.extend(features.call(Feature::ResizeMode, Vec::new(), || overlay.resize_mode.elements(renderer, output, output_geo, scale.x)));
+    let accent = topbar.accent();
+    elements.extend(features.call(Feature::Launcher, Vec::new(), || {
+        launcher.elements(renderer, output, output_geo.size, scale.x, time, accent, &config.dock.icon_theme)
+    }));
     elements.extend(features.call(Feature::Switcher, Vec::new(), || crate::overlay::overlay_elements(overlay, renderer, output, output_geo, scale.x, time)));
     let shell_visible = !space.elements().any(|w| crate::window_mode::mode_state(w).mode == crate::window_mode::WindowMode::Fullscreen
         && space.element_location(w).is_some_and(|p| output_geo.contains(p)));

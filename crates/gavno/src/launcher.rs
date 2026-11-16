@@ -1,0 +1,457 @@
+//! Built-in application launcher: Super+D (or a Super tap when the overview is
+//! off) opens a centred search panel over the desktop. Typing filters the
+//! installed desktop entries, Enter or a click launches, Esc closes.
+use crate::{
+    desktop_entry::{self, DesktopEntry},
+    icons::Icons,
+    render::GavnoRenderElement,
+    topbar::{geometry::{rect, Rect}, label_style, Canvas, FULL_COLOR, LINE},
+    ui::{
+        spring::{Spring, SpringParams},
+        text::Weight,
+    },
+    Gavno,
+};
+use smithay::{
+    backend::renderer::gles::GlesRenderer,
+    input::keyboard::{keysyms, Keysym, ModifiersState},
+    output::Output,
+    utils::{Logical, Point, Size},
+};
+use std::time::Duration;
+
+/// Rows visible at once.
+const ROWS: usize = 8;
+const ROW_H: i32 = 48;
+const SEARCH_H: i32 = 56;
+const PAD: i32 = 8;
+
+struct App {
+    entry: DesktopEntry,
+    name: String,
+    words: String,
+}
+
+pub struct Launcher {
+    pub open: bool,
+    query: String,
+    selected: usize,
+    apps: Option<Vec<App>>,
+    results: Vec<usize>,
+    fade: Spring,
+    output: Option<Output>,
+    canvas: Canvas,
+    icons: Icons,
+    /// Panel and row rectangles from the last frame, output-local.
+    panel: Option<Rect>,
+    rows: Vec<(Rect, usize)>,
+}
+
+impl Default for Launcher {
+    fn default() -> Self {
+        Self {
+            open: false,
+            query: String::new(),
+            selected: 0,
+            apps: None,
+            results: Vec::new(),
+            fade: Spring::new(0.0, SpringParams::SNAPPY),
+            output: None,
+            canvas: Canvas::default(),
+            icons: Icons::default(),
+            panel: None,
+            rows: Vec::new(),
+        }
+    }
+}
+
+/// Rank of `app` for a lower-case query: lower is better, `None` hides it.
+fn score(name: &str, words: &str, query: &str) -> Option<u8> {
+    if query.is_empty() {
+        return Some(0);
+    }
+    if name.starts_with(query) {
+        Some(0)
+    } else if name.split(|c: char| !c.is_alphanumeric()).any(|w| w.starts_with(query)) {
+        Some(1)
+    } else if name.contains(query) {
+        Some(2)
+    } else if words.contains(query) {
+        Some(3)
+    } else {
+        None
+    }
+}
+
+impl Launcher {
+    pub fn is_animating(&self) -> bool {
+        self.fade.is_active()
+    }
+    /// Whether anything is on screen (open, or still fading out).
+    pub fn visible(&self) -> bool {
+        self.open || self.fade.value > 0.004 || self.fade.is_active()
+    }
+
+    fn load(&mut self) {
+        if self.apps.is_some() {
+            return;
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut apps: Vec<App> = desktop_entry::load_all()
+            .into_iter()
+            .filter(|e| !e.hidden_from_menus && !e.name.is_empty())
+            // Several data dirs may ship the same app; keep the first by name.
+            .filter(|e| seen.insert(e.name.to_lowercase()))
+            .map(|entry| App {
+                name: entry.name.to_lowercase(),
+                words: format!(
+                    "{} {} {} {} {}",
+                    entry.generic_name, entry.keywords, entry.comment, entry.id, entry.exec
+                )
+                .to_lowercase(),
+                entry,
+            })
+            .collect();
+        apps.sort_by(|a, b| a.name.cmp(&b.name));
+        self.apps = Some(apps);
+    }
+
+    fn refilter(&mut self) {
+        let query = self.query.trim().to_lowercase();
+        let apps = self.apps.as_deref().unwrap_or_default();
+        let mut ranked: Vec<(u8, usize)> = apps
+            .iter()
+            .enumerate()
+            .filter_map(|(i, a)| score(&a.name, &a.words, &query).map(|s| (s, i)))
+            .collect();
+        // Apps are already sorted by name, so a stable sort keeps that order
+        // within each rank.
+        ranked.sort_by_key(|(s, _)| *s);
+        self.results = ranked.into_iter().map(|(_, i)| i).collect();
+        self.selected = 0;
+    }
+
+    fn show(&mut self, output: Option<Output>) {
+        self.load();
+        // Desktop files may have changed since the last time; reload lazily
+        // on every open would cost a disk walk, so only refresh when empty.
+        if self.apps.as_ref().is_some_and(|a| a.is_empty()) {
+            self.apps = None;
+            self.load();
+        }
+        self.open = true;
+        self.query.clear();
+        self.refilter();
+        self.output = output;
+        self.fade.set(1.0);
+    }
+
+    fn hide(&mut self) {
+        self.open = false;
+        self.fade.set(0.0);
+    }
+
+    fn selected_entry(&self) -> Option<&DesktopEntry> {
+        let i = *self.results.get(self.selected)?;
+        Some(&self.apps.as_ref()?.get(i)?.entry)
+    }
+
+    fn move_selection(&mut self, down: bool) {
+        if self.results.is_empty() {
+            return;
+        }
+        let n = self.results.len();
+        self.selected = if down { (self.selected + 1) % n } else { (self.selected + n - 1) % n };
+    }
+
+    /// First visible result index, keeping the selection in view.
+    fn scroll(&self) -> usize {
+        self.selected.saturating_sub(ROWS - 1)
+    }
+
+    /// Panel rectangle for an output of `size` logical pixels.
+    fn panel_rect(&self, size: Size<i32, Logical>) -> Rect {
+        let w = 640.min(size.w - 32).max(200);
+        let rows = self.results.len().clamp(1, ROWS) as i32;
+        let h = SEARCH_H + PAD + rows * ROW_H + PAD;
+        rect((size.w - w) / 2, (size.h as f64 * 0.16) as i32, w, h)
+    }
+
+    pub fn elements(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        output: &Output,
+        size: Size<i32, Logical>,
+        scale: f64,
+        now: Duration,
+        accent: [f32; 4],
+        icon_theme: &str,
+    ) -> Vec<GavnoRenderElement> {
+        self.fade.advance(now);
+        if !self.visible() || self.output.as_ref().is_some_and(|o| o != output) {
+            return Vec::new();
+        }
+        let panel = self.panel_rect(size);
+        self.panel = Some(panel);
+        self.rows.clear();
+        let fade = self.fade.value.clamp(0.0, 1.0);
+        let first = self.scroll();
+        let c = &mut self.canvas;
+        c.begin(renderer, scale);
+        c.alpha = fade as f32;
+        c.zoom = 0.96 + 0.04 * fade;
+        c.anchor = Point::from((
+            (panel.loc.x + panel.size.w / 2) as f64,
+            panel.loc.y as f64,
+        ));
+        c.shadow(panel, 18.0);
+        c.rect(panel, 18.0, [0.065, 0.075, 0.10, 0.97], 1.0, LINE);
+
+        // Search row.
+        let x = panel.loc.x;
+        let y = panel.loc.y;
+        c.icon(renderer, &mut self.icons, &["system-search-symbolic", "edit-find-symbolic"], icon_theme, rect(x + 20, y + 18, 20, 20));
+        let mut style = label_style(16.0);
+        let text_x = x + 52;
+        let text_w = panel.size.w - 52 - 20;
+        if self.query.is_empty() {
+            style.color = [0.96, 0.95, 0.98, 0.45];
+            c.styled_label(renderer, "Search applications", text_x, y + 17, text_w, style);
+        } else {
+            c.styled_label(renderer, &self.query, text_x, y + 17, text_w, style);
+        }
+        if self.open {
+            let typed = if self.query.is_empty() { 0.0 } else { c.text.measure(&self.query, style) };
+            let caret_x = text_x + (typed.ceil() as i32).min(text_w);
+            c.rect(rect(caret_x + 1, y + 17, 2, 22), 1.0, accent, 0.0, LINE);
+        }
+        c.rect(rect(x + 12, y + SEARCH_H, panel.size.w - 24, 1), 0.0, [1.0, 1.0, 1.0, 0.08], 0.0, LINE);
+
+        // Results.
+        let apps = self.apps.as_deref().unwrap_or_default();
+        if self.results.is_empty() {
+            let mut dim = label_style(13.5);
+            dim.color = [0.96, 0.95, 0.98, 0.5];
+            c.styled_label(renderer, "No applications found", x + 20, y + SEARCH_H + PAD + 14, panel.size.w - 40, dim);
+        }
+        for (row, &i) in self.results.iter().enumerate().skip(first).take(ROWS) {
+            let Some(app) = apps.get(i) else { continue };
+            let ry = y + SEARCH_H + PAD + (row - first) as i32 * ROW_H;
+            let r = rect(x + PAD, ry, panel.size.w - 2 * PAD, ROW_H);
+            if row == self.selected {
+                let [a, b, d, _] = accent;
+                c.rect(r, 12.0, [a, b, d, 0.22], 0.0, LINE);
+            }
+            let icon = rect(r.loc.x + 12, ry + 10, 28, 28);
+            if !c.colored_icon(renderer, &mut self.icons, &[&app.entry.icon], icon_theme, icon, Some(FULL_COLOR)) {
+                c.icon(renderer, &mut self.icons, &["application-x-executable-symbolic"], icon_theme, rect(r.loc.x + 16, ry + 14, 20, 20));
+            }
+            let mut name = label_style(14.0);
+            name.weight = Weight::SemiBold;
+            let detail = if app.entry.generic_name.is_empty() { &app.entry.comment } else { &app.entry.generic_name };
+            if detail.is_empty() {
+                c.styled_label(renderer, &app.entry.name, r.loc.x + 52, ry + 14, r.size.w - 64, name);
+            } else {
+                c.styled_label(renderer, &app.entry.name, r.loc.x + 52, ry + 6, r.size.w - 64, name);
+                let mut sub = label_style(11.5);
+                sub.color = [0.96, 0.95, 0.98, 0.55];
+                c.styled_label(renderer, detail, r.loc.x + 52, ry + 26, r.size.w - 64, sub);
+            }
+            self.rows.push((r, row));
+        }
+        c.finish()
+    }
+}
+
+impl Gavno {
+    /// Opens the launcher on the active output, or closes it when open.
+    pub fn toggle_launcher(&mut self) {
+        self.guard(crate::module::Feature::Launcher, (), |gv| {
+            if gv.launcher.open {
+                gv.launcher.hide();
+            } else {
+                let output = gv.active_output();
+                gv.launcher.show(output);
+            }
+            gv.queue_redraw_all();
+        });
+    }
+
+    pub fn close_launcher(&mut self) {
+        if self.launcher.open {
+            self.launcher.hide();
+            self.queue_redraw_all();
+        }
+    }
+
+    fn launch_selected(&mut self) {
+        let command = self.launcher.selected_entry().and_then(|e| e.command(&self.config.terminal));
+        self.launcher.hide();
+        if let Some(command) = command {
+            crate::state::spawn_shell(&command);
+        }
+        self.queue_redraw_all();
+    }
+
+    /// Keys while the launcher is open. Every key is consumed.
+    pub fn launcher_key(&mut self, sym: Keysym, ch: Option<char>, mods: &ModifiersState) {
+        let mods = *mods;
+        self.guard(crate::module::Feature::Launcher, (), |gv| {
+            let l = &mut gv.launcher;
+            match sym.raw() {
+                keysyms::KEY_Escape => l.hide(),
+                keysyms::KEY_Return | keysyms::KEY_KP_Enter => return gv.launch_selected(),
+                keysyms::KEY_Down | keysyms::KEY_Tab => l.move_selection(true),
+                keysyms::KEY_Up | keysyms::KEY_ISO_Left_Tab => l.move_selection(false),
+                keysyms::KEY_n if mods.ctrl => l.move_selection(true),
+                keysyms::KEY_p if mods.ctrl => l.move_selection(false),
+                keysyms::KEY_d | keysyms::KEY_D if mods.logo => l.hide(),
+                keysyms::KEY_BackSpace if mods.ctrl => {
+                    l.query.clear();
+                    l.refilter();
+                }
+                keysyms::KEY_u if mods.ctrl => {
+                    l.query.clear();
+                    l.refilter();
+                }
+                keysyms::KEY_BackSpace => {
+                    l.query.pop();
+                    l.refilter();
+                }
+                _ => match ch {
+                    Some(c) if !c.is_control() && !mods.ctrl && !mods.logo && !mods.alt => {
+                        l.query.push(c);
+                        l.refilter();
+                    }
+                    _ => {}
+                },
+            }
+            gv.queue_redraw_all();
+        });
+    }
+
+    /// Pointer buttons while the launcher is open: a row launches, a press
+    /// outside the panel closes it. Returns true when the button was consumed.
+    pub fn launcher_button(&mut self, pos: Point<f64, Logical>, pressed: bool) -> bool {
+        if !self.launcher.open {
+            return false;
+        }
+        self.guard(crate::module::Feature::Launcher, false, |gv| {
+            let Some(local) = gv.launcher_local(pos) else {
+                if pressed { gv.close_launcher(); }
+                return true;
+            };
+            if !pressed {
+                return true;
+            }
+            let hit = gv.launcher.rows.iter().find(|(r, _)| r.to_f64().contains(local)).map(|(_, i)| *i);
+            if let Some(row) = hit {
+                gv.launcher.selected = row;
+                gv.launch_selected();
+            } else if !gv.launcher.panel.is_some_and(|p| p.to_f64().contains(local)) {
+                gv.close_launcher();
+            }
+            true
+        })
+    }
+
+    /// Hover selects the row under the pointer.
+    pub fn launcher_motion(&mut self, pos: Point<f64, Logical>) {
+        if !self.launcher.open {
+            return;
+        }
+        self.guard(crate::module::Feature::Launcher, (), |gv| {
+            let Some(local) = gv.launcher_local(pos) else { return };
+            let hit = gv.launcher.rows.iter().find(|(r, _)| r.to_f64().contains(local)).map(|(_, i)| *i);
+            if let Some(row) = hit.filter(|r| *r != gv.launcher.selected) {
+                gv.launcher.selected = row;
+                gv.queue_redraw_all();
+            }
+        });
+    }
+
+    /// `pos` relative to the launcher's output, if the pointer is on it.
+    fn launcher_local(&self, pos: Point<f64, Logical>) -> Option<Point<f64, Logical>> {
+        let output = self.launcher.output.as_ref()?;
+        let geo = self.space.output_geometry(output)?;
+        geo.to_f64().contains(pos).then(|| pos - geo.loc.to_f64())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ranking_prefers_name_prefix_then_word_then_substring_then_keywords() {
+        assert_eq!(score("firefox", "web browser", "fire"), Some(0));
+        assert_eq!(score("gnome terminal", "", "term"), Some(1));
+        assert_eq!(score("libreoffice writer", "", "office"), Some(2));
+        assert_eq!(score("foot", "terminal emulator", "termi"), Some(3));
+        assert_eq!(score("foot", "terminal", "zzz"), None);
+        assert_eq!(score("anything", "", ""), Some(0));
+    }
+
+    fn launcher_with(names: &[(&str, &str)]) -> Launcher {
+        let mut l = Launcher::default();
+        l.apps = Some(
+            names
+                .iter()
+                .map(|(name, generic)| {
+                    let text = format!("[Desktop Entry]\nType=Application\nName={name}\nGenericName={generic}\nExec={name}\n");
+                    let entry = DesktopEntry::parse(name, &text, None).unwrap();
+                    App { name: name.to_lowercase(), words: generic.to_lowercase(), entry }
+                })
+                .collect(),
+        );
+        l
+    }
+
+    #[test]
+    fn typing_filters_and_selection_wraps() {
+        let mut l = launcher_with(&[("Files", "File Manager"), ("Firefox", "Web Browser"), ("foot", "Terminal")]);
+        l.query = "fi".into();
+        l.refilter();
+        let names: Vec<_> = l.results.iter().map(|&i| l.apps.as_ref().unwrap()[i].entry.name.clone()).collect();
+        assert_eq!(names, ["Files", "Firefox"]);
+        l.move_selection(false);
+        assert_eq!(l.selected, 1);
+        l.move_selection(true);
+        assert_eq!(l.selected, 0);
+        l.query = "browser".into();
+        l.refilter();
+        assert_eq!(l.selected_entry().unwrap().name, "Firefox");
+    }
+
+    #[test]
+    fn hidden_entries_are_skipped_by_the_parser_flag() {
+        let e = DesktopEntry::parse("x", "[Desktop Entry]\nType=Application\nName=X\nExec=x\nNoDisplay=true\n", None).unwrap();
+        assert!(e.hidden_from_menus);
+        let gnome = DesktopEntry::parse("y", "[Desktop Entry]\nType=Application\nName=Y\nExec=y\nOnlyShowIn=GNOME;\n", None).unwrap();
+        assert!(gnome.hidden_from_menus);
+        let ours = DesktopEntry::parse("z", "[Desktop Entry]\nType=Application\nName=Z\nExec=z\nOnlyShowIn=GNOME;GAVNO;\n", None).unwrap();
+        assert!(!ours.hidden_from_menus);
+    }
+
+    #[test]
+    fn panel_grows_with_results_and_stays_on_screen() {
+        let mut l = launcher_with(&[("A", ""), ("B", "")]);
+        l.refilter();
+        let small = l.panel_rect((1646, 926).into());
+        assert_eq!(small.size.h, SEARCH_H + PAD + 2 * ROW_H + PAD);
+        assert_eq!(small.loc.x, (1646 - 640) / 2);
+        let narrow = l.panel_rect((400, 300).into());
+        assert!(narrow.loc.x >= 0 && narrow.loc.x + narrow.size.w <= 400);
+    }
+
+    #[test]
+    fn scroll_keeps_selection_visible() {
+        let names: Vec<(String, String)> = (0..20).map(|i| (format!("App{i:02}"), String::new())).collect();
+        let refs: Vec<(&str, &str)> = names.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+        let mut l = launcher_with(&refs);
+        l.refilter();
+        for _ in 0..10 { l.move_selection(true); }
+        assert_eq!(l.selected, 10);
+        assert_eq!(l.scroll(), 10 - (ROWS - 1));
+    }
+}

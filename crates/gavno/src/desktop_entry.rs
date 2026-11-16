@@ -14,6 +14,11 @@ pub struct DesktopEntry {
     pub terminal: bool,
     /// Location of the desktop file, used to expand `%k`.
     pub path: Option<PathBuf>,
+    pub generic_name: String,
+    pub keywords: String,
+    pub comment: String,
+    /// `NoDisplay=true`, or `OnlyShowIn`/`NotShowIn` excluding GAVNO.
+    pub hidden_from_menus: bool,
 }
 impl DesktopEntry {
     pub fn parse(id: &str, text: &str, path: Option<&Path>) -> Option<Self> {
@@ -36,6 +41,10 @@ impl DesktopEntry {
             return None;
         }
         let exec = fields.get("Exec")?.to_string();
+        let lists = |key: &str| fields.get(key).map(|v| v.split(';').any(|d| d == "GAVNO"));
+        let hidden_from_menus = fields.get("NoDisplay") == Some(&"true")
+            || lists("OnlyShowIn") == Some(false)
+            || lists("NotShowIn") == Some(true);
         Some(Self {
             id: id.trim_end_matches(".desktop").into(),
             name: fields.get("Name").unwrap_or(&id).to_string(),
@@ -44,6 +53,10 @@ impl DesktopEntry {
             startup_wm_class: fields.get("StartupWMClass").unwrap_or(&"").to_string(),
             terminal: fields.get("Terminal") == Some(&"true"),
             path: path.map(Path::to_owned),
+            generic_name: fields.get("GenericName").unwrap_or(&"").to_string(),
+            keywords: fields.get("Keywords").unwrap_or(&"").replace(';', " "),
+            comment: fields.get("Comment").unwrap_or(&"").to_string(),
+            hidden_from_menus,
         })
     }
     pub fn command(&self, terminal: &str) -> Option<String> {
@@ -197,6 +210,10 @@ impl DesktopEntries {
             })
             .cloned()
     }
+}
+/// Every application entry on the system, highest-priority data dir first.
+pub fn load_all() -> Vec<DesktopEntry> {
+    load(&data_dirs())
 }
 fn load(dirs: &[PathBuf]) -> Vec<DesktopEntry> {
     fn walk(root: &Path, dir: &Path, files: &mut Vec<(String, PathBuf)>, depth: usize) {

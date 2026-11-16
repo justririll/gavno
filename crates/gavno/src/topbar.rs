@@ -28,7 +28,7 @@ use std::{
 };
 
 /// Sentinel for `Canvas::colored_icon`: draw the icon untinted.
-const FULL_COLOR: [u8; 3] = [1, 2, 3];
+pub(crate) const FULL_COLOR: [u8; 3] = [1, 2, 3];
 pub const PANEL: i32 = 32;
 pub const GLASS: [f32; 4] = [0.055, 0.065, 0.09, 0.90];
 pub const LINE: [f32; 4] = [1.0, 1.0, 1.0, 0.14];

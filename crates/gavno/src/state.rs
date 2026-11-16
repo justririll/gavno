@@ -91,6 +91,7 @@ pub struct Gavno {
     /// Set in `--greeter` mode: GAVNO is the login screen.
     pub greeter: Option<crate::greeter::Greeter>,
     pub lock: crate::lock::Lock,
+    pub launcher: crate::launcher::Launcher,
 }
 
 impl Gavno {
@@ -181,6 +182,7 @@ impl Gavno {
             startup_cmd: None,
             greeter: None,
             lock: Default::default(),
+            launcher: Default::default(),
         }
     }
 
@@ -257,7 +259,8 @@ impl Gavno {
             || gv.overview.flick.as_ref().is_some_and(|(_, x, y)| x.is_active() || y.is_active()));
         let dock = self.guard(Feature::Dock, false, |gv| gv.dock.active());
         let bar = self.guard(Feature::Bar, false, |gv| gv.topbar.active());
-        animations || overlay || self.workspaces.active() || overview || dock || bar || self.media.osd.is_animating()
+        let launcher = self.guard(Feature::Launcher, false, |gv| gv.launcher.is_animating());
+        animations || overlay || self.workspaces.active() || overview || dock || bar || launcher || self.media.osd.is_animating()
     }
 
     pub fn pointer_location(&self) -> Point<f64, Logical> {

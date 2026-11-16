@@ -214,6 +214,7 @@ fn disabled_feature_bindings_reach_the_real_client() {
             Feature::ResizeMode => m.resize_mode = false, Feature::Animations => m.animations = false,
             Feature::Decorations => m.decorations = false, Feature::Ipc => m.ipc = false,
             Feature::Screencopy => m.screencopy = false,
+            Feature::Launcher => m.launcher = false,
         }
         h.gv.features = Features::new(&h.gv.config);
         h.gv.focus_window(Some(&w));

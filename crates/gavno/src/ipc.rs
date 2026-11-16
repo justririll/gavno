@@ -206,6 +206,11 @@ fn dispatch(gv: &mut Gavno, method: &str, params: &Value) -> Result<Value, Strin
         crate::backend::udev::set_hdr(gv, output, enabled)?;
         return Ok(json!({"queued": true, "output": output, "enabled": enabled}));
     }
+    if method == "launcher" {
+        audit(method, params).map_err(|e| format!("cannot append agent audit log: {e}"))?;
+        gv.toggle_launcher();
+        return Ok(json!({"open": gv.launcher.open}));
+    }
     if method == "workspace" {
         let output = if let Some(name) = params.get("output").and_then(Value::as_str) {
             gv.space.outputs().find(|o| o.name() == name).cloned()

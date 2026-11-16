@@ -7,12 +7,12 @@ use crate::{config::Config, Gavno};
 #[repr(usize)]
 pub enum Feature {
     Dock, Bar, Overview, Tiling, Snap, Switcher, Gestures,
-    WindowGestures, ResizeMode, Animations, Decorations, Ipc, Screencopy,
+    WindowGestures, ResizeMode, Animations, Decorations, Ipc, Screencopy, Launcher,
 }
 impl Feature {
-    pub const ALL: [Self; 13] = [Self::Dock, Self::Bar, Self::Overview, Self::Tiling,
+    pub const ALL: [Self; 14] = [Self::Dock, Self::Bar, Self::Overview, Self::Tiling,
         Self::Snap, Self::Switcher, Self::Gestures, Self::WindowGestures,
-        Self::ResizeMode, Self::Animations, Self::Decorations, Self::Ipc, Self::Screencopy];
+        Self::ResizeMode, Self::Animations, Self::Decorations, Self::Ipc, Self::Screencopy, Self::Launcher];
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -23,25 +23,25 @@ pub enum FeatureState {
 }
 
 pub struct Features {
-    states: [RefCell<FeatureState>; 13],
-    pending: [Cell<bool>; 13],
+    states: [RefCell<FeatureState>; 14],
+    pending: [Cell<bool>; 14],
     resetting: bool,
     #[cfg(test)]
-    injected: [Cell<bool>; 13],
+    injected: [Cell<bool>; 14],
     #[cfg(test)]
-    pub reset_count: [usize; 13],
+    pub reset_count: [usize; 14],
 }
 impl Features {
     pub fn new(config: &Config) -> Self {
         let m = &config.modules;
         let enabled = [m.dock && config.dock.enabled, m.bar && config.bar.enabled,
             m.overview, m.tiling, m.snap, m.switcher, m.gestures, m.window_gestures,
-            m.resize_mode, m.animations, m.decorations, m.ipc, m.screencopy];
+            m.resize_mode, m.animations, m.decorations, m.ipc, m.screencopy, m.launcher];
         Self {
             states: enabled.map(|on| RefCell::new(if on { FeatureState::Enabled } else { FeatureState::Disabled })),
             pending: std::array::from_fn(|_| Cell::new(false)), resetting: false,
             #[cfg(test)] injected: std::array::from_fn(|_| Cell::new(false)),
-            #[cfg(test)] reset_count: [0; 13],
+            #[cfg(test)] reset_count: [0; 14],
         }
     }
     pub fn on(&self, id: Feature) -> bool { matches!(*self.states[id as usize].borrow(), FeatureState::Enabled) }
@@ -141,6 +141,7 @@ impl Gavno {
             Feature::Decorations => self.window_decor = Default::default(),
             Feature::Ipc => { self.ipc.close(&self.loop_handle); }
             Feature::Screencopy => self.protocols.screencopy.fail_pending(),
+            Feature::Launcher => self.launcher = Default::default(),
         }
     }
     fn drop_feature_state(&mut self, id: Feature) {
@@ -156,6 +157,7 @@ impl Gavno {
             Feature::Decorations => self.window_decor = Default::default(),
             Feature::Ipc => self.ipc.close(&self.loop_handle),
             Feature::Screencopy => self.protocols.screencopy.fail_pending(),
+            Feature::Launcher => self.launcher = Default::default(),
             Feature::Snap | Feature::Tiling => (),
         }
     }

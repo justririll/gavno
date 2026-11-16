@@ -132,6 +132,7 @@ animations = true
 decorations = true
 ipc = true
 screencopy = true
+launcher = true
 ```
 
 `dock.enabled` and `bar.enabled` still work: a feature is off if either its legacy

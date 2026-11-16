@@ -322,6 +322,7 @@ fn crash_feature(h: &mut Harness, id: Feature, output: &Output) {
         Feature::Decorations => h.gv.focus_window(None),
         Feature::Ipc => { h.gv.guard(id, Ok(()), crate::ipc::init).unwrap(); }
         Feature::Screencopy => crate::handlers::screencopy::frame_drawn(&mut h.gv, output),
+        Feature::Launcher => h.gv.toggle_launcher(),
     }
     h.gv.run_feature_resets();
     h.event_loop.dispatch(Duration::ZERO, &mut h.gv).unwrap();
@@ -458,6 +459,7 @@ fn all_config_switches_disable_features_without_reserves_or_idle_animation() {
             Feature::Gestures => "gestures", Feature::WindowGestures => "window_gestures",
             Feature::ResizeMode => "resize_mode", Feature::Animations => "animations",
             Feature::Decorations => "decorations", Feature::Ipc => "ipc", Feature::Screencopy => "screencopy",
+            Feature::Launcher => "launcher",
         };
         let mut h = Harness::new();
         let output = feature_output(&mut h);

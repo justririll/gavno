@@ -131,6 +131,7 @@ fn render(gv: &mut Gavno) {
         &gv.config,
         &mut gv.features,
         &mut gv.media.osd,
+        &mut gv.launcher,
         );
         data.damage_tracker
             .render_output(renderer, &mut framebuffer, age, &elements, render::CLEAR_COLOR)
@@ -190,6 +191,7 @@ pub fn capture_output(gv: &mut Gavno, output: &Output, cursor: bool) -> Option<(
         &gv.config,
         &mut gv.features,
         &mut gv.media.osd,
+        &mut gv.launcher,
     );
     let bytes = render::capture_elements(renderer, &elements, (mode.size.w, mode.size.h), scale)?;
     Some((mode.size.w as u32, mode.size.h as u32, bytes))

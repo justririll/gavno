@@ -16,7 +16,7 @@ active.
 | Keys | Action |
 |---|---|
 | Mod+Return, Mod+KP Enter | Start the terminal from `terminal` (default `foot`; `GAVNO_TERMINAL` overrides). |
-| Mod+D | Start the launcher from `launcher`. Unset by default, so the key goes to the client; `GAVNO_LAUNCHER` overrides. |
+| Mod+D | Open the built-in application launcher: type to filter installed apps, Up/Down or Tab to choose, Enter or a click to start, Esc to close. A tap of Super alone opens it too when the overview is off. Setting `launcher` (or `GAVNO_LAUNCHER`) runs that command instead. |
 
 ## Windows
 

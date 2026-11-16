@@ -55,6 +55,7 @@ pub enum Action {
     WorkspaceStep(bool),
     ToggleOverview,
     CloseOverview,
+    ToggleLauncher,
 }
 
 impl Gavno {
@@ -113,11 +114,14 @@ impl Gavno {
                     if key_state == KeyState::Released { gv.suppressed_keys.retain(|k| *k != raw_code); }
                     return FilterResult::Intercept(None);
                 }
-                if gv.greeter.is_none() && !gv.protocols.locks.locked && !gv.seat.keyboard_shortcuts_inhibited() && gv.features.on(Feature::Gestures) && gv.features.on(Feature::Overview) {
+                if gv.greeter.is_none() && !gv.protocols.locks.locked && !gv.seat.keyboard_shortcuts_inhibited() && gv.features.on(Feature::Gestures) && (gv.features.on(Feature::Overview) || gv.features.on(Feature::Launcher)) {
                     let is_super = matches!(sym, keysyms::KEY_Super_L | keysyms::KEY_Super_R);
                     let other_down = gv.desktop_keys.iter().any(|k| *k != raw_code);
                     let toggle = gv.super_tap_key(raw_code, is_super, key_state == KeyState::Pressed, other_down);
-                    if toggle { return FilterResult::Intercept(Some(Action::ToggleOverview)); }
+                    if toggle {
+                        let action = if gv.features.on(Feature::Overview) { Action::ToggleOverview } else { Action::ToggleLauncher };
+                        return FilterResult::Intercept(Some(action));
+                    }
                     if is_super { return FilterResult::Intercept(None); }
                 } else { gv.guard(Feature::Gestures, (), |gv| gv.gestures.super_tap.cancel()); }
                 if key_state == KeyState::Released {
@@ -152,6 +156,15 @@ impl Gavno {
                     if let Some(g) = gv.greeter.as_mut() {
                         g.safe_call((), |g| g.key(sym, sym.key_char(), &mods));
                     }
+                    return FilterResult::Intercept(None);
+                }
+
+                // The open launcher takes every key except the emergency chord.
+                if gv.launcher.open && !gv.protocols.locks.locked && !(mods.ctrl && mods.alt) {
+                    let sym = handle.modified_sym();
+                    let mods = *mods;
+                    gv.suppressed_keys.push(raw_code);
+                    gv.launcher_key(sym, sym.key_char(), &mods);
                     return FilterResult::Intercept(None);
                 }
 
@@ -262,6 +275,7 @@ impl Gavno {
             Action::ResizeMode => Feature::ResizeMode,
             Action::SwitcherCycle(_) | Action::SwitcherFinish(_) => Feature::Switcher,
             Action::ToggleOverview | Action::CloseOverview => Feature::Overview,
+            Action::ToggleLauncher => Feature::Launcher,
             _ => return true,
         };
         self.features.on(feature)
@@ -331,7 +345,8 @@ impl Gavno {
             keysyms::KEY_Return | keysyms::KEY_KP_Enter => Some(Action::Spawn(self.config.terminal.clone())),
             keysyms::KEY_q if !mods.shift => Some(Action::CloseWindow),
             keysyms::KEY_m | keysyms::KEY_M if !mods.shift => Some(Action::Minimize),
-            keysyms::KEY_d => self.config.launcher.clone().map(Action::Spawn),
+            // The built-in launcher unless the config names an external one.
+            keysyms::KEY_d => Some(self.config.launcher.clone().map(Action::Spawn).unwrap_or(Action::ToggleLauncher)),
             keysyms::KEY_f | keysyms::KEY_F if mods.ctrl && !mods.shift => Some(Action::ToggleMaximize),
             keysyms::KEY_f | keysyms::KEY_F if mods.shift && !mods.ctrl => Some(Action::ToggleFullscreen),
             _ => None,
@@ -342,7 +357,8 @@ impl Gavno {
         if !self.action_enabled(&action) { return; }
         if self.protocols.locks.locked && !matches!(action, Action::SwitchVt(_)) { return; }
         match action {
-            Action::Lock => { self.lock_session(); },
+            Action::Lock => { self.close_launcher(); self.lock_session(); },
+            Action::ToggleLauncher => self.toggle_launcher(),
             Action::ToggleTiling => { if let Some(o) = self.active_output() { self.toggle_workspace_tiling(&o); } }
             Action::ToggleFloating => { if let Some(w) = self.focused_window() { self.toggle_floating(&w); } }
             Action::RotateSplit => self.rotate_tile(),
@@ -393,6 +409,7 @@ impl Gavno {
         self.bar_motion(pos);
         let resizing=self.resize_mode_motion(pos);
         self.overview_motion(pos);
+        self.launcher_motion(pos);
         let new_under = if resizing {None} else {self.surface_under(pos)};
         let serial = SERIAL_COUNTER.next_serial();
         pointer.motion(self, new_under.clone(), &MotionEvent { location: pos, serial, time: event.time_msec() });
@@ -429,6 +446,7 @@ impl Gavno {
         self.bar_motion(pos);
         let resizing=self.resize_mode_motion(pos);
         self.overview_motion(pos);
+        self.launcher_motion(pos);
         let under = if resizing {None} else {self.surface_under(pos)};
         pointer.motion(
             self,
@@ -497,6 +515,10 @@ impl Gavno {
         }
         if button_state==ButtonState::Pressed && self.exit_resize_mode() {
             self.suppressed_buttons.push(button);return;
+        }
+        if self.launcher_button(pointer.current_location(), button_state == ButtonState::Pressed) {
+            if button_state == ButtonState::Pressed { self.suppressed_buttons.push(button); }
+            return;
         }
         if self.shell_button(button, button_state == ButtonState::Pressed) { return; }
         if self.overview_button(button, button_state == ButtonState::Pressed) { return; }

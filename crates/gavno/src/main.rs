@@ -19,6 +19,7 @@ mod cursor;
 mod debug;
 mod greeter;
 mod lock;
+mod launcher;
 mod grabs;
 mod handlers;
 mod input;
