@@ -42,6 +42,19 @@ pub fn switch_vt(gv: &mut Gavno, vt: i32) {
 pub fn screenshot(gv: &mut Gavno) -> Option<(u32, u32, Vec<u8>)> {
     match &gv.backend {
         Backend::Udev(_) => udev::screenshot(gv),
-        _ => None,
+        Backend::Winit(data) => {
+            let output = data.output().clone();
+            winit::capture_output(gv, &output, true)
+        }
+        Backend::None => None,
+    }
+}
+
+/// Offscreen capture of `output` on whichever backend is running.
+pub fn capture_output(gv: &mut Gavno, output: &smithay::output::Output, cursor: bool) -> Option<(u32, u32, Vec<u8>)> {
+    match &gv.backend {
+        Backend::Udev(_) => udev::capture_output(gv, output, cursor),
+        Backend::Winit(_) => winit::capture_output(gv, output, cursor),
+        Backend::None => None,
     }
 }

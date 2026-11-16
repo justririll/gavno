@@ -253,7 +253,7 @@ fn complete(gv: &mut Gavno, p: Pending) {
         return;
     };
     let region = data.region;
-    let Some((frame_w, _, pixels)) = crate::backend::udev::capture_output(gv, &output, data.cursor) else {
+    let Some((frame_w, _, pixels)) = crate::backend::capture_output(gv, &output, data.cursor) else {
         p.frame.failed();
         return;
     };

@@ -340,3 +340,27 @@ pub fn take_presentation_feedback(
     }
     feedback
 }
+
+/// Renders `elements` into an offscreen texture of `size` physical pixels and
+/// returns tightly packed RGBA bytes. Used by screenshots and screencopy.
+pub fn capture_elements(
+    renderer: &mut GlesRenderer,
+    elements: &[GavnoRenderElement],
+    size: (i32, i32),
+    scale: f64,
+) -> Option<Vec<u8>> {
+    use smithay::backend::renderer::{damage::OutputDamageTracker, gles::GlesTexture, Bind, ExportMem, Offscreen};
+    use smithay::utils::{Buffer as BufferCoord, Rectangle, Size, Transform};
+
+    let buffer_size: Size<i32, BufferCoord> = size.into();
+    let mut texture: GlesTexture = renderer.create_buffer(Fourcc::Abgr8888, buffer_size).ok()?;
+    let mapping = {
+        let mut fb = renderer.bind(&mut texture).ok()?;
+        let mut damage = OutputDamageTracker::new(size, scale, Transform::Normal);
+        damage.render_output(renderer, &mut fb, 0, elements, CLEAR_COLOR).ok()?;
+        renderer
+            .copy_framebuffer(&fb, Rectangle::from_size(buffer_size), Fourcc::Abgr8888)
+            .ok()?
+    };
+    Some(renderer.map_texture(&mapping).ok()?.to_vec())
+}

@@ -22,6 +22,10 @@ pub struct WinitData {
 }
 
 impl WinitData {
+    pub fn output(&self) -> &Output {
+        &self.output
+    }
+
     pub fn queue_redraw(&mut self) {
         if !self.redraw_queued {
             self.redraw_queued = true;
@@ -150,4 +154,39 @@ fn render(gv: &mut Gavno) {
         }
         Err(err) => tracing::warn!(?err, "winit render failed"),
     }
+}
+
+/// Renders the nested output offscreen; see `udev::capture_output`.
+pub fn capture_output(gv: &mut Gavno, output: &Output, cursor: bool) -> Option<(u32, u32, Vec<u8>)> {
+    let pointer_pos = if cursor { gv.pointer_location() } else { (-1.0e6, -1.0e6).into() };
+    let time = gv.start_time.elapsed();
+    let Backend::Winit(data) = &mut gv.backend else { return None };
+    if &data.output != output {
+        return None;
+    }
+    let mode = output.current_mode()?;
+    let scale = output.current_scale().fractional_scale();
+    let renderer = data.backend.renderer();
+    let elements = render::output_elements(
+        renderer,
+        &gv.space,
+        output,
+        pointer_pos,
+        &mut gv.cursor_status,
+        &mut gv.cursor,
+        time,
+        gv.greeter.as_mut(),
+        &mut gv.lock,
+        &mut gv.overlay,
+        &mut gv.window_decor,
+        &mut gv.window_animations,
+        &gv.protocols.locks,
+        &mut gv.workspaces,
+        &mut gv.overview,
+        &mut gv.dock,
+        &mut gv.topbar,
+        &gv.config,
+    );
+    let bytes = render::capture_elements(renderer, &elements, (mode.size.w, mode.size.h), scale)?;
+    Some((mode.size.w as u32, mode.size.h as u32, bytes))
 }
