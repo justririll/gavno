@@ -316,6 +316,75 @@ Supported hints are `urgency`, `desktop-entry`, and `image-path`. Bodies display
 plain text after simple markup/entity removal. Image-data hints are ignored.
 Set `[modules] notifications = false` to disable the server and all its UI.
 
+## Classic shell
+
+The Classic shell shares windows and workspaces with the normal shell. Enable
+it with `[modules] classic = true` (the default). Disable that module to keep
+the normal shell and its gestures exclusively.
+
+```toml
+[classic]
+start_in_classic = false
+align = "left"                   # "left" (default) or "center"
+# pinned = ["foot", "firefox"]   # omitted: inherit [dock].pinned; []: no pins
+start_pinned = ["@terminal", "@files", "firefox", "@settings"]
+settings_command = "gavno-settings"
+task_manager = "foot -e btop"
+```
+
+Start always opens at the left edge above the Start button, including when
+app items are centered.
+
+Pins name desktop-entry IDs, with or without `.desktop`. Missing applications
+are skipped. Start also accepts `@terminal`, `@files` and `@settings`, which use
+the configured commands. Taskbar Pin/Unpin changes the current session; edit
+`classic.pinned` to keep it across restarts. The taskbar is 48 logical pixels
+high on every output, and fullscreen windows hide it. Fixed window layouts
+refit when the shell transition settles.
+
+IPC `shell_mode` reads the requested mode, settled mode and transition progress.
+Passing `{"mode":"classic"}` or `{"mode":"gavno"}` changes it. A disabled
+Classic module rejects changes. Desktop icons and widgets are configured below.
+
+### Desktop icons and widgets
+
+```toml
+[classic]
+align = "left"                   # default; "center" centers app items only
+# Start and its menu always stay at the left edge.
+desktop_home = true
+desktop_trash = true
+widgets = ["clock", "system", "media"]
+```
+
+Desktop icons and widgets use the primary output (the compositor's first
+output). Icons come from `xdg-user-dir DESKTOP`, with `user-dirs.dirs` and
+`~/Desktop` as fallbacks. The directory is created when needed. Dotfiles are
+hidden. Desktop shortcuts use their desktop-entry Name and Icon; other files
+use themed icons selected by extension. Home and Trash are virtual shortcuts.
+
+Icons occupy a column-major 96×104 logical-pixel grid. The grid avoids widget
+panels. Positions are stored by filename in
+`$XDG_STATE_HOME/gavno/desktop.json` (default `~/.local/state/gavno/desktop.json`),
+together with widget positions. Writes are atomic and happen only after changes.
+Renaming refuses existing destinations and names containing `/`; it renames the
+file, including the filename of a `.desktop` shortcut. Trash operations use
+`gio trash`, never permanent deletion.
+
+Clock and system panels follow the order in `widgets`; duplicates and unknown
+names are skipped. `media` shows the active MPRIS player (title, artist and
+previous / play-pause / next buttons) from the Media module, or "Nothing
+playing". The clock refreshes at minute boundaries, and
+system CPU/memory data every two seconds. Both stop refreshing when Classic is
+not settled, the primary desktop is covered by a maximized/fullscreen window,
+or the session is locked. Network and battery data reuse the bar's status.
+
+Desktop directory updates use inotify with a 100 ms debounce. There is no file
+polling or resident desktop helper. File operations and scans run in short-lived
+workers. Scans are bounded to 4096 non-hidden entries; at most 256 grid cells
+are visible in a page. Scrolling over the desktop browses overflow pages.
+Prepared text/image caches are bounded and released on leaving Classic.
+
 ## Live display and keyboard settings
 
 `gavno-settings` includes live Displays and Keyboard pages alongside the full

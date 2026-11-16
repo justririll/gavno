@@ -23,19 +23,23 @@ pub fn item_command(item: Item) -> Option<Command> {
         _ => None,
     }
 }
-pub fn glyph(player: &Player, command: Command) -> &'static str {
+/// Themed symbolic icon for a media command. The UI fonts have no media
+/// glyphs (U+23EE..), so text labels would render as missing-glyph boxes.
+pub fn icon(player: &Player, command: Command) -> &'static str {
     match command {
-        Command::Previous => "⏮",
-        Command::Next => "⏭",
+        Command::Previous => "media-skip-backward-symbolic",
+        Command::Next => "media-skip-forward-symbolic",
         Command::PlayPause => {
             if player.playback == Playback::Playing {
-                "⏸"
+                "media-playback-pause-symbolic"
             } else {
-                "▶"
+                "media-playback-start-symbolic"
             }
         }
     }
 }
+/// Light tint for media icons on the dark glass panels.
+pub const ICON_COLOR: [u8; 3] = [236, 238, 244];
 pub fn info(c: &mut Canvas, renderer: &mut GlesRenderer, snapshot: &Snapshot, area: Rect) {
     let Some(player) = &snapshot.player else {
         return;
@@ -81,6 +85,8 @@ pub fn info(c: &mut Canvas, renderer: &mut GlesRenderer, snapshot: &Snapshot, ar
 pub fn button(
     c: &mut Canvas,
     renderer: &mut GlesRenderer,
+    icons: &mut crate::icons::Icons,
+    theme: &str,
     player: &Player,
     command: Command,
     area: Rect,
@@ -97,13 +103,14 @@ pub fn button(
         0.0,
         LINE,
     );
-    c.label(
+    let side = 16.min(area.size.w).min(area.size.h);
+    c.colored_icon(
         renderer,
-        glyph(player, command),
-        area.loc.x + 12,
-        area.loc.y + 6,
-        area.size.w - 16,
-        15.0,
+        icons,
+        &[icon(player, command)],
+        theme,
+        rect(area.loc.x + (area.size.w - side) / 2, area.loc.y + (area.size.h - side) / 2, side, side),
+        Some(ICON_COLOR),
     );
     c.alpha = alpha;
 }

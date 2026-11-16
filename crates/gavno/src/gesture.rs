@@ -139,6 +139,9 @@ struct Swipe {
     overview_start: f64,
     workspace_origin: usize,
     overview_origin: bool,
+    classic_start: f64,
+    classic_origin: crate::classic::ShellMode,
+    vertical: Option<crate::classic::VerticalRoute>,
     history: MotionHistory,
     last_value: Point<f64, Logical>,
 }
@@ -211,6 +214,7 @@ impl Gavno {
         }
     }
     pub fn on_gesture_swipe_begin<I: InputBackend>(&mut self, event: I::GestureSwipeBeginEvent) {
+        self.cancel_shell_tap();
         if !self.features.on(crate::module::Feature::Gestures) {
             if self.greeter.is_none() && !self.protocols.locks.locked {
                 self.seat.get_pointer().unwrap().gesture_swipe_begin(self, &GestureSwipeBeginEvent { serial: SERIAL_COUNTER.next_serial(), time: event.time_msec(), fingers: event.fingers() });
@@ -255,6 +259,13 @@ impl Gavno {
             } else {
                 0.0
             };
+            let classic_origin = gv.classic.mode;
+            gv.guard(crate::module::Feature::Classic, (), |gv| {
+                gv.classic.progress.advance(gv.start_time.elapsed());
+                gv.classic.progress.jump(gv.classic.progress.value);
+                gv.classic.held = true;
+            });
+            let classic_start = gv.shell_progress();
             let mut history = MotionHistory::default();
             history.push(event.time(), (workspace_start, overview_start).into());
             gv.gestures.swipe = Some(Swipe {
@@ -265,6 +276,9 @@ impl Gavno {
                 overview_start,
                 workspace_origin,
                 overview_origin,
+                classic_start,
+                classic_origin,
+                vertical: None,
                 history,
                 last_value: (workspace_start, overview_start).into(),
             });
@@ -309,13 +323,27 @@ impl Gavno {
             if s.axis.is_none() {
                 s.axis = lock_axis(s.delta.x, s.delta.y);
             }
+            if s.axis == Some(Axis::Vertical) && s.vertical.is_none() {
+                s.vertical = Some(if gv.features.on(crate::module::Feature::Classic) {
+                    crate::classic::vertical_route(s.classic_origin, s.delta.y > 0.0,
+                        gv.features.on(crate::module::Feature::Overview), s.overview_origin)
+                } else if gv.features.on(crate::module::Feature::Overview) {
+                    crate::classic::VerticalRoute::Overview
+                } else { crate::classic::VerticalRoute::Ignore });
+                s.history = MotionHistory::default();
+            }
             let o = gv.workspaces.ensure(&s.output);
+            let vertical = match s.vertical {
+                Some(crate::classic::VerticalRoute::Mode) => (s.classic_start + s.delta.y / OVERVIEW_SWIPE_DISTANCE).clamp(0.0, 1.0),
+                Some(crate::classic::VerticalRoute::ShowDesktop) => (s.delta.y / OVERVIEW_SWIPE_DISTANCE).clamp(0.0, 1.0),
+                _ => progress(s.overview_start, s.delta.y, OVERVIEW_SWIPE_DISTANCE).clamp(0.0, 1.0),
+            };
             let position = Point::from((
                 rubber_band(
                     progress(s.workspace_start, s.delta.x, gv.gestures.distance),
                     (o.list.items.len() - 1) as f64,
                 ),
-                progress(s.overview_start, s.delta.y, OVERVIEW_SWIPE_DISTANCE).clamp(0.0, 1.0),
+                vertical,
             ));
             s.history.push(event.time(), position);
             let Some(axis) = s.axis else {
@@ -329,11 +357,15 @@ impl Gavno {
                     value
                 }
                 Axis::Vertical => {
-                    if !gv.features.on(crate::module::Feature::Overview) { return; }
                     let value = position.y;
+                    if s.vertical == Some(crate::classic::VerticalRoute::Mode) {
+                        gv.features.call(crate::module::Feature::Classic, (), || gv.classic.progress.follow(value, now));
+                    } else if s.vertical == Some(crate::classic::VerticalRoute::Overview) {
+                    if !gv.features.on(crate::module::Feature::Overview) { return; }
                     gv.features.call(crate::module::Feature::Overview, (), || { gv.overview.output = Some(s.output.clone()); });
                     gv.features.call(crate::module::Feature::Overview, (), || { gv.overview.held = true; });
                     gv.features.call(crate::module::Feature::Overview, Default::default(), || gv.overview.progress.follow(value, now));
+                    }
                     value
                 }
             };
@@ -384,8 +416,33 @@ impl Gavno {
             } else {
                 s.history.velocity(event.time())
             };
-            let o = gv.workspaces.ensure(&s.output);
             let now = gv.start_time.elapsed();
+            gv.guard(crate::module::Feature::Classic, (), |gv| {
+                if s.axis == Some(Axis::Vertical) && s.vertical == Some(crate::classic::VerticalRoute::Mode) {
+                    gv.classic.release(s.classic_origin, velocity.y, event.cancelled(), now);
+                    gv.classic.start.close();
+                    gv.classic.desktop.cancel_interaction();
+                    gv.topbar.close();
+                    gv.dock.close_menu();
+                } else {
+                    gv.classic.held = false;
+                    gv.classic.progress.set(s.classic_origin.progress());
+                }
+            });
+            if s.axis == Some(Axis::Vertical) && matches!(s.vertical, Some(crate::classic::VerticalRoute::Mode | crate::classic::VerticalRoute::ShowDesktop | crate::classic::VerticalRoute::Ignore)) {
+                let o = gv.workspaces.ensure(&s.output);
+                o.held = false;
+                o.position.set(o.list.active as f64);
+                gv.features.call(crate::module::Feature::Overview, (), || {
+                    gv.overview.held = false;
+                    gv.overview.progress.set(if s.overview_origin { 1.0 } else { 0.0 });
+                });
+                if !event.cancelled() && s.vertical == Some(crate::classic::VerticalRoute::ShowDesktop)
+                    && release_target(s.last_value.y, velocity.y, 1) == 1 { gv.show_classic_desktop(true); }
+                gv.queue_redraw_all();
+                return;
+            }
+            let o = gv.workspaces.ensure(&s.output);
             let workspace_target = o.position.target;
             let overview_target = gv.overview.progress.target;
             o.position.end_follow(0.0, now);
@@ -429,6 +486,7 @@ impl Gavno {
         })
     }
     pub fn on_gesture_pinch_begin<I: InputBackend>(&mut self, event: I::GesturePinchBeginEvent) {
+        self.cancel_shell_tap();
         if !self.features.on(crate::module::Feature::Gestures) {
             if self.greeter.is_none() && !self.protocols.locks.locked {
                 self.seat.get_pointer().unwrap().gesture_pinch_begin(self, &GesturePinchBeginEvent { serial: SERIAL_COUNTER.next_serial(), time: event.time_msec(), fingers: event.fingers() });
@@ -505,6 +563,7 @@ impl Gavno {
         })
     }
     pub fn on_gesture_hold_begin<I: InputBackend>(&mut self, event: I::GestureHoldBeginEvent) {
+        self.cancel_shell_tap();
         if !self.features.on(crate::module::Feature::Gestures) {
             if self.greeter.is_none() && !self.protocols.locks.locked {
                 self.seat.get_pointer().unwrap().gesture_hold_begin(self, &GestureHoldBeginEvent { serial: SERIAL_COUNTER.next_serial(), time: event.time_msec(), fingers: event.fingers() });
@@ -531,9 +590,15 @@ impl Gavno {
                 if let Some(output) = gv.active_output() {
                     let moving = gv.workspaces.ensure(&output).position.is_active()
                         || (gv.overview.output.as_ref() == Some(&output)
-                            && gv.overview.progress.is_active());
+                            && gv.overview.progress.is_active())
+                        || (gv.features.on(crate::module::Feature::Classic) && gv.classic.progress.is_active());
                     if moving {
                         gv.catch_desktop(&output);
+                        gv.guard(crate::module::Feature::Classic, (), |gv| {
+                            gv.classic.progress.advance(gv.start_time.elapsed());
+                            gv.classic.progress.jump(gv.classic.progress.value);
+                            gv.classic.held = true;
+                        });
                         gv.gestures.hold_output = Some(output);
                     }
                 }
@@ -560,6 +625,12 @@ impl Gavno {
                     },
                 );
             } else if let Some(output) = gv.gestures.hold_output.take() {
+                gv.guard(crate::module::Feature::Classic, (), |gv| {
+                    let target = release_target(gv.classic.progress.value, 0.0, 1);
+                    gv.classic.mode = if target == 1 { crate::classic::ShellMode::Classic } else { crate::classic::ShellMode::Gavno };
+                    gv.classic.held = false;
+                    gv.classic.progress.set(target as f64);
+                });
                 let o = gv.workspaces.ensure(&output);
                 let target = release_target(o.position.value, 0.0, o.list.items.len() - 1);
                 o.held = false;
@@ -703,6 +774,8 @@ impl Gavno {
                 t.send_pending_configure();
             }
         }
+        self.classic.held = false;
+        self.classic.progress.set(self.classic.mode.progress());
         self.gestures = Default::default();
         self.window_gestures = Default::default();
         self.features.call(crate::module::Feature::Overview, (), || { self.overview.drag = None; });

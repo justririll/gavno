@@ -57,6 +57,15 @@ impl Notifications {
             y += height + 8;
         }
     }
+    pub fn anchor_classic(&mut self, size: Size<i32, Logical>, progress: f64) {
+        let total = self.cards.iter().filter_map(|c| c.rect).map(|r| r.size.h + 8).sum::<i32>();
+        let bottom = (size.h - crate::classic::TASKBAR_HEIGHT - 8 - total).max(8);
+        let dy = ((bottom - 40) as f64 * progress.clamp(0.0, 1.0)).round() as i32;
+        for card in &mut self.cards {
+            if let Some(r) = &mut card.rect { r.loc.y += dy; }
+            for (r, _) in &mut card.buttons { r.loc.y += dy; }
+        }
+    }
     pub fn elements(
         &mut self,
         renderer: &mut GlesRenderer,
@@ -65,6 +74,7 @@ impl Notifications {
         scale: f64,
         now: Duration,
         theme: &str,
+        shell_progress: f64,
     ) -> Vec<GavnoRenderElement> {
         if !self.active || self.blocked || self.output.as_ref() != Some(output) {
             return Vec::new();
@@ -75,6 +85,7 @@ impl Notifications {
             }
         }
         self.layout(size);
+        self.anchor_classic(size, shell_progress);
         let canvas = &mut self.canvas;
         canvas.begin(renderer, scale);
         for c in &mut self.cards {

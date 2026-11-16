@@ -29,6 +29,7 @@ const BTN_RIGHT: u32 = 0x111;
 /// A compositor action bound to a key chord.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
+    Classic(crate::classic::binds::ClassicAction),
     Lock,
     Quit,
     Spawn(String),
@@ -59,6 +60,10 @@ pub enum Action {
 }
 
 impl Gavno {
+    pub(crate) fn cancel_shell_tap(&mut self) {
+        if self.classic_mode() { self.guard(Feature::Classic, (), |gv| gv.gestures.super_tap.cancel()); }
+        else { self.guard(Feature::Gestures, (), |gv| gv.gestures.super_tap.cancel()); }
+    }
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>)
     where
         I::GestureSwipeUpdateEvent: 'static,
@@ -104,9 +109,10 @@ impl Gavno {
                 if gv.greeter.is_none() && !gv.protocols.locks.locked
                     && (gv.features.on(crate::module::Feature::Switcher) && gv.overlay.switcher_open())
                     && key_state == KeyState::Released
-                    && !mods.alt
+                    && (if gv.classic.switcher_win { !gv.config.mod_key.is_held(mods) } else { !mods.alt })
                 {
                     gv.switcher_finish(true);
+                    gv.classic.switcher_win = false;
                 }
                 let sym = handle.modified_sym().raw();
                 if gv.bar_key(sym, raw_code, key_state == KeyState::Pressed) {
@@ -114,16 +120,21 @@ impl Gavno {
                     if key_state == KeyState::Released { gv.suppressed_keys.retain(|k| *k != raw_code); }
                     return FilterResult::Intercept(None);
                 }
-                if gv.greeter.is_none() && !gv.protocols.locks.locked && !gv.seat.keyboard_shortcuts_inhibited() && gv.features.on(Feature::Gestures) && (gv.features.on(Feature::Overview) || gv.features.on(Feature::Launcher)) {
-                    let is_super = matches!(sym, keysyms::KEY_Super_L | keysyms::KEY_Super_R);
+                if gv.greeter.is_none() && !gv.protocols.locks.locked && !gv.seat.keyboard_shortcuts_inhibited() && (gv.classic_mode() || (gv.features.on(Feature::Gestures) && (gv.features.on(Feature::Overview) || gv.features.on(Feature::Launcher)))) {
+                    let is_super = match gv.config.mod_key {
+                        crate::config::ModKey::Super => matches!(sym, keysyms::KEY_Super_L | keysyms::KEY_Super_R),
+                        crate::config::ModKey::Alt => matches!(sym, keysyms::KEY_Alt_L | keysyms::KEY_Alt_R),
+                    };
                     let other_down = gv.desktop_keys.iter().any(|k| *k != raw_code);
-                    let toggle = gv.super_tap_key(raw_code, is_super, key_state == KeyState::Pressed, other_down);
+                    let toggle = if gv.classic_mode() {
+                        gv.guard(Feature::Classic, false, |gv| gv.gestures.super_tap.key(raw_code, is_super, key_state == KeyState::Pressed, other_down))
+                    } else { gv.super_tap_key(raw_code, is_super, key_state == KeyState::Pressed, other_down) };
                     if toggle {
-                        let action = if gv.features.on(Feature::Overview) { Action::ToggleOverview } else { Action::ToggleLauncher };
+                        let action = if gv.classic_mode() { Action::Classic(crate::classic::binds::ClassicAction::Start) } else if gv.features.on(Feature::Launcher) { gv.config.launcher.clone().map(Action::Spawn).unwrap_or(Action::ToggleLauncher) } else { Action::ToggleOverview };
                         return FilterResult::Intercept(Some(action));
                     }
                     if is_super { return FilterResult::Intercept(None); }
-                } else { gv.guard(Feature::Gestures, (), |gv| gv.gestures.super_tap.cancel()); }
+                } else { gv.cancel_shell_tap(); }
                 if key_state == KeyState::Released {
                     gv.launcher_key_release(raw_code);
                     // Swallow the release of a key whose press was a bind.
@@ -160,6 +171,21 @@ impl Gavno {
                     return FilterResult::Intercept(None);
                 }
 
+                if !gv.protocols.locks.locked && !gv.seat.keyboard_shortcuts_inhibited() {
+                    if let Some(sym) = handle.raw_latin_sym_or_raw_current_sym() {
+                        let action = gv.features.read(Feature::Classic, None, || crate::classic::binds::binding(sym, mods, gv.config.mod_key, gv.classic_mode()));
+                        if let Some(action) = action.filter(|action| gv.action_enabled(action)) {
+                            gv.suppressed_keys.push(raw_code);
+                            return FilterResult::Intercept(Some(action));
+                        }
+                    }
+                }
+                if gv.classic_mode() && gv.classic.start.open && !gv.protocols.locks.locked && !(mods.ctrl && mods.alt) {
+                    let sym = handle.modified_sym();
+                    gv.suppressed_keys.push(raw_code);
+                    gv.classic_start_key(sym, sym.key_char(), mods);
+                    return FilterResult::Intercept(None);
+                }
                 // The open launcher takes every key except the emergency chord.
                 if gv.launcher.open && !gv.protocols.locks.locked && !(mods.ctrl && mods.alt) {
                     let sym = handle.modified_sym();
@@ -169,6 +195,13 @@ impl Gavno {
                     return FilterResult::Intercept(None);
                 }
 
+                if !gv.protocols.locks.locked && !gv.seat.keyboard_shortcuts_inhibited() {
+                    let sym = handle.modified_sym();
+                    if gv.classic_desktop_key(sym, sym.key_char(), mods) {
+                        gv.suppressed_keys.push(raw_code);
+                        return FilterResult::Intercept(None);
+                    }
+                }
                 // The emergency chord and VT switching remain compositor-owned.
                 if !gv.protocols.locks.locked && mods.ctrl && mods.alt && handle.modified_sym().raw() == keysyms::KEY_Delete {
                     gv.suppressed_keys.push(raw_code);
@@ -266,10 +299,12 @@ impl Gavno {
 
     /// The core binds (KooL Hyprland-Dots subset). Modules see keys first.
     pub(crate) fn bind_for(&self, sym: Keysym, mods: &ModifiersState) -> Option<Action> {
-        self.bind_for_enabled(sym, mods).filter(|action| self.action_enabled(action))
+        self.features.read(Feature::Classic, None, || crate::classic::binds::binding(sym, mods, self.config.mod_key, self.classic_mode()))
+            .or_else(|| self.bind_for_enabled(sym, mods)).filter(|action| self.action_enabled(action))
     }
     fn action_enabled(&self, action: &Action) -> bool {
         let feature = match action {
+            Action::Classic(_) => Feature::Classic,
             Action::Minimize => Feature::Dock,
             Action::ToggleTiling | Action::ToggleFloating | Action::RotateSplit | Action::Swap(_) => Feature::Tiling,
             Action::Snap(_) | Action::Resize(_) => Feature::Snap,
@@ -359,6 +394,7 @@ impl Gavno {
         if !self.action_enabled(&action) { return; }
         if self.protocols.locks.locked && !matches!(action, Action::SwitchVt(_)) { return; }
         match action {
+            Action::Classic(action) => self.run_classic_action(action),
             Action::Lock => { self.close_launcher(); self.lock_session(); },
             Action::ToggleLauncher => self.toggle_launcher(),
             Action::ToggleTiling => { if let Some(o) = self.active_output() { self.toggle_workspace_tiling(&o); } }
@@ -383,7 +419,7 @@ impl Gavno {
             Action::Resize(dir) => self.resize_direction(dir),
             Action::ResizeMode => self.enter_resize_mode(),
             Action::SwitcherCycle(backwards) => self.switcher_cycle(backwards),
-            Action::SwitcherFinish(commit) => self.switcher_finish(commit),
+            Action::SwitcherFinish(commit) => { self.switcher_finish(commit); self.classic.switcher_win = false; },
             Action::SwitchVt(vt) => crate::backend::switch_vt(self, vt),
         }
     }
@@ -412,6 +448,8 @@ impl Gavno {
         let resizing=self.resize_mode_motion(pos);
         self.overview_motion(pos);
         self.launcher_motion(pos);
+        self.classic_motion(pos);
+        self.classic_desktop_motion(pos);
         self.notification_motion(pos);
         let new_under = if resizing {None} else {self.surface_under(pos)};
         let serial = SERIAL_COUNTER.next_serial();
@@ -450,6 +488,8 @@ impl Gavno {
         let resizing=self.resize_mode_motion(pos);
         self.overview_motion(pos);
         self.launcher_motion(pos);
+        self.classic_motion(pos);
+        self.classic_desktop_motion(pos);
         self.notification_motion(pos);
         let under = if resizing {None} else {self.surface_under(pos)};
         pointer.motion(
@@ -500,7 +540,12 @@ impl Gavno {
             return;
         }
 
-        self.guard(Feature::Gestures, (), |gv| gv.gestures.super_tap.cancel());
+        if button_state == ButtonState::Released && self.classic.desktop.drag.is_some()
+            && self.classic_desktop_button(button, false) {
+            self.suppressed_buttons.retain(|b| *b != button);
+            return;
+        }
+        self.cancel_shell_tap();
         // A new press ends any earlier synthetic release of this button.
         if button_state == ButtonState::Pressed {
             self.suppressed_buttons.retain(|b| *b != button);
@@ -532,8 +577,21 @@ impl Gavno {
             if button_state == ButtonState::Pressed { self.suppressed_buttons.push(button); }
             return;
         }
+        if self.classic.desktop.menu.is_some() && self.classic_desktop_button(button, button_state == ButtonState::Pressed) {
+            if button_state == ButtonState::Pressed { self.suppressed_buttons.push(button); }
+            return;
+        }
+        if self.classic_button(button, button_state == ButtonState::Pressed) {
+            if button_state == ButtonState::Pressed && !self.suppressed_buttons.contains(&button) { self.suppressed_buttons.push(button); }
+            return;
+        }
+        if self.classic_decor_button(button, button_state == ButtonState::Pressed, serial, event.time_msec()) { return; }
         if self.shell_button(button, button_state == ButtonState::Pressed) { return; }
         if self.overview_button(button, button_state == ButtonState::Pressed) { return; }
+        if self.classic_desktop_button(button, button_state == ButtonState::Pressed) {
+            if button_state == ButtonState::Pressed { self.suppressed_buttons.push(button); }
+            return;
+        }
         if self.desktop_transform_at(pointer.current_location()) && self.layer_hit(pointer.current_location(), &[Layer::Overlay, Layer::Top]).is_none() { return; }
         if button_state == ButtonState::Pressed && button == BTN_LEFT && self.start_band_resize(button,serial,event.time_msec()) {return;}
         if button_state == ButtonState::Pressed && button == BTN_LEFT && !pointer.is_grabbed() {
@@ -657,7 +715,7 @@ impl Gavno {
     }
 
     fn on_pointer_axis<I: InputBackend>(&mut self, event: I::PointerAxisEvent) {
-        self.guard(Feature::Gestures, (), |gv| gv.gestures.super_tap.cancel());
+        self.cancel_shell_tap();
         let source = event.source();
         let horizontal = event
             .amount(Axis::Horizontal)
@@ -669,6 +727,8 @@ impl Gavno {
         if self.greeter.is_none() && !self.protocols.locks.locked && source==AxisSource::Finger {
             if self.precision_scroll((-horizontal,-vertical).into(),[event.amount(Axis::Horizontal),event.amount(Axis::Vertical)]) {return;}
         }
+        if self.greeter.is_none() && !self.protocols.locks.locked && self.classic_axis(vertical) { return; }
+        if self.greeter.is_none() && !self.protocols.locks.locked && self.classic_desktop_axis(vertical) { return; }
         if self.greeter.is_none() && !self.protocols.locks.locked && self.shell_axis(horizontal, vertical) { return; }
         if self.greeter.is_none() && !self.protocols.locks.locked && source==AxisSource::Finger && self.overview_flick_axis((-horizontal,-vertical).into(),event.time(),[event.amount(Axis::Horizontal),event.amount(Axis::Vertical)]) {return;}
         if self.features.on(crate::module::Feature::Overview) && self.overview.visible() { return; }

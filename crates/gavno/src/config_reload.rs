@@ -170,6 +170,7 @@ pub(crate) fn apply(gv: &mut Gavno, prepared: Prepared) -> Result<Value, String>
     let icons_changed = gv.config.dock.icon_theme != config.dock.icon_theme;
     let white_changed = gv.config.sdr_white_nits != config.sdr_white_nits;
     let pins_changed = gv.config.dock.pinned != config.dock.pinned;
+    let classic_changed = gv.config.classic != config.classic;
     // These startup-only settings are not considered effective before re-login.
     config.autostart = gv.config.autostart.clone();
     config.polkit_agent = gv.config.polkit_agent.clone();
@@ -186,6 +187,11 @@ pub(crate) fn apply(gv: &mut Gavno, prepared: Prepared) -> Result<Value, String>
         keyboard.change_repeat_info(gv.config.repeat_rate, gv.config.repeat_delay);
     }
     gv.reload_features();
+    if classic_changed && gv.classic.desktop.active {
+        gv.classic.desktop.widgets.configure(&gv.config.classic.widgets);
+        gv.request_desktop_scan();
+        gv.queue_redraw_all();
+    }
     if icons_changed || pins_changed {
         gv.dock.configuration_changed();
     }

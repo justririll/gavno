@@ -53,6 +53,7 @@ pub struct Gavno {
     pub mru: Vec<Window>,
     pub workspaces: crate::workspace::Workspaces,
     pub overview: crate::overview::Overview,
+    pub classic: crate::classic::Classic,
     pub dock: crate::dock::Dock,
     pub topbar: crate::topbar::TopBar,
     pub media: crate::topbar::control::MediaState,
@@ -150,6 +151,7 @@ impl Gavno {
             display_handle: dh.clone(),
             loop_handle: event_loop.handle(),
             loop_signal: event_loop.get_signal(),
+            classic: crate::classic::Classic::new(config.modules.classic && config.classic.start_in_classic),
             config,
             ipc: crate::ipc::IpcState::default(),
             screencopy_global: None,
@@ -249,7 +251,10 @@ impl Gavno {
         self.refresh_constraints(focus.as_ref());
         self.refresh_lock();
         self.refresh_internal_lock();
+        self.settle_classic();
+        if self.sync_classic_decorations() { self.refit_fixed_windows(); }
         self.refresh_shell();
+        self.refresh_classic_desktop();
         self.refresh_notifications();
         self.refresh_media();
         self.finish_dock_launches();
@@ -272,13 +277,14 @@ impl Gavno {
         let overlay = self.guard(Feature::Switcher, false, |gv| gv.overlay.is_animating());
         let overview = self.guard(Feature::Overview, false, |gv| gv.overview.progress.is_active()
             || gv.overview.flick.as_ref().is_some_and(|(_, x, y)| x.is_active() || y.is_active()));
+        let classic = self.guard(Feature::Classic, false, |gv| gv.classic.active());
         let dock = self.guard(Feature::Dock, false, |gv| gv.dock.active());
         let bar = self.guard(Feature::Bar, false, |gv| gv.topbar.active());
         let launcher = self.guard(Feature::Launcher, false, |gv| gv.launcher.is_animating());
         let notifications = self.guard(Feature::Notifications, false, |gv| gv.notifications.borrow().animating());
         // Animated named cursors (wait, progress) need frames while shown.
         let cursor = matches!(&self.cursor_status, smithay::input::pointer::CursorImageStatus::Named(icon) if self.cursor.animated(icon.name()));
-        cursor || animations || overlay || self.workspaces.active() || overview || dock || bar || launcher || notifications || self.media.osd.is_animating()
+        classic || cursor || animations || overlay || self.workspaces.active() || overview || dock || bar || launcher || notifications || self.media.osd.is_animating()
     }
 
     pub fn pointer_location(&self) -> Point<f64, Logical> {
@@ -288,6 +294,8 @@ impl Gavno {
     pub fn surface_under(&self, pos: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
         if self.protocols.locks.locked { return self.lock_surface_under(pos); }
         if self.greeter.is_some() { return None; }
+        if self.features.read(Feature::Classic, false, || self.classic.desktop.drag.is_some()) { return None; }
+        if self.classic_decor_hit(pos).is_some() { return None; }
         if self.greeter.is_none() && self.shell_contains(pos) { return None; }
         use smithay::wayland::shell::wlr_layer::Layer;
         if let Some(hit) = self.layer_hit(pos, &[Layer::Overlay, Layer::Top]) {
@@ -298,6 +306,7 @@ impl Gavno {
         if let Some((_, _, surface, origin)) = self.window_input_at(pos) {
             return Some((surface, origin));
         }
+        if self.classic_desktop_available(pos) { return None; }
         self.layer_hit(pos, &[Layer::Bottom, Layer::Background])
             .map(|hit| (hit.surface, hit.surface_loc))
     }
@@ -339,6 +348,9 @@ impl Gavno {
         if self.protocols.locks.locked || self.greeter.is_some() { return; }
         let serial = SERIAL_COUNTER.next_serial();
         if let Some(window) = window {
+            self.classic.desktop.focused = false;
+            let desktop_changed = self.classic.desktop.rename.take().is_some() | self.classic.desktop.menu.take().is_some();
+            if desktop_changed { self.classic.desktop.changed(); }
             if let Some((output, index)) = self.workspaces.membership(window) {
                 if self.workspaces.get(&output).is_some_and(|o| o.list.active != index) { self.switch_workspace(&output, index); }
             }
@@ -412,8 +424,8 @@ impl Gavno {
             .as_ref()
             .map(|o| match mode {
                 // Asked for maximize/fullscreen before its first buffer.
-                crate::window_mode::WindowMode::Maximized => crate::snap::Zone::Maximized.rect(self.work_area(o), self.config.gap).loc,
-                crate::window_mode::WindowMode::Snapped(zone) => zone.rect(self.work_area(o), self.config.gap).loc,
+                crate::window_mode::WindowMode::Maximized => self.classic_client_rect(&window, crate::snap::Zone::Maximized.rect(self.work_area(o), if self.features.on(Feature::Classic) && self.classic.settled == crate::classic::ShellMode::Classic { 0 } else { self.config.gap })).loc,
+                crate::window_mode::WindowMode::Snapped(zone) => self.classic_client_rect(&window, zone.rect(self.work_area(o), self.config.gap)).loc,
                 crate::window_mode::WindowMode::Fullscreen => {
                     self.space.output_geometry(o).unwrap_or_default().loc
                 }

@@ -127,13 +127,14 @@ impl Gavno {
             WindowMode::Floating => None,
             WindowMode::Maximized => output
                 .as_ref()
-                .map(|o| Zone::Maximized.rect(self.work_area(o), self.config.gap)),
+                .map(|o| Zone::Maximized.rect(self.work_area(o), if self.features.on(crate::module::Feature::Classic) && self.classic.settled == crate::classic::ShellMode::Classic { 0 } else { self.config.gap })),
             WindowMode::Snapped(zone) => output
                 .as_ref()
                 .map(|o| zone.rect(self.work_area(o), self.config.gap)),
             WindowMode::Fullscreen => output.as_ref().and_then(|o| self.space.output_geometry(o)),
         };
 
+        let target = target.map(|rect| if mode == WindowMode::Fullscreen { rect } else { self.classic_client_rect(window, rect) });
         let current = self.space.element_location(window).or_else(|| self.workspaces.location(window)).map(|loc| {
             Rectangle::new(
                 loc,
@@ -186,6 +187,7 @@ impl Gavno {
         rect: Rectangle<i32, Logical>,
         mode: WindowMode,
     ) {
+        let rect = if mode == WindowMode::Fullscreen { rect } else { self.classic_client_rect(window, rect) };
         crate::grabs::resize_grab::clear_anchor(window);
         self.features.call(crate::module::Feature::Animations, (), || self.window_animations.cancel(window));
         configure_mode(window, mode, Some(rect.size));

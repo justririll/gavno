@@ -16,7 +16,7 @@ active.
 | Keys | Action |
 |---|---|
 | Mod+Return, Mod+KP Enter | Start the terminal from `terminal` (default `foot`; `GAVNO_TERMINAL` overrides). |
-| Mod+D | Open the built-in application launcher: type to filter installed apps, Up/Down or Tab to choose, Enter or a click to start, Esc to close. A tap of Super alone opens it too when the overview is off. Setting `launcher` (or `GAVNO_LAUNCHER`) runs that command instead. |
+| Mod+D | Open the built-in application launcher: type to filter installed apps, Up/Down or Tab to choose, Enter or a click to start, Esc to close. A tap of the configured Mod key alone opens it too in GAVNO mode. Setting `launcher` (or `GAVNO_LAUNCHER`) runs that command instead. |
 | Mod+E | Open the file manager from `file_manager` (default `gavno-files`). |
 
 ## Windows
@@ -199,7 +199,7 @@ sits at the top.
 | Keys | Action |
 |---|---|
 | Mod+A | Toggle the overview. |
-| Super tap | Toggle the overview: press and release Super with no other key held and no click in between. |
+| Mod tap | Open the launcher in GAVNO mode, or Start in Classic. Overview is the fallback when the built-in launcher is disabled. |
 | Super+Shift+F23 | Toggle the overview. This is what the Copilot key sends on Snapdragon X Elite laptops. |
 | Escape | Close the overview. |
 
@@ -334,6 +334,78 @@ button. Hover pauses its timeout. Click the clock for notification history and
 **Clear**; quick settings includes **Do not disturb** (critical alerts bypass
 it). The clock dot marks unread history. These controls belong to the optional
 `Notifications` feature (`[modules] notifications = true` by default).
+
+## Classic mode
+
+`Mod+Shift+W` toggles the shell in either mode. It has no other default binding.
+The configured Mod key acts as Win. Its unaccompanied tap opens Start in
+Classic. Unlisted chords retain their normal GAVNO action.
+
+| Gesture | GAVNO | Classic |
+|---|---|---|
+| Three-finger swipe down | Enter Classic | Toggle show desktop |
+| Three-finger swipe up | Open overview, when enabled | Return to GAVNO |
+| Super + two-finger swipe | Same routing as three fingers | Same routing as three fingers |
+
+An open overview retains its existing vertical gestures. Horizontal gestures
+continue switching workspaces. Mode transitions follow the fingers; release
+uses the existing distance and velocity projection, and cancellation returns
+to the originating mode.
+
+| Keys in Classic | Action |
+|---|---|
+| Win tap | Toggle Start |
+| Win+E | Configured file manager |
+| Win+D | Minimize visible windows / restore that same set |
+| Win+M | Minimize all visible windows |
+| Win+L | Lock |
+| Win+I | `classic.settings_command` |
+| Win+R | Launcher in command/run style |
+| Win+A | Quick settings |
+| Win+N | Calendar and notification history |
+| Win+Up | Maximize |
+| Win+Down | Restore, then minimize |
+| Win+Left / Win+Right | Snap left / right (requires Snap) |
+| Win+1…9 | Activate taskbar app 1…9 |
+| Win+Tab | Overview, or switcher when Overview is disabled |
+| Alt+F4 | Close focused window; power menu on an empty desktop |
+| Ctrl+Shift+Esc | `classic.task_manager` |
+
+Start opens at the left edge above the taskbar. Taskbar icons default to left
+alignment; `classic.align = "center"` centers the app group.
+
+Start supports immediate search, arrows, Tab, Enter and Escape. Click All apps
+for the alphabetical list and scroll to browse it. Clicking outside or launching
+closes Start. Taskbar left click launches, focuses, minimizes a focused single
+window or cycles a group; middle click launches a new instance; right click
+opens the window list and New window, Pin/Unpin and Close actions. Hover an app
+for 500 ms to see its window title.
+
+### Classic desktop
+
+Desktop input is active only in exposed desktop space; windows, titlebars,
+resize bands, shell panels and menus retain input priority. The primary output
+holds the desktop icons and widgets.
+
+| Input | Action |
+|---|---|
+| Click | Select an icon, or clear selection on empty space |
+| Ctrl+click | Toggle an icon in the selection |
+| Shift+click | Select the range from the last clicked icon |
+| Drag empty space | Rubber-band selection; Ctrl preserves the previous selection |
+| Drag selected icons | Move the group, snapping to unoccupied grid cells |
+| Double-click / Enter | Open the selected file, folder or desktop shortcut |
+| Ctrl+A | Select all desktop icons |
+| Delete | Move selected files to Trash with `gio trash` |
+| F2 | Rename a file inline; Enter commits, Escape cancels |
+| Escape | Close the desktop menu or clear selection |
+| Right-click an icon | Open, reveal in Files, rename, or move selection to Trash |
+| Right-click empty space | Terminal here, Files, New folder, Refresh, Display settings |
+| Drag a widget | Move it; its position is saved with icon positions |
+| Scroll empty desktop | Browse overflow icon pages |
+
+Virtual Home and Trash shortcuts cannot be renamed or trashed. File operations
+run asynchronously; failed renames keep the editable name and show an error.
 
 Playback keys belong to `Media` (`[modules] media = true` by default), are handled
 before shortcut inhibitors and the lock gate, and send once per physical press.

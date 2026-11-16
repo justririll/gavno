@@ -5,6 +5,7 @@
 //! Rendering is on demand: when nothing changes, GAVNO does not draw.
 
 mod anim;
+mod classic;
 mod decor;
 mod desktop_entry;
 mod dock;

@@ -203,6 +203,18 @@ fn dispatch(gv: &mut Gavno, method: &str, params: &Value) -> Result<Value, Strin
     if method == "screen" {
         return Ok(screen(gv));
     }
+    if method == "shell_mode" {
+        if let Some(mode) = params.get("mode") {
+            let mode = match mode.as_str() {
+                Some("gavno") => crate::classic::ShellMode::Gavno,
+                Some("classic") => crate::classic::ShellMode::Classic,
+                _ => return Err("mode must be gavno or classic".into()),
+            };
+            if !gv.features.on(crate::module::Feature::Classic) { return Err("Classic module disabled".into()); }
+            gv.set_shell_mode(mode);
+        }
+        return Ok(json!({"mode": gv.classic.mode, "settled": gv.classic.settled, "progress": gv.shell_progress()}));
+    }
     if method == "config_schema" { return crate::config_schema::json(!matches!(gv.backend,crate::backend::Backend::Udev(_))); }
     if method == "reload_config" { return Err("reload_config requires asynchronous IPC".into()); }
     if method == "outputs" {
@@ -454,6 +466,122 @@ mod feature_tests {
         assert!(h.gv.ipc.listener.is_none());
         assert!(!path.exists());
         fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod classic_tests {
+    use super::*;
+    use crate::{classic::ShellMode, module::Feature, state::tests::Harness, window_mode::WindowMode};
+    use smithay::{output::{Output, PhysicalProperties, Subpixel, Mode}, utils::Rectangle};
+    use std::time::Duration;
+
+    fn output(h: &mut Harness) -> Output {
+        let output = Output::new("classic-test".into(), PhysicalProperties {
+            size: (0, 0).into(), subpixel: Subpixel::Unknown, make: "test".into(), model: "test".into(),
+        });
+        output.change_current_state(Some(Mode { size: (1646, 926).into(), refresh: 60000 }), None, None, None);
+        h.gv.space.map_output(&output, (0, 0));
+        output
+    }
+
+    #[test]
+    fn classic_ipc_validates_and_mode_settles_before_refitting() {
+        let mut h = Harness::new();
+        let output = output(&mut h);
+        let w = h.window();
+        h.gv.map_new_window(w.clone());
+        h.gv.set_window_mode(&w, WindowMode::Maximized, None);
+        let old = w.toplevel().unwrap().with_pending_state(|s| s.size);
+        assert!(dispatch(&mut h.gv, "shell_mode", &json!({"mode": "invalid"})).is_err());
+        assert!(dispatch(&mut h.gv, "shell_mode", &json!({"mode": 1})).is_err());
+        assert_eq!(dispatch(&mut h.gv, "shell_mode", &json!({"mode": "classic"})).unwrap()["mode"], "classic");
+        assert_eq!(h.gv.classic.settled, ShellMode::Gavno);
+        assert_eq!(w.toplevel().unwrap().with_pending_state(|s| s.size), old);
+        h.gv.classic.progress.jump(1.0);
+        h.gv.settle_classic();
+        assert_eq!(h.gv.classic.settled, ShellMode::Classic);
+        assert_eq!(h.gv.work_area(&output), Rectangle::from_size((1646, 878).into()));
+        assert_eq!(h.gv.space.element_location(&w), Some((0, 0).into()));
+        assert_eq!(w.toplevel().unwrap().with_pending_state(|s| s.size), Some((1646, 878).into()));
+        assert_eq!(dispatch(&mut h.gv, "shell_mode", &json!({})).unwrap()["settled"], "classic");
+        assert!(h.gv.shell_contains((100.0, 910.0).into()));
+        h.gv.features.inject_panic(Feature::Classic);
+        h.gv.set_shell_mode(ShellMode::Gavno);
+        assert_eq!(h.gv.classic.mode, ShellMode::Gavno);
+        assert_eq!(h.gv.shell_progress(), 0.0);
+        assert!(h.gv.shell_contains((100.0, 5.0).into()));
+        assert_eq!(h.gv.dock.shell_progress, 0.0);
+    }
+
+    #[test]
+    fn classic_ipc_renders_taskbar_and_start_then_panic_restores_normal_shell() {
+        use smithay::backend::{egl::{EGLDisplay, EGLContext, native::EGLSurfacelessDisplay}, renderer::{gles::GlesRenderer, element::Element}};
+        // Surfaceless EGL uses Mesa's offscreen path and never claims a DRM output.
+        let display = unsafe { EGLDisplay::new(EGLSurfacelessDisplay) }.expect("surfaceless EGL display");
+        let context = EGLContext::new(&display).expect("surfaceless EGL context");
+        let mut renderer = unsafe { GlesRenderer::new(context) }.expect("GLES renderer");
+        let mut h = Harness::new();
+        let output = output(&mut h);
+        let w = h.window();
+        h.gv.map_new_window(w.clone());
+        h.commit_size(&w, 600, 400);
+        h.gv.set_window_mode(&w, WindowMode::Maximized, None);
+        dispatch(&mut h.gv, "shell_mode", &json!({"mode": "classic"})).unwrap();
+        h.gv.classic.progress.jump(1.0);
+        h.gv.settle_classic();
+        assert_eq!(w.toplevel().unwrap().with_pending_state(|s| s.size), Some((1646, 878).into()));
+        h.commit_size(&w, 1646, 878);
+        h.gv.refresh_shell();
+        h.gv.window_animations.entries.clear();
+        let draw = |gv: &mut Gavno, renderer: &mut GlesRenderer, time| crate::render::output_elements(
+            renderer, &gv.space, &output, (100.0, 100.0).into(), &mut gv.cursor_status,
+            &mut gv.cursor, time, None, &mut gv.lock, &mut gv.overlay, &mut gv.window_decor,
+            &mut gv.window_animations, &gv.protocols.locks, &mut gv.workspaces, &mut gv.overview,
+            &mut gv.dock, &mut gv.topbar, &gv.config, &mut gv.features, &mut gv.media.osd,
+            &mut gv.launcher, &mut gv.classic);
+        let elements = draw(&mut h.gv, &mut renderer, Duration::from_secs(1));
+        assert!(elements.iter().any(|e| e.geometry(1.0.into()) == Rectangle::new((0, 878).into(), (1646, 48).into())));
+        assert!(h.gv.dock.elements(&mut renderer, &output, (1646, 926).into(), (0.0, 0.0).into(), Duration::from_secs(1), true).is_empty());
+        h.gv.toggle_start();
+        // Rendering advances the real Start spring; use frame-sized steps.
+        for i in 0..150 { let _ = draw(&mut h.gv, &mut renderer, Duration::from_millis(1000 + i * 8)); }
+        assert!(h.gv.classic.start.contains(&output, (30.0, 210.0).into()));
+        assert!(h.gv.shell_contains((30.0, 210.0).into()));
+        if let Some(directory)=std::env::var_os("GAVNO_CLASSIC_TEST_ARTIFACTS") {
+            for _ in 0..5 { h.event_loop.dispatch(Duration::from_millis(20), &mut h.gv).unwrap(); }
+            let elements=draw(&mut h.gv,&mut renderer,Duration::from_millis(2400));
+            let bytes=crate::render::capture_elements(&mut renderer,&elements,(1646,926),1.0).unwrap();
+            let directory=std::path::PathBuf::from(directory);std::fs::create_dir_all(&directory).unwrap();
+            crate::debug::write_png_half(&directory.join("classic-start.png"),1646,926,&bytes).unwrap();
+        }
+        h.gv.features.inject_panic(Feature::Classic);
+        h.gv.set_shell_mode(ShellMode::Gavno);
+        h.event_loop.dispatch(Duration::ZERO, &mut h.gv).unwrap();
+        let elements = draw(&mut h.gv, &mut renderer, Duration::from_secs(3));
+        assert!(elements.iter().any(|e| e.geometry(1.0.into()) == Rectangle::from_size((1646, 32).into())));
+        assert!(!elements.iter().any(|e| e.geometry(1.0.into()) == Rectangle::new((0, 878).into(), (1646, 48).into())));
+        assert_eq!(h.gv.classic.mode, ShellMode::Gavno);
+        assert_eq!(h.gv.dock.shell_progress, 0.0);
+        assert!(!h.gv.dock.elements(&mut renderer, &output, (1646, 926).into(), (0.0, 0.0).into(), Duration::from_secs(3), true).is_empty());
+    }
+
+    #[test]
+    fn show_desktop_restores_only_the_same_windows() {
+        let mut h = Harness::new();
+        output(&mut h);
+        let a = h.window(); let b = h.window(); let already_minimized = h.window();
+        for w in [&a, &b, &already_minimized] { h.gv.map_new_window(w.clone()); }
+        h.gv.minimize_window(&already_minimized);
+        h.gv.focus_window(Some(&b));
+        h.gv.show_classic_desktop(true);
+        assert!(h.gv.space.elements().next().is_none());
+        h.gv.show_classic_desktop(true);
+        assert!(h.gv.space.element_location(&a).is_some());
+        assert!(h.gv.space.element_location(&b).is_some());
+        assert!(crate::window_mode::mode_state(&already_minimized).minimized);
+        assert_eq!(h.gv.focused_window(), Some(b));
+        h.event_loop.dispatch(Duration::ZERO, &mut h.gv).unwrap();
     }
 }
 

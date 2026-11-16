@@ -40,6 +40,7 @@ pub struct Config {
     /// Gap between a new window and the work area edge, logical px.
     pub gap: i32,
     pub modules: ModulesConfig,
+    pub classic: crate::classic::ClassicConfig,
     pub dock: DockConfig,
     pub bar: BarConfig,
     pub tiling: TilingConfig,
@@ -140,6 +141,7 @@ struct FileConfig {
     outputs: BTreeMap<String, OutputConfig>,
     keyboard: Keyboard,
     modules: ModulesConfig,
+    classic: crate::classic::ClassicConfig,
     dock: DockConfig,
     bar: BarConfig,
     tiling: TilingConfig,
@@ -235,7 +237,7 @@ impl Config {
             "file_manager":self.file_manager,"polkit_agent":self.polkit_agent,"autostart":self.autostart,"gap":self.gap,
             "output":{"internal_scale":self.internal_scale,"mode":mode,"hdr":self.output_hdr,"sdr_white_nits":self.sdr_white_nits},
             "keyboard":{"layout":self.xkb_layout,"variant":self.xkb_variant,"options":self.xkb_options,"repeat_delay":self.repeat_delay,"repeat_rate":self.repeat_rate},
-            "modules":self.modules,"dock":self.dock,"bar":self.bar,"tiling":self.tiling,"lock":self.lock,"notifications":self.notifications,"outputs":self.outputs})
+            "modules":self.modules,"classic":self.classic,"dock":self.dock,"bar":self.bar,"tiling":self.tiling,"lock":self.lock,"notifications":self.notifications,"outputs":self.outputs})
     }
 
     /// Pure merge: defaults < file < environment. Empty environment values are unset.
@@ -252,7 +254,7 @@ impl Config {
         // Capture unknown fields during deserialization, so this list cannot drift from the schema.
         let mut unknown = Vec::new();
         for (prefix, extra) in
-            [("", &file.unknown), ("output.", &file.output.unknown), ("keyboard.", &file.keyboard.unknown), ("dock.", &file.dock.unknown), ("bar.", &file.bar.unknown), ("tiling.", &file.tiling.unknown), ("notifications.", &file.notifications.unknown), ("lock.", &file.lock.unknown), ("modules.", &file.modules.unknown)]
+            [("", &file.unknown), ("output.", &file.output.unknown), ("keyboard.", &file.keyboard.unknown), ("classic.", &file.classic.unknown), ("dock.", &file.dock.unknown), ("bar.", &file.bar.unknown), ("tiling.", &file.tiling.unknown), ("notifications.", &file.notifications.unknown), ("lock.", &file.lock.unknown), ("modules.", &file.modules.unknown)]
         {
             unknown.extend(extra.keys().map(|key| format!("{prefix}{key}")));
         }
@@ -343,6 +345,7 @@ impl Config {
                 ),
                 gap: gap.clamp(0, 64) as i32,
                 modules: file.modules,
+                classic: file.classic,
                 dock: file.dock,
                 bar: file.bar,
                 tiling: file.tiling,
@@ -416,6 +419,7 @@ options = "caps:escape"
             xkb_variant: "".into(),
             xkb_options: Some("grp:alt_shift_toggle".into()),
             gap: 12,
+            classic: Default::default(),
             dock: Default::default(),
             bar: Default::default(),
             tiling: Default::default(),
@@ -457,6 +461,7 @@ options = "caps:escape"
             xkb_variant: "nodeadkeys".into(),
             xkb_options: Some("caps:escape".into()),
             gap: 20,
+            classic: Default::default(),
             dock: Default::default(),
             bar: Default::default(),
             tiling: Default::default(),
@@ -625,6 +630,7 @@ options = "caps:escape"
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct ModulesConfig {
+    pub classic: bool,
     pub color_management: bool,
     pub dock: bool,
     pub bar: bool,
@@ -647,7 +653,7 @@ pub struct ModulesConfig {
 }
 impl Default for ModulesConfig {
     fn default() -> Self {
-        Self { dock: true, bar: true, overview: true, tiling: true, snap: true, switcher: true, gestures: true, window_gestures: true, resize_mode: true, animations: true, decorations: true, ipc: true, screencopy: true, launcher: true, notifications: true, media: true, color_management: true, unknown: Default::default() }
+        Self { classic: true, dock: true, bar: true, overview: true, tiling: true, snap: true, switcher: true, gestures: true, window_gestures: true, resize_mode: true, animations: true, decorations: true, ipc: true, screencopy: true, launcher: true, notifications: true, media: true, color_management: true, unknown: Default::default() }
     }
 }
 

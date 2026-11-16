@@ -30,6 +30,7 @@ use std::{
 pub struct Lock {
     internal: bool,
     media_canvas: crate::topbar::Canvas,
+    media_icons: crate::icons::Icons,
     authenticated: bool,
     failed: bool,
     ui_panics: u8,
@@ -122,10 +123,11 @@ impl Lock {
     }
     pub(crate) fn clear_media(&mut self) {
         self.media_canvas = Default::default();
+        self.media_icons = Default::default();
     }
     pub(crate) fn media_elements(
         &mut self, renderer: &mut GlesRenderer, size: Size<i32, Logical>, scale: f64,
-        snapshot: &crate::media::Snapshot,
+        snapshot: &crate::media::Snapshot, theme: &str,
     ) -> Vec<GavnoRenderElement> {
         if self.failed || self.authenticated || self.ui.is_none() { return Vec::new(); }
         let Some(player) = &snapshot.player else { return Vec::new(); };
@@ -133,7 +135,7 @@ impl Lock {
         let c = &mut self.media_canvas;
         c.begin(renderer, scale);
         c.label(renderer, &player.label(), line.loc.x, line.loc.y, line.size.w, 12.0);
-        for (command, area) in buttons { crate::media::ui::button(c, renderer, player, command, area, false); }
+        for (command, area) in buttons { crate::media::ui::button(c, renderer, &mut self.media_icons, theme, player, command, area, false); }
         c.finish()
     }
     pub fn key(&mut self, sym: Keysym, ch: Option<char>, mods: &ModifiersState) {

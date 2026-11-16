@@ -134,6 +134,7 @@ impl Gavno {
     }
     pub(crate) fn media_update(&mut self, snapshot: Snapshot) {
         self.guard(Feature::Media, (), |gv| {
+            gv.classic.desktop.widgets.update_player(snapshot.player.as_ref());
             gv.now_playing.borrow_mut().snapshot = snapshot;
             gv.queue_redraw_all();
         });
