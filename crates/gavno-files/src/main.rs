@@ -4,6 +4,11 @@ mod dock;
 mod icons;
 mod dbus;
 mod model;
+mod polkit;
+mod root;
+// The helper binary uses the server half; the UI only the types.
+#[allow(dead_code)]
+mod root_proto;
 mod ops;
 mod preview;
 mod search;

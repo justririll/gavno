@@ -1,0 +1,10 @@
+// gavno-files root mode: members of wheel in an active local session start
+// the file manager's helper with their own password, remembered for five
+// minutes. Nothing else is affected.
+polkit.addRule(function(action, subject) {
+    if (action.id == "org.freedesktop.policykit.exec" &&
+        action.lookup("program") == "/usr/local/libexec/gavno-files-helper" &&
+        subject.isInGroup("wheel") && subject.local && subject.active) {
+        return polkit.Result.AUTH_SELF_KEEP;
+    }
+});

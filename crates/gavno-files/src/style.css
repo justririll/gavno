@@ -312,3 +312,72 @@ popover modelbutton:hover {
 .file-tile editablelabel.hidden-file {
   color: @muted;
 }
+
+/* ---------- root mode ---------- */
+.root-button {
+  padding: 0 10px;
+  border-radius: 9px;
+  border: 1px solid @line;
+  background: @surface;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.files-header button.root-button {
+  min-width: 0;
+  padding: 0 10px;
+  border: 1px solid @line;
+  background: @surface;
+}
+.files-header button.root-button:hover {
+  border-color: alpha(@root, 0.4);
+  color: @root;
+}
+.files-header button.root-button.on {
+  background: @root;
+  border-color: @root;
+  color: #2a0d0a;
+}
+window.is-root .files-header {
+  background: mix(@surface2, @root, 0.11);
+}
+window.is-root {
+  outline: 2px solid @root;
+  outline-offset: -2px;
+}
+.root-bar {
+  background: @root;
+  color: #2a0d0a;
+  padding: 6px 12px;
+  font-size: 12.5px;
+  font-weight: 550;
+}
+.root-bar button {
+  min-height: 0;
+  padding: 3px 10px;
+  border-radius: 7px;
+  background: alpha(white, 0.22);
+  color: inherit;
+  font-weight: 600;
+  box-shadow: none;
+}
+.access-banner {
+  padding: 8px 14px;
+  background: alpha(@root, 0.11);
+  border-bottom: 1px solid alpha(@root, 0.4);
+  font-size: 13px;
+}
+.access-banner image {
+  color: @root;
+}
+button.root {
+  background: @root;
+  color: #2a0d0a;
+  border-radius: 8px;
+  padding: 5px 11px;
+  font-size: 12.5px;
+  font-weight: 550;
+}
+.who.root {
+  background: @root;
+  color: #2a0d0a;
+}

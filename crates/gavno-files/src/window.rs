@@ -59,6 +59,13 @@ pub struct FileWindow {
     places: RefCell<Option<gtk::ScrolledWindow>>,
     dock: Rc<crate::dock::Dock>,
     shortcuts: gtk::ShortcutController,
+    root: RefCell<Option<Rc<crate::root::RootSession>>>,
+    root_button: gtk::Button,
+    root_bar: gtk::Revealer,
+    root_idle: RefCell<Option<glib::SourceId>>,
+    access_bar: gtk::Revealer,
+    access_label: gtk::Label,
+    who: gtk::Label,
 }
 
 pub fn open(app: &adw::Application, file: gio::File, selected: Vec<String>) -> Rc<FileWindow> {
@@ -232,6 +239,23 @@ impl FileWindow {
             )),
         );
         let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let access_row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        access_row.add_css_class("access-banner");
+        access_row.append(&gtk::Image::from_icon_name("changes-prevent-symbolic"));
+        let access_label = gtk::Label::new(None);
+        access_label.set_hexpand(true);
+        access_label.set_xalign(0.);
+        access_label.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+        access_row.append(&access_label);
+        let access_button = gtk::Button::with_label("Open as root");
+        access_button.add_css_class("root");
+        access_button.set_action_name(Some("win.root"));
+        access_row.append(&access_button);
+        let access_bar = gtk::Revealer::builder()
+            .transition_type(gtk::RevealerTransitionType::SlideDown)
+            .child(&access_row)
+            .build();
+        content.append(&access_bar);
         content.append(&overlay);
         content.append(&dock.revealer);
         let footer = gtk::Box::new(gtk::Orientation::Horizontal, 12);
@@ -268,10 +292,36 @@ impl FileWindow {
         for widget in header_end.iter().rev() {
             header.append(widget);
         }
+        let root_button = gtk::Button::new();
+        let root_content = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        root_content.append(&gtk::Image::from_icon_name("security-high-symbolic"));
+        root_content.append(&gtk::Label::new(Some("root")));
+        root_button.set_child(Some(&root_content));
+        root_button.add_css_class("root-button");
+        root_button.set_tooltip_text(Some("Root mode (Ctrl+Shift+R)"));
+        root_button.set_action_name(Some("win.root"));
+        header.append(&root_button);
         header.append(&gtk::WindowControls::new(gtk::PackType::End));
         let handle = gtk::WindowHandle::new();
         handle.set_child(Some(&header));
         layout.append(&handle);
+        let root_row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        root_row.add_css_class("root-bar");
+        let root_text = gtk::Label::new(Some(
+            "Root mode: changes here affect the whole system",
+        ));
+        root_text.set_hexpand(true);
+        root_text.set_xalign(0.);
+        root_text.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        root_row.append(&root_text);
+        let root_exit = gtk::Button::with_label("Exit");
+        root_exit.set_action_name(Some("win.root"));
+        root_row.append(&root_exit);
+        let root_bar = gtk::Revealer::builder()
+            .transition_type(gtk::RevealerTransitionType::SlideDown)
+            .child(&root_row)
+            .build();
+        layout.append(&root_bar);
         layout.append(&paned);
         paned.set_vexpand(true);
         let toast = adw::ToastOverlay::new();
@@ -319,6 +369,13 @@ impl FileWindow {
             places: RefCell::new(None),
             dock,
             shortcuts,
+            root: RefCell::new(None),
+            root_button,
+            root_bar,
+            root_idle: RefCell::new(None),
+            access_bar,
+            access_label,
+            who,
         });
         slot.replace(Rc::downgrade(&this));
         let (side, monitor) = sidebar::build(
@@ -733,6 +790,7 @@ impl FileWindow {
             }
         });
         self.action("dock", &["F4"], |w| w.toggle_dock());
+        self.action("root", &["<Control><Shift>r"], |w| w.toggle_root());
         self.action("open", &[], |w| w.open_selected());
         self.action("open-with", &[], |w| w.open_with());
         self.action("rename", &[], |w| w.views.rename_selected());
@@ -954,9 +1012,42 @@ impl FileWindow {
         self.store.remove_all();
         self.loading.set(true);
         self.spinner.start();
+        self.access_bar.set_reveal_child(false);
         self.update_status();
         if let Some(monitor) = self.monitor.borrow_mut().take() {
             monitor.cancel();
+        }
+        let root = self.root.borrow().clone();
+        if let (Some(root), Some(path)) = (root, file.path()) {
+            self.touch_root();
+            glib::spawn_future_local(glib::clone!(
+                #[weak(rename_to=this)]
+                self,
+                async move {
+                    let result = root.list(&path).await;
+                    if cancel.is_cancelled() {
+                        return;
+                    }
+                    this.loading.set(false);
+                    this.spinner.stop();
+                    match result {
+                        Ok(entries) => {
+                            let infos: Vec<gio::FileInfo> = entries
+                                .iter()
+                                .map(|e| crate::root::file_info(&path, e))
+                                .collect();
+                            this.store.extend_from_slice(&infos);
+                        }
+                        Err(e) => {
+                            this.empty.set_text("Unable to open this folder");
+                            this.notify(&e);
+                        }
+                    }
+                    this.update_status();
+                    this.schedule_selection();
+                }
+            ));
+            return;
         }
         glib::spawn_future_local(glib::clone!(
             #[weak(rename_to=this)]
@@ -989,7 +1080,15 @@ impl FileWindow {
                 this.schedule_selection();
                 if let Err(e) = result {
                     this.empty.set_text("Unable to open this folder");
-                    this.error(e);
+                    if e.matches(gio::IOErrorEnum::PermissionDenied) {
+                        this.access_label.set_text(&format!(
+                            "No access to {}: only root can read this folder.",
+                            file.parse_name()
+                        ));
+                        this.access_bar.set_reveal_child(true);
+                    } else {
+                        this.error(e);
+                    }
                 } else {
                     this.watch(file, cancel);
                 }
@@ -1188,6 +1287,12 @@ impl FileWindow {
             return;
         }
         let file = model::file(&info);
+        if let (Some(from), Some(parent)) = (file.path(), file.parent().and_then(|p| p.path())) {
+            let to = parent.join(&name);
+            if self.root_run(crate::root_proto::Request::Rename { from, to: to.clone() }, vec![to]) {
+                return;
+            }
+        }
         glib::spawn_future_local(glib::clone!(
             #[weak(rename_to=this)]
             self,
@@ -1236,6 +1341,14 @@ impl FileWindow {
                     return;
                 }
                 let target = folder.child(name.as_str());
+                if let Some(path) = target.path() {
+                    if this.root_run(
+                        crate::root_proto::Request::Mkdir { path: path.clone() },
+                        vec![path],
+                    ) {
+                        return;
+                    }
+                }
                 let dest = target.clone();
                 match gio::spawn_blocking(move || dest.make_directory(gio::Cancellable::NONE)).await
                 {
@@ -1296,6 +1409,12 @@ impl FileWindow {
         clear_clipboard: bool,
         drop: Option<gdk::Drop>,
     ) {
+        if let Some(root) = self.root.borrow().clone() {
+            if let Some(dir) = destination.path() {
+                self.root_transfer(root, files, dir);
+                return;
+            }
+        }
         let op = self.operations.start(if files.cut {
             "Moving files"
         } else {
@@ -1354,6 +1473,10 @@ impl FileWindow {
             return;
         }
         let permanent = permanent || self.is_trash();
+        if self.root.borrow().is_some() {
+            self.root_delete(selected);
+            return;
+        }
         glib::spawn_future_local(glib::clone!(
             #[strong(rename_to=this)]
             self,
@@ -1535,6 +1658,149 @@ impl FileWindow {
             return;
         };
         self.external_terminal(path);
+    }
+    /// Enters root mode (asking for the password through polkit) or leaves it.
+    fn toggle_root(self: &Rc<Self>) {
+        if self.root.borrow().is_some() {
+            self.leave_root(None);
+            return;
+        }
+        self.root_button.set_sensitive(false);
+        glib::spawn_future_local(glib::clone!(
+            #[weak(rename_to=this)]
+            self,
+            async move {
+                let result = crate::root::RootSession::start(&this.app).await;
+                this.root_button.set_sensitive(true);
+                match result {
+                    Ok(session) => {
+                        this.root.replace(Some(Rc::new(session)));
+                        this.window.add_css_class("is-root");
+                        this.root_button.add_css_class("on");
+                        this.root_bar.set_reveal_child(true);
+                        this.who.set_text("root");
+                        this.who.add_css_class("root");
+                        this.reload();
+                    }
+                    Err(e) => this.notify(&e),
+                }
+            }
+        ));
+    }
+    fn leave_root(self: &Rc<Self>, reason: Option<&str>) {
+        if self.root.borrow_mut().take().is_none() {
+            return;
+        }
+        if let Some(id) = self.root_idle.borrow_mut().take() {
+            id.remove();
+        }
+        self.window.remove_css_class("is-root");
+        self.root_button.remove_css_class("on");
+        self.root_bar.set_reveal_child(false);
+        self.who.set_text(&glib::user_name().to_string_lossy());
+        self.who.remove_css_class("root");
+        if let Some(reason) = reason {
+            self.notify(reason);
+        }
+        self.reload();
+    }
+    /// Root mode ends after five minutes without root operations.
+    fn touch_root(self: &Rc<Self>) {
+        if let Some(id) = self.root_idle.borrow_mut().take() {
+            id.remove();
+        }
+        let weak = Rc::downgrade(self);
+        let id = glib::timeout_add_seconds_local_once(300, move || {
+            if let Some(this) = weak.upgrade() {
+                this.root_idle.borrow_mut().take();
+                this.leave_root(Some("Root mode ended after 5 minutes without changes"));
+            }
+        });
+        self.root_idle.replace(Some(id));
+    }
+    /// Runs one helper request when root mode is on; false when it is off.
+    fn root_run(self: &Rc<Self>, request: crate::root_proto::Request, select: Vec<std::path::PathBuf>) -> bool {
+        let Some(root) = self.root.borrow().clone() else {
+            return false;
+        };
+        self.touch_root();
+        glib::spawn_future_local(glib::clone!(
+            #[weak(rename_to=this)]
+            self,
+            async move {
+                match root.run(request).await {
+                    Ok(()) => {
+                        this.pending_selection.replace(
+                            select
+                                .iter()
+                                .map(|p| gio::File::for_path(p).uri().to_string())
+                                .collect(),
+                        );
+                    }
+                    Err(e) => this.notify(&e),
+                }
+                this.reload();
+            }
+        ));
+        true
+    }
+    fn root_delete(self: &Rc<Self>, selected: Vec<gio::FileInfo>) {
+        let Some(root) = self.root.borrow().clone() else { return };
+        self.touch_root();
+        glib::spawn_future_local(glib::clone!(
+            #[weak(rename_to=this)]
+            self,
+            async move {
+                if !ops::confirm(
+                    &this.window,
+                    "Delete permanently as root?",
+                    &format!(
+                        "{} selected items will be permanently deleted. Root mode has no Trash.",
+                        selected.len()
+                    ),
+                    "Delete Permanently",
+                )
+                .await
+                {
+                    return;
+                }
+                for info in selected {
+                    let Some(path) = model::file(&info).path() else { continue };
+                    if let Err(e) = root.run(crate::root_proto::Request::Delete { path }).await {
+                        this.notify(&e);
+                        break;
+                    }
+                }
+                this.reload();
+            }
+        ));
+    }
+    fn root_transfer(self: &Rc<Self>, root: Rc<crate::root::RootSession>, files: clipboard::Files, dir: std::path::PathBuf) {
+        self.touch_root();
+        glib::spawn_future_local(glib::clone!(
+            #[weak(rename_to=this)]
+            self,
+            async move {
+                let mut done = Vec::new();
+                for uri in &files.uris {
+                    let Some(from) = gio::File::for_uri(uri).path() else { continue };
+                    let Some(name) = from.file_name() else { continue };
+                    let to = dir.join(name);
+                    let request = if files.cut {
+                        crate::root_proto::Request::Move { from, to: to.clone() }
+                    } else {
+                        crate::root_proto::Request::Copy { from, to: to.clone() }
+                    };
+                    if let Err(e) = root.run(request).await {
+                        this.notify(&e);
+                        break;
+                    }
+                    done.push(gio::File::for_path(&to).uri().to_string());
+                }
+                this.pending_selection.replace(done);
+                this.reload();
+            }
+        ));
     }
     /// Slides the docked terminal up in the selected folder or the current
     /// one, or hides it.

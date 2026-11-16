@@ -172,3 +172,19 @@ Use isolated `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, and `TMPDIR` for that test.
 
 TODO after v1: docked VTE terminal (F4; GTK4 VTE unavailable), polkit root mode
 (`gavno-files-helper`), tabs, and network locations.
+
+## Root mode
+
+Ctrl+Shift+R (or the root button) starts `gavno-files-helper` through
+`pkexec`; the window then lists and changes files through it, shows a red
+header, and leaves root mode on Exit or after five minutes without root
+operations. gavno-files registers its own polkit agent for its process, so no
+session agent is needed. Install the helper and, for wheel users to use their
+own password, the polkit rule:
+
+```sh
+install -Dm755 "$CARGO_TARGET_DIR/release/gavno-files-helper" /usr/local/libexec/gavno-files-helper
+install -Dm644 dist/polkit-1/rules.d/49-gavno-files.rules /etc/polkit-1/rules.d/49-gavno-files.rules
+```
+
+Without the rule polkit asks for the root password.
