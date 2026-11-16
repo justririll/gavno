@@ -53,6 +53,11 @@ impl PointerGrab<Gavno> for MoveSurfaceGrab {
         if !self.window.alive() {
             return;
         }
+        // Minimized (or otherwise unmapped) meanwhile: never map it back.
+        if mode_state(&self.window).minimized || data.space.element_location(&self.window).is_none() {
+            handle.unset_grab(self, data, event.serial, event.time, true);
+            return;
+        }
         if !self.moved && delta.x.hypot(delta.y) < 4.0 {
             return;
         }

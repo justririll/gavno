@@ -357,6 +357,33 @@ impl Gavno {
         self.focus_window(top.as_ref());
     }
 
+    /// Steps a new floating window down and right while another window
+    /// already sits at (nearly) the same spot, wrapping inside `area`.
+    fn cascade(
+        &self,
+        start: Point<i32, smithay::utils::Logical>,
+        size: smithay::utils::Size<i32, smithay::utils::Logical>,
+        area: smithay::utils::Rectangle<i32, smithay::utils::Logical>,
+    ) -> Point<i32, smithay::utils::Logical> {
+        const STEP: i32 = 32;
+        let taken: Vec<_> = self
+            .space
+            .elements()
+            .filter_map(|w| self.space.element_location(w))
+            .collect();
+        let mut loc = start;
+        for _ in 0..16 {
+            if !taken.iter().any(|t| (t.x - loc.x).abs() < STEP / 2 && (t.y - loc.y).abs() < STEP / 2) {
+                break;
+            }
+            loc += Point::from((STEP, STEP));
+            if loc.x + size.w > area.loc.x + area.size.w || loc.y + size.h > area.loc.y + area.size.h {
+                loc = Point::from((area.loc.x + self.config.gap, area.loc.y + self.config.gap));
+            }
+        }
+        loc
+    }
+
     /// Places a window that just committed its first buffer: centered in the
     /// active output, clamped to it, then focused.
     pub fn map_new_window(&mut self, window: Window) {
@@ -377,7 +404,7 @@ impl Gavno {
                     let gap = self.config.gap;
                     let x = area.loc.x + ((area.size.w - size.w) / 2).max(gap);
                     let y = area.loc.y + ((area.size.h - size.h) / 2).max(gap);
-                    Point::from((x, y))
+                    self.cascade(Point::from((x, y)), size, area)
                 }
             })
             .unwrap_or_default();

@@ -121,6 +121,7 @@ impl DockView {
         self.icons.clear();
         self.hits.clear();
         self.menu_rect = None;
+        self.panel = Rectangle::default();
     }
 }
 struct Launch {
@@ -141,6 +142,22 @@ struct MinimizeMotion {
 struct DockMenu {
     id: String,
     output: Output,
+}
+impl Dock {
+    /// Drops an open menu whose app or output went away; an invisible menu
+    /// would otherwise keep swallowing clicks.
+    pub fn drop_stale_menu(&mut self, outputs: &[Output]) {
+        let stale = self.menu.as_ref().is_some_and(|m| {
+            !outputs.contains(&m.output)
+                || !self
+                    .views
+                    .iter()
+                    .any(|v| v.output == m.output && v.hits.iter().any(|(id, _)| id == &m.id))
+        });
+        if stale {
+            self.menu = None;
+        }
+    }
 }
 
 pub struct Dock {
@@ -683,8 +700,15 @@ impl Gavno {
                                 || v.hits.iter().any(|(_, r)| r.contains(p))
                                 || v.menu_rect.is_some_and(|r| r.contains(p))
                         }))
-                || self.features.read(crate::module::Feature::Bar, false, || self.topbar.menu.is_some())
-                || self.features.read(crate::module::Feature::Dock, false, || self.dock.menu.is_some())
+                // Open menus capture the whole output they are on, but only
+                // while they are actually drawn there.
+                || self.features.read(crate::module::Feature::Bar, false, || self.topbar.menu.as_ref() == Some(o))
+                || self.features.read(crate::module::Feature::Dock, false, || {
+                    self.dock.menu.as_ref().is_some_and(|m| {
+                        &m.output == o
+                            && self.dock.views.iter().any(|v| &v.output == o && v.menu_rect.is_some())
+                    })
+                })
         })
     }
     pub fn shell_button(&mut self, button: u32, pressed: bool) -> bool {

@@ -226,10 +226,13 @@ pub fn handle_commit(gv: &mut Gavno, surface: &WlSurface) {
     let popups = &mut gv.popups;
     // Handle toplevel commits: the initial configure goes out on the first
     // commit, while the window is still unmapped.
+    // Windows on hidden workspaces are neither unmapped nor in the Space but
+    // still need the configure handshake when they remap.
     if let Some(window) = gv
         .unmapped
         .iter()
         .chain(gv.space.elements())
+        .chain(gv.workspaces.all().map(|o| &o.window))
         .find(|w| w.toplevel().is_some_and(|t| t.wl_surface() == surface))
         .cloned()
     {

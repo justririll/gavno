@@ -289,6 +289,11 @@ impl Greeter {
     }
 
     fn switch_user(&mut self, dir: i32) {
+        // While PAM checks a password the shown account must stay the one
+        // being logged into.
+        if self.phase != Phase::Input || self.users.is_empty() {
+            return;
+        }
         let n = self.users.len() as i32;
         self.selected = ((self.selected as i32 + dir).rem_euclid(n)) as usize;
         self.clear_password();

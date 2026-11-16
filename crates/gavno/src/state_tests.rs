@@ -524,3 +524,21 @@ fn null_buffer_commit_unmaps_and_drops_focus() {
     assert!(h.gv.focused_window().is_none());
     assert!(h.gv.unmapped.contains(&w), "the toplevel waits to be mapped again");
 }
+
+#[test]
+fn new_floating_windows_cascade_instead_of_stacking() {
+    let mut h = Harness::new();
+    let _output = feature_output(&mut h);
+    let first = h.window();
+    h.gv.map_new_window(first.clone());
+    h.commit_size(&first, 300, 200);
+    let second = h.window();
+    h.gv.map_new_window(second.clone());
+    h.commit_size(&second, 300, 200);
+    let a = h.gv.space.element_location(&first).unwrap();
+    let b = h.gv.space.element_location(&second).unwrap();
+    assert_ne!(a, b, "the second window must not cover the first exactly");
+    let geo = h.gv.space.output_geometry(h.gv.space.outputs().next().unwrap()).unwrap();
+    assert!(geo.contains(b));
+}
+

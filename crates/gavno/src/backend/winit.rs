@@ -161,7 +161,21 @@ fn render(gv: &mut Gavno) {
 
 /// Renders the nested output offscreen; see `udev::capture_output`.
 pub fn capture_output(gv: &mut Gavno, output: &Output, cursor: bool) -> Option<(u32, u32, Vec<u8>)> {
-    let pointer_pos = if cursor { gv.pointer_location() } else { (-1.0e6, -1.0e6).into() };
+    // Hide the cursor through its status rather than a fake pointer
+    // position: the dock and bar react to the pointer while building
+    // elements, and a far-away pointer would make them retract.
+    let saved = (!cursor).then(|| {
+        std::mem::replace(&mut gv.cursor_status, smithay::input::pointer::CursorImageStatus::Hidden)
+    });
+    let result = capture_output_with_cursor_state(gv, output);
+    if let Some(status) = saved {
+        gv.cursor_status = status;
+    }
+    result
+}
+
+fn capture_output_with_cursor_state(gv: &mut Gavno, output: &Output) -> Option<(u32, u32, Vec<u8>)> {
+    let pointer_pos = gv.pointer_location();
     let time = gv.start_time.elapsed();
     let Backend::Winit(data) = &mut gv.backend else { return None };
     if &data.output != output {

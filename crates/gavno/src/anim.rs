@@ -1,4 +1,5 @@
 //! On-demand window springs. Interactive operations explicitly cancel them.
+use smithay::utils::IsAlive;
 use crate::{
     ui::spring::{Spring, SpringParams},
     Gavno,
@@ -167,7 +168,11 @@ impl WindowAnimations {
                     .retire_geometry(Rectangle::new(loc, size).to_f64());
             }
         }
-        self.entries.retain(|a| !a.motion.finished());
+        // A dead window that is not playing its close animation (it died
+        // minimized or on a hidden workspace) would otherwise keep its entry,
+        // and with it the decoration cache and textures, forever.
+        self.entries
+            .retain(|a| !a.motion.finished() && (a.motion.closing || a.window.alive()));
     }
     pub fn is_animating(&self) -> bool {
         self.entries.iter().any(|a| a.motion.active())

@@ -988,7 +988,11 @@ impl Gavno {
         let outputs: Vec<_> = self.space.outputs().cloned().collect();
         self.guard(crate::module::Feature::Dock, (), |gv| {
             gv.dock.refresh(&gv.config.dock, &gv.workspaces, &gv.space, gv.start_time.elapsed());
+            gv.dock.drop_stale_menu(&outputs);
         });
+        if self.topbar.menu.as_ref().is_some_and(|o| !outputs.contains(o)) {
+            self.topbar.menu = None;
+        }
         self.refresh_bar_status(outputs.iter().any(|o| self.shell_visible(o)) && self.features.on(crate::module::Feature::Bar));
         self.guard(crate::module::Feature::Bar, (), |gv| gv.refresh_bar(&outputs));
     }
