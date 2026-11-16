@@ -877,11 +877,11 @@ fn queue_redraw(gv: &mut Gavno, crtc: crtc::Handle) {
     }
 }
 
-/// Client buffers are always composited: on the Snapdragon X Elite msm
-/// driver, direct scanout of Firefox's buffers passed the atomic test but the
-/// real commit failed with EINVAL, and the retries made the pointer lag.
-/// The cursor plane stays in use.
-const SCANOUT_FLAGS: FrameFlags = FrameFlags::ALLOW_CURSOR_PLANE_SCANOUT;
+/// Everything is composited into the primary plane. On the Snapdragon X
+/// Elite msm driver, plane assignments that passed the atomic test still
+/// failed the real page flip with EINVAL (client buffers, then Firefox's
+/// client cursor), thousands of times a minute, and the pointer lagged.
+const SCANOUT_FLAGS: FrameFlags = FrameFlags::empty();
 
 fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
     let started = std::time::Instant::now();
