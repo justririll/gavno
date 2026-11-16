@@ -89,6 +89,14 @@ What works today:
 
 Keyboard binds: [docs/keybinds.md](docs/keybinds.md)
 
+## Self-test
+
+Inside a running GAVNO session, `scripts/selftest.sh` checks the compositor,
+IPC, X11, notifications, the polkit agent, screen capture and the ScreenCast
+portal, the foot server and resource use, then asks a few yes/no questions
+about what is on screen (`--auto` skips them). The report is written to
+`~/.local/state/gavno/selftest-*.txt`.
+
 ## Configuration
 
 Configuration: [docs/config.md](docs/config.md)
