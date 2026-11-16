@@ -111,12 +111,16 @@ impl RateLimit {
 }
 static WARNINGS: Mutex<RateLimit> = Mutex::new(RateLimit::new());
 
+const STAGES: usize = 6;
+
 /// No allocation or lock below the threshold. Output::name() allocates, so
 /// keep a borrowed output and resolve its name only when emitting a warning.
 pub struct Stall<'a> {
     start: Instant,
     source: &'static str,
     output: Option<&'a Output>,
+    stages: [(&'static str, Duration); STAGES],
+    marked: usize,
 }
 impl Stall<'_> {
     pub fn new(source: &'static str) -> Self {
@@ -124,25 +128,54 @@ impl Stall<'_> {
             start: Instant::now(),
             source,
             output: None,
+            stages: [("", Duration::ZERO); STAGES],
+            marked: 0,
+        }
+    }
+
+    /// Ends the current stage. A stalled scope logs how long each stage took;
+    /// marks beyond the fixed capacity are ignored.
+    pub fn mark(&mut self, stage: &'static str) {
+        if let Some(slot) = self.stages.get_mut(self.marked) {
+            *slot = (stage, self.start.elapsed());
+            self.marked += 1;
         }
     }
 }
 impl<'a> Stall<'a> {
     pub fn output_since(source: &'static str, output: &'a Output, start: Instant) -> Self {
         Self {
-            start,
-            source,
             output: Some(output),
+            start,
+            ..Self::new(source)
         }
     }
 }
 impl Drop for Stall<'_> {
     fn drop(&mut self) {
-        record_stall(self.source, self.output, self.start.elapsed());
+        record_stall(self.source, self.output, self.start.elapsed(), &self.stages[..self.marked]);
     }
 }
 
-fn record_stall(source: &'static str, output: Option<&Output>, elapsed: Duration) {
+/// "elements=1.2 draw=20.3 rest=0.1": milliseconds spent in each marked stage.
+fn stage_breakdown(stages: &[(&'static str, Duration)], total: Duration) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    let mut previous = Duration::ZERO;
+    for &(stage, at) in stages {
+        let _ = write!(out, "{stage}={:.1} ", at.saturating_sub(previous).as_secs_f64() * 1000.0);
+        previous = at;
+    }
+    let _ = write!(out, "rest={:.1}", total.saturating_sub(previous).as_secs_f64() * 1000.0);
+    out
+}
+
+fn record_stall(
+    source: &'static str,
+    output: Option<&Output>,
+    elapsed: Duration,
+    stages: &[(&'static str, Duration)],
+) {
     if elapsed < *STALL_THRESHOLD.get().unwrap_or(&DEFAULT_STALL) {
         return;
     }
@@ -155,10 +188,13 @@ fn record_stall(source: &'static str, output: Option<&Output>, elapsed: Duration
         return;
     }
     let ms = elapsed.as_secs_f64() * 1000.0;
+    // `Option` fields are omitted from the event when `None`.
+    let stages = (!stages.is_empty()).then(|| stage_breakdown(stages, elapsed));
+    let stages = stages.as_deref();
     if let Some(output) = output {
-        tracing::warn!(target: "gavno::stall", source, ms, output = output.name(), "event-loop stall");
+        tracing::warn!(target: "gavno::stall", source, ms, output = output.name(), stages, "event-loop stall");
     } else {
-        tracing::warn!(target: "gavno::stall", source, ms, "event-loop stall");
+        tracing::warn!(target: "gavno::stall", source, ms, stages, "event-loop stall");
     }
 }
 
@@ -176,7 +212,7 @@ pub fn watch_dispatch<Data>(
 
 pub fn finish_dispatch(start: &Cell<Option<Instant>>) {
     if let Some(start) = start.take() {
-        record_stall("calloop.dispatch", None, start.elapsed());
+        record_stall("calloop.dispatch", None, start.elapsed(), &[]);
     }
 }
 
@@ -226,6 +262,24 @@ mod tests {
         for value in ["", "bad", "-1", "NaN", "inf", "1e100"] {
             assert_eq!(parse_threshold(value), None, "{value}");
         }
+    }
+
+    #[test]
+    fn stage_breakdown_reports_each_stage_and_the_rest() {
+        let ms = Duration::from_millis;
+        let stages = [("elements", ms(2)), ("draw", ms(22))];
+        assert_eq!(stage_breakdown(&stages, ms(23)), "elements=2.0 draw=20.0 rest=1.0");
+        assert_eq!(stage_breakdown(&[], ms(9)), "rest=9.0");
+    }
+
+    #[test]
+    fn stall_marks_beyond_capacity_are_ignored() {
+        let mut stall = Stall::new("test");
+        for _ in 0..STAGES + 3 {
+            stall.mark("stage");
+        }
+        assert_eq!(stall.marked, STAGES);
+        std::mem::forget(stall);
     }
 
     #[test]

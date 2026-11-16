@@ -841,20 +841,23 @@ fn change_hdr(surface: &mut Surface, renderer: &mut GlesRenderer,
 }
 
 fn draw_frame(surface: &mut Surface, renderer: &mut GlesRenderer,
-    elements: &[GavnoRenderElement]) -> Result<(bool, RenderElementStates), String> {
+    elements: &[GavnoRenderElement], stall: &mut crate::perf::Stall<'_>) -> Result<(bool, RenderElementStates), String> {
     use smithay::backend::drm::compositor::PrimaryPlaneElement;
     use crate::render_sanitize::SanitizedElement;
     let scale = surface.output.current_scale().fractional_scale().into();
     if let Some(hdr) = &mut surface.hdr {
         let (element, states) = hdr.render(renderer, &surface.output, elements, render::CLEAR_COLOR)?;
+        stall.mark("hdr");
         // All pixels, including the cursor, must pass through PQ encoding.
         let element = SanitizedElement::new(element, scale);
         let result = surface.drm_output.render_frame(renderer, element.as_slice(), [0.0, 0.0, 0.0, 1.0], FrameFlags::empty())
             .map_err(|e| format!("HDR scanout render: {e:?}"))?;
+        stall.mark("scanout");
         if result.needs_sync() {
             if let PrimaryPlaneElement::Swapchain(element) = &result.primary_element {
                 element.sync.wait().map_err(|e| format!("HDR scanout fence: {e:?}"))?;
             }
+            stall.mark("fence");
         }
         Ok((result.is_empty, states))
     } else {
@@ -863,11 +866,13 @@ fn draw_frame(surface: &mut Surface, renderer: &mut GlesRenderer,
         sanitized.extend(elements.iter().filter_map(|e| SanitizedElement::new(e, scale)));
         let result = surface.drm_output.render_frame(renderer, &sanitized, render::CLEAR_COLOR, SCANOUT_FLAGS)
             .map_err(|e| format!("SDR render: {e:?}"))?;
+        stall.mark("scanout");
         // Legacy KMS cannot take an in-fence: wait before queueing the frame.
         if result.needs_sync() {
             if let PrimaryPlaneElement::Swapchain(element) = &result.primary_element {
                 element.sync.wait().map_err(|e| format!("SDR scanout fence: {e:?}"))?;
             }
+            stall.mark("fence");
         }
         Ok((result.is_empty, result.states))
     }
@@ -946,7 +951,7 @@ fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
     let Some(gpu) = data.gpu.as_mut() else { return };
     let Some(surface) = gpu.surfaces.get_mut(&crtc) else { return };
     let output = surface.output.clone();
-    let _stall = crate::perf::Stall::output_since("udev.render", &output, started);
+    let mut stall = crate::perf::Stall::output_since("udev.render", &output, started);
     if !matches!(surface.redraw, RedrawState::Queued) {
         return;
     }
@@ -1005,14 +1010,15 @@ fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
         crate::perf::startup_output("udev.first_frame.elements.ready", &output.name());
     }
     render::dim_output(&mut elements, &mut gv.media.brightness, &output, time);
-    let mut result = draw_frame(surface, &mut gpu.renderer, &elements);
+    stall.mark("elements");
+    let mut result = draw_frame(surface, &mut gpu.renderer, &elements, &mut stall);
     if result.is_err() && surface.hdr.is_some() {
         warn!(output = output.name(), error = ?result.as_ref().err(), "HDR render failed; falling back to SDR");
         if change_hdr(surface, &mut gpu.renderer, &gpu.allocator, false).is_ok() {
             for element in &mut elements {
                 if let GavnoRenderElement::Color(element) = element { element.fallback_sdr(); }
             }
-            result = draw_frame(surface, &mut gpu.renderer, &elements);
+            result = draw_frame(surface, &mut gpu.renderer, &elements, &mut stall);
         }
     }
 
@@ -1034,7 +1040,9 @@ fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
         if !surface.first_frame_queued {
             crate::perf::startup_output("udev.first_commit.begin", &output.name());
         }
-        match surface.drm_output.queue_frame(Some(feedback)) {
+        let queued = surface.drm_output.queue_frame(Some(feedback));
+        stall.mark("queue");
+        match queued {
             Ok(()) => {
                 surface.flip_failures = 0;
                 if !surface.first_frame_queued {
