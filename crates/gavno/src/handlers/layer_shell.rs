@@ -22,7 +22,9 @@ use smithay::{
 use crate::Gavno;
 
 /// Marks a layer surface that was already given its exclusive keyboard focus.
-struct ExclusiveFocusGranted;
+/// Whether the current mapping of an exclusive layer surface already took the
+/// keyboard focus; reset when the surface unmaps so a re-show grabs it again.
+struct ExclusiveFocusGranted(std::sync::atomic::AtomicBool);
 
 impl WlrLayerShellHandler for Gavno {
     fn shell_state(&mut self) -> &mut WlrLayerShellState {
@@ -205,17 +207,33 @@ pub fn handle_commit(gv: &mut Gavno, surface: &WlSurface) {
     gv.refit_fixed_windows();
 
     // A mapped Top/Overlay surface with exclusive interactivity takes the
-    // keyboard focus once, when it first shows up.
+    // keyboard focus once per mapping. When it unmaps itself (null buffer)
+    // while focused, the focus goes back to the desktop.
     if let Some(layer) = layer {
+        use std::sync::atomic::Ordering;
         let mapped = smithay::backend::renderer::utils::with_renderer_surface_state(surface, |s| s.buffer().is_some())
             .unwrap_or(false);
         let eligible = mapped && is_exclusive(&layer) && matches!(layer.layer(), Layer::Top | Layer::Overlay);
-        if eligible {
-            let first_time = with_states(surface, |states| {
-                states.data_map.insert_if_missing_threadsafe(|| ExclusiveFocusGranted)
+        let newly_granted = with_states(surface, |states| {
+            states.data_map.insert_if_missing_threadsafe(|| {
+                ExclusiveFocusGranted(std::sync::atomic::AtomicBool::new(false))
             });
-            if first_time {
-                gv.focus_layer(&layer);
+            let granted = &states.data_map.get::<ExclusiveFocusGranted>().unwrap().0;
+            if eligible {
+                !granted.swap(true, Ordering::Relaxed)
+            } else {
+                if !mapped {
+                    granted.store(false, Ordering::Relaxed);
+                }
+                false
+            }
+        });
+        if newly_granted {
+            gv.focus_layer(&layer);
+        } else if !mapped {
+            let focused = gv.seat.get_keyboard().and_then(|k| k.current_focus());
+            if focused.as_ref() == Some(surface) {
+                gv.focus_topmost();
             }
         }
     }

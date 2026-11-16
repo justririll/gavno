@@ -36,6 +36,14 @@ impl CompositorHandler for Gavno {
                 let has_buffer = with_renderer_surface_state(&root, |s| s.buffer().is_some()).unwrap_or(false);
                 hidden_commit = self.space.element_location(&window).is_none();
                 if !hidden_commit { crate::anim::surface_commit(self, &window, has_buffer); }
+                // A null buffer on the toplevel itself unmaps it (xdg-shell): it
+                // leaves the desktop and focus, and waits in `unmapped` for a
+                // fresh initial configure and its next buffer.
+                let is_toplevel = window.toplevel().is_some_and(|t| t.wl_surface() == surface);
+                if is_toplevel && !has_buffer {
+                    self.unmap_window(&window);
+                    self.unmapped.push(window);
+                }
             }
 
             // First buffer of a new toplevel: place and show it.

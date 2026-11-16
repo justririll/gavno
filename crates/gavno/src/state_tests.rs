@@ -503,3 +503,22 @@ fn snap_off_has_no_drag_preview_and_a_snap_crash_clears_only_preview() {
     assert!(!h.gv.overlay.is_animating());
     assert!(h.gv.features.on(Feature::Switcher));
 }
+
+#[test]
+fn null_buffer_commit_unmaps_and_drops_focus() {
+    let mut h = Harness::new();
+    let _output = feature_output(&mut h);
+    let w = h.window();
+    h.gv.map_new_window(w.clone());
+    h.commit_size(&w, 400, 300);
+    h.gv.focus_window(Some(&w));
+    assert_eq!(h.gv.focused_window().as_ref(), Some(&w));
+    let surface = h.surfaces.iter().find(|(x, _)| x == &w).unwrap().1.clone();
+    surface.attach(None, 0, 0);
+    surface.commit();
+    h.exchange();
+    h.exchange();
+    assert!(h.gv.space.element_location(&w).is_none());
+    assert!(h.gv.focused_window().is_none());
+    assert!(h.gv.unmapped.contains(&w), "the toplevel waits to be mapped again");
+}

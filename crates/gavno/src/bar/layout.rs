@@ -21,9 +21,9 @@ impl Layout {
     pub fn new(width: i32, workspace_width: i32, layouts: bool) -> Self {
         let clock = rect((width - 184) / 2, 4, 184, 24);
         let status = rect(
-            width - if layouts { 208 } else { 176 },
+            width - if layouts { 176 } else { 144 },
             4,
-            if layouts { 200 } else { 168 },
+            if layouts { 168 } else { 136 },
             24,
         );
         let workspaces = rect(8, 4, workspace_width.min((clock.loc.x - 104).max(24)), 24);
@@ -46,7 +46,7 @@ impl Layout {
             layout: layouts.then(|| rect(status.loc.x + 8, 4, 28, 24)),
             network: rect(x, 8, 16, 16),
             volume: rect(x + 32, 8, 16, 16),
-            battery: rect(x + 64, 8, 88, 16),
+            battery: rect(x + 64, 8, 56, 16),
         }
     }
 }

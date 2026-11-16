@@ -68,6 +68,7 @@ impl Features {
     /// Immutable hit testing also catches panics; its resets are drained at idle.
     pub fn read<R>(&self, id: Feature, default: R, f: impl FnOnce() -> R) -> R {
         if !self.on(id) { return default; }
+        let _scope = crate::crash_log::GuardScope::enter();
         match catch_unwind(AssertUnwindSafe(|| { self.before_call(id); f() })) {
             Ok(value) => value,
             Err(payload) => { self.crashed(id, payload); default }
@@ -84,7 +85,9 @@ pub(crate) fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 impl Gavno {
     pub fn guard<R>(&mut self, id: Feature, default: R, f: impl FnOnce(&mut Self) -> R) -> R {
         if !self.features.on(id) { return default; }
+        let scope = crate::crash_log::GuardScope::enter();
         let result = catch_unwind(AssertUnwindSafe(|| { self.features.before_call(id); f(self) }));
+        drop(scope);
         let value = match result {
             Ok(value) => value,
             Err(payload) => { self.features.crashed(id, payload); default }

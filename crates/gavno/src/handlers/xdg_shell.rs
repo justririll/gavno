@@ -45,13 +45,7 @@ impl XdgShellHandler for Gavno {
         self.unmapped
             .retain(|w| w.toplevel().is_some_and(|t| t.wl_surface() != surface.wl_surface()));
         if let Some(window) = self.window_for_surface(surface.wl_surface()) {
-            let was_focused = self.focused_window().as_ref() == Some(&window);
-            if self.space.element_location(&window).is_some() { self.features.call(crate::module::Feature::Animations, (), || self.window_animations.close(&window, self.start_time.elapsed())); }
-            self.space.unmap_elem(&window);
-            self.workspace_forget(&window);
-            if was_focused {
-                self.focus_topmost();
-            }
+            self.unmap_window(&window);
         }
         self.queue_redraw_all();
     }
@@ -166,8 +160,38 @@ impl XdgShellHandler for Gavno {
         self.request_window_mode(&surface, WindowMode::Floating, None);
     }
 
-    fn grab(&mut self, _surface: PopupSurface, _seat: wl_seat::WlSeat, _serial: Serial) {
-        // TODO popup grabs
+    fn grab(&mut self, surface: PopupSurface, seat: wl_seat::WlSeat, serial: Serial) {
+        use smithay::desktop::{PopupKeyboardGrab, PopupPointerGrab, PopupUngrabStrategy};
+        use smithay::input::pointer::Focus;
+        let Some(seat) = Seat::<Gavno>::from_resource(&seat) else { return };
+        let kind = PopupKind::Xdg(surface);
+        let Ok(root) = find_popup_root_surface(&kind) else { return };
+        // Menus of a locked or greeter session never get grabs.
+        if self.protocols.locks.locked || self.lock.internal() || self.greeter.is_some() {
+            return;
+        }
+        let Ok(mut grab) = self.popups.grab_popup(root, kind, &seat, serial) else { return };
+        if let Some(keyboard) = seat.get_keyboard() {
+            if keyboard.is_grabbed()
+                && !(keyboard.has_grab(serial)
+                    || keyboard.has_grab(grab.previous_serial().unwrap_or(serial)))
+            {
+                grab.ungrab(PopupUngrabStrategy::All);
+                return;
+            }
+            keyboard.set_focus(self, grab.current_grab(), serial);
+            keyboard.set_grab(self, PopupKeyboardGrab::new(&grab), serial);
+        }
+        if let Some(pointer) = seat.get_pointer() {
+            if pointer.is_grabbed()
+                && !(pointer.has_grab(serial)
+                    || pointer.has_grab(grab.previous_serial().unwrap_or_else(|| grab.serial())))
+            {
+                grab.ungrab(PopupUngrabStrategy::All);
+                return;
+            }
+            pointer.set_grab(self, PopupPointerGrab::new(&grab), serial, Focus::Keep);
+        }
     }
 }
 
@@ -292,5 +316,24 @@ impl Gavno {
         popup.with_pending_state(|state| {
             state.geometry = state.positioner.get_unconstrained_geometry(target);
         });
+    }
+}
+
+impl Gavno {
+    /// Takes a toplevel off the desktop: close animation, workspace and tiling
+    /// membership, and keyboard focus. Used when the toplevel is destroyed and
+    /// when it unmaps itself by committing a null buffer.
+    pub fn unmap_window(&mut self, window: &Window) {
+        let was_focused = self.focused_window().as_ref() == Some(window);
+        if self.space.element_location(window).is_some() {
+            self.features.call(crate::module::Feature::Animations, (), || {
+                self.window_animations.close(window, self.start_time.elapsed())
+            });
+        }
+        self.space.unmap_elem(window);
+        self.workspace_forget(window);
+        if was_focused {
+            self.focus_topmost();
+        }
     }
 }

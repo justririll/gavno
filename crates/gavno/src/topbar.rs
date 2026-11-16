@@ -27,6 +27,8 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+/// Sentinel for `Canvas::colored_icon`: draw the icon untinted.
+const FULL_COLOR: [u8; 3] = [1, 2, 3];
 pub const PANEL: i32 = 32;
 pub const GLASS: [f32; 4] = [0.055, 0.065, 0.09, 0.90];
 pub const LINE: [f32; 4] = [1.0, 1.0, 1.0, 0.14];
@@ -285,6 +287,7 @@ impl Canvas {
     ) -> bool {
         let px = (r.size.w as f64 * self.scale).ceil() as u32;
         let Some(buffer) = names.iter().find_map(|name| match color {
+            Some(c) if c == FULL_COLOR => icons.get(name, px, theme),
             Some(color) => icons.get_tinted_color(name, px, theme, color),
             None => icons.get_tinted(name, px, theme),
         }) else {
@@ -575,12 +578,15 @@ impl TopBar {
             }
         }
         v.hits.push((l.toggle.to_f64(), BarAction::Tiling));
-        c.icon(
+        // The focused app keeps its own colours; tinting turned it into a
+        // white square that looked like a dead button. No generic fallback.
+        c.colored_icon(
             renderer,
             &mut self.icons,
-            &[&self.app_icon, "application-x-executable-symbolic"],
+            &[&self.app_icon],
             &self.icon_theme,
             l.app,
+            Some(FULL_COLOR),
         );
         c.label(
             renderer,
