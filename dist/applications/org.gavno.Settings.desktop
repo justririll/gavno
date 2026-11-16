@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Settings
+Comment=Configure GAVNO displays and keyboard layouts
+Exec=gavno-settings
+Icon=preferences-system
+Terminal=false
+Categories=Settings;DesktopSettings;HardwareSettings;
+StartupNotify=true

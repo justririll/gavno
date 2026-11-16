@@ -1,0 +1,12 @@
+@define-color accent_bg_color #f2a46a;
+@define-color accent_fg_color #1b1209;
+@define-color accent_color #f2a46a;
+@define-color window_bg_color #181b28;
+@define-color window_fg_color #e7e8f1;
+@define-color view_bg_color #181b28;
+@define-color headerbar_bg_color #1e2232;
+@define-color sidebar_bg_color #1e2232;
+@define-color card_bg_color #1e2232;
+@define-color dialog_bg_color #1e2232;
+window { font-family: "Geist", "Inter", sans-serif; font-size: 13.5px; }
+.settings-page { padding: 24px; }

@@ -1,5 +1,6 @@
 //! Local window management IPC. No rendering/backend work runs outside calloop.
 mod protocol;
+mod settings;
 mod transport;
 
 use std::{
@@ -27,6 +28,7 @@ struct WindowId(u64);
 #[derive(Default)]
 pub struct IpcState {
     last_id: u64,
+    keyboard_pending: bool,
     socket: Option<SocketPath>,
     listener: Option<transport::Listener>,
 }
@@ -123,7 +125,7 @@ pub fn init(gv: &mut Gavno) -> io::Result<()> {
         .ok_or_else(|| io::Error::other("XDG_RUNTIME_DIR is required for gavno IPC"))?;
     let path = PathBuf::from(runtime).join("gavno/ipc.sock");
     let (listener, socket) = bind(&path)?;
-    let listener = transport::listen(gv.loop_handle.clone(), listener, |line, gv| request(gv, line))?;
+    let listener = transport::listen_async(gv.loop_handle.clone(), listener, request_async)?;
     gv.ipc.listener = Some(listener);
     gv.ipc.socket = Some(socket);
     std::env::set_var("GAVNO_SOCK", &path);
@@ -131,6 +133,7 @@ pub fn init(gv: &mut Gavno) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 fn request(gv: &mut Gavno, line: &[u8]) -> Vec<u8> {
     gv.guard(crate::module::Feature::Ipc, Vec::new(), |gv| protocol::reply(line, |method, params| dispatch(gv, method, params)))
 }
@@ -198,6 +201,17 @@ fn dispatch(gv: &mut Gavno, method: &str, params: &Value) -> Result<Value, Strin
     if gv.protocols.locks.locked && method != "screen" { return Err("session locked".into()); }
     if method == "screen" {
         return Ok(screen(gv));
+    }
+    if method == "outputs" {
+        return Ok(Value::Array(gv.space.outputs().cloned().chain(crate::backend::udev::disabled_outputs(&gv.backend))
+            .map(|o| settings::output_state(gv, &o)).collect()));
+    }
+    if method == "keyboard" { return settings::keyboard_state(gv); }
+    if method == "set_keyboard" { return Err("keyboard changes require asynchronous IPC".into()); }
+    if method == "set_output" {
+        let change = settings::OutputChange::parse(params)?;
+        audit(method, params).map_err(|e| format!("cannot append agent audit log: {e}"))?;
+        return settings::set_output(gv, change);
     }
     if method == "set_hdr" {
         let output = params.get("output").and_then(Value::as_str).ok_or("output must be a connector name")?;
@@ -437,5 +451,90 @@ mod feature_tests {
         assert!(h.gv.ipc.listener.is_none());
         assert!(!path.exists());
         fs::remove_dir_all(root).unwrap();
+    }
+}
+
+fn request_async(line: &[u8], gv: &mut Gavno, reply: transport::Reply<Gavno>) {
+    gv.guard(crate::module::Feature::Ipc, (), |gv| request_settings(line, gv, reply));
+}
+
+fn request_settings(line: &[u8], gv: &mut Gavno, reply: transport::Reply<Gavno>) {
+    let mut change = None;
+    let response = protocol::reply(line, |method, params| {
+        if method != "set_keyboard" { return dispatch(gv, method, params); }
+        if gv.protocols.locks.locked { return Err("session locked".into()); }
+        if gv.ipc.keyboard_pending { return Err("keyboard change already pending".into()); }
+        let parsed = settings::KeyboardChange::parse(params)?;
+        change = Some((parsed, params.clone()));
+        Ok(Value::Null)
+    });
+    let Some((change, params)) = change else { reply.send(response); return };
+    let id = serde_json::from_slice::<Value>(line).ok().and_then(|v| v.get("id").cloned()).unwrap_or(Value::Null);
+    let (sender, channel) = smithay::reexports::calloop::channel::channel::<Result<String, String>>();
+    let reply = std::rc::Rc::new(std::cell::RefCell::new(Some(reply)));
+    let callback_reply = reply.clone();
+    let error_id = id.clone();
+    let apply = change.clone();
+    let registration = gv.loop_handle.insert_source(channel, move |event, _, gv| {
+        if callback_reply.borrow().is_none() { return; }
+        gv.ipc.keyboard_pending = false;
+        let result = match event {
+            smithay::reexports::calloop::channel::Event::Msg(result) => gv.guard(crate::module::Feature::Ipc, Err("IPC feature failed".into()), |gv| result.and_then(|keymap| {
+                if gv.protocols.locks.locked { return Err("session locked".into()); }
+                audit("set_keyboard", &params).map_err(|e| e.to_string())?;
+                gv.apply_keyboard_keymap(apply.layout.clone(), apply.variant.clone(), apply.options.clone(), keymap)?;
+                settings::keyboard_state(gv)
+            })),
+            smithay::reexports::calloop::channel::Event::Closed => Err("Keyboard worker stopped".into()),
+        };
+        let value = match result { Ok(v) => json!({"id":id,"result":v}), Err(e) => json!({"id":id,"error":e}) };
+        if let Some(reply) = callback_reply.borrow_mut().take() { reply.send(format!("{value}\n").into_bytes()); }
+    });
+    let fail = |message: &str| {
+        if let Some(reply) = reply.borrow_mut().take() {
+            reply.send(format!("{}\n",json!({"id":error_id,"error":message})).into_bytes());
+        }
+    };
+    if registration.is_err() { fail("Cannot register keyboard worker"); return; }
+    gv.ipc.keyboard_pending = true;
+    if std::thread::Builder::new().name("gavno-keymap".into()).spawn(move || { let _ = sender.send(change.compile()); }).is_err() {
+        gv.ipc.keyboard_pending = false;
+        fail("Cannot start keyboard worker");
+    }
+}
+
+#[cfg(test)]
+mod live_settings_tests {
+    use super::*;
+    use std::{io::Read, time::{Duration, Instant}};
+    #[test]
+    fn asynchronous_keyboard_rejects_unknown_layout_without_mutation() {
+        let mut h = crate::state::tests::Harness::new();
+        let before = settings::keyboard_state(&mut h.gv).unwrap();
+        let root = std::env::temp_dir().join(format!("gavno-keyboard-ipc-{}-{}",std::process::id(),SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+        let path = root.join("ipc.sock");
+        let (listener, socket) = bind(&path).unwrap();
+        let listener = transport::listen_async(h.gv.loop_handle.clone(),listener,request_async).unwrap();
+        let mut client = UnixStream::connect(path).unwrap(); client.set_nonblocking(true).unwrap();
+        client.write_all(b"{\"id\":17,\"method\":\"set_keyboard\",\"params\":{\"layout\":\"gavno_unknown_layout_12345\"}}\n").unwrap();
+        let mut response = Vec::new(); let start = Instant::now();
+        while !response.contains(&b'\n') {
+            assert!(start.elapsed()<Duration::from_secs(5));
+            h.event_loop.dispatch(Duration::from_millis(1),&mut h.gv).unwrap();
+            let mut bytes = [0;4096];
+            match client.read(&mut bytes) { Ok(n)=>response.extend_from_slice(&bytes[..n]),Err(e) if e.kind()==io::ErrorKind::WouldBlock=>{},Err(e)=>panic!("{e}") }
+        }
+        let value: Value = serde_json::from_slice(&response).unwrap();
+        assert_eq!(value["id"],17); assert!(value["error"].as_str().unwrap().contains("compile"));
+        assert_eq!(settings::keyboard_state(&mut h.gv).unwrap(),before);
+        assert!(!h.gv.ipc.keyboard_pending);
+        h.gv.loop_handle.remove(listener.token); drop(listener); drop(socket); fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn settings_methods_respect_session_lock() {
+        let mut h = crate::state::tests::Harness::new(); h.gv.protocols.locks.locked = true;
+        for method in ["outputs","keyboard","set_output","set_keyboard"] {
+            assert_eq!(dispatch(&mut h.gv,method,&json!({})),Err("session locked".into()));
+        }
     }
 }

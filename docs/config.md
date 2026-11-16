@@ -84,7 +84,8 @@ before suspend and on a logind Lock request. See [the lock screen](lock.md)
 for authentication, backoff and what is blocked while locked.
 
 `[output] internal_scale` applies to built-in panels (eDP) only; external
-outputs always use a scale of 1.0.
+outputs default to a scale of 1.0. Connector-specific `[outputs."name"]`
+settings can override these fallbacks (see Live display and keyboard settings).
 
 `[output] mode = "2880x1620@120"` selects the panel's 120 Hz timing.
 Omit `@HZ` to select the highest refresh at that resolution. Integer Hz allow
@@ -250,3 +251,57 @@ visible, unhovered cards have an expiry timer, so hidden queues do not poll.
 Supported hints are `urgency`, `desktop-entry`, and `image-path`. Bodies display
 plain text after simple markup/entity removal. Image-data hints are ignored.
 Set `[modules] notifications = false` to disable the server and all its UI.
+
+## Live display and keyboard settings
+
+`gavno-settings` provides Displays and Keyboard pages. Display changes have a
+15-second confirmation deadline: Keep persists them; Revert, closing the window,
+or expiry restores the previous live state. Keyboard's Apply and save validates
+and applies the keymap before writing it. The app preserves comments and
+unrelated TOML keys using an atomic replacement. It follows the same config path
+as the compositor. Environment overrides still affect the next session.
+
+Connector tables override individual global output fallbacks:
+
+```toml
+[outputs."eDP-1"]
+mode = "2880x1620@120" # Hz; fractional values such as 59.94 are supported
+scale = 1.75
+hdr = false
+enabled = true
+
+[outputs."DP-1"]
+scale = 1.25
+```
+
+Every key is optional. Absent mode/HDR inherit `[output] mode`/`hdr`; absent scale
+inherits `internal_scale` for internal panels, or 1.0 for external outputs.
+Invalid connector modes/scales warn and use those fallbacks. Connector scales
+must be finite and within 0.5–3.0. Enabled defaults to true. Configured enabled
+outputs are initialized first; if none work, one configured disabled output is
+kept enabled so the session retains a display. Enabling/disabling an output is
+currently a startup configuration operation.
+
+IPC uses the envelope `{"id":1,"method":"outputs","params":{}}` on
+`$XDG_RUNTIME_DIR/gavno/ipc.sock`, one JSON request/response per line. Replies
+contain `id` and either `result` or `error`. All methods reject locked sessions.
+
+- `outputs`: array with `name`, `make`, `model`, `enabled`, `mode`, `modes`,
+  `scale`, `position: {x,y}`, `hdr: {supported,enabled,pending}`, and `internal`.
+  Each mode has `w`, `h`, `refresh` in **millihertz**, and `preferred`.
+- `set_output`: `{output, mode?: {w,h,refresh?}, scale?, hdr?}`. Refresh uses
+  millihertz; omitting it selects the highest advertised refresh for the size.
+  Scale accepts 0.5–3.0 in steps of 0.05. The compositor tests modes through
+  Smithay's DRM modeset path, restores the previous mode on failure, refits
+  windows, and redraws layers, bar and dock. A flip in progress returns the
+  transient error `output is presenting; retry`. HDR follows `set_hdr`'s deferred
+  application path; `pending` reports the requested value until applied.
+- `keyboard`: `{layout,variant,options,active_group,group_names}` with a
+  zero-based active group.
+- `set_keyboard`: `{layout,variant?,options?}`; omitted variant/options are
+  empty. Supports up to four comma-separated layouts. XKB compilation runs in a
+  worker before the seat keymap changes. Invalid input changes nothing.
+
+Mutations are audited like `set_hdr`. The compositor does not write live display
+or keyboard changes back to disk. These controls belong to the existing IPC
+module and are disabled with `[modules] ipc = false`.

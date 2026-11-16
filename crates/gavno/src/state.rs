@@ -480,3 +480,37 @@ impl ClientData for ClientState {
 #[cfg(test)]
 #[path = "state_tests.rs"]
 pub(crate) mod tests;
+
+impl Gavno {
+    /// Refit floating windows as well as fixed/tiling windows after a scale or
+    /// timing change. Panel and dock geometry is derived from the output size.
+    pub(crate) fn output_settings_changed(&mut self, output: &Output) {
+        self.space.refresh();
+        self.arrange_layers_all();
+        let area = self.work_area(output);
+        let mut windows: Vec<_> = self.space.elements().filter(|w| self.output_for_window(w).as_ref() == Some(output)).cloned().collect();
+        for owned in self.workspaces.all() {
+            if self.workspaces.membership(&owned.window).is_some_and(|(o, _)| o == *output) && !windows.contains(&owned.window) {
+                windows.push(owned.window.clone());
+            }
+        }
+        for window in windows {
+            let mode = crate::window_mode::mode_state(&window).mode;
+            if mode != crate::window_mode::WindowMode::Floating { continue; }
+            let size = window.geometry().size;
+            let size = smithay::utils::Size::from((size.w.clamp(1, area.size.w.max(1)), size.h.clamp(1, area.size.h.max(1))));
+            let loc = self.space.element_location(&window).or_else(|| self.workspaces.location(&window)).unwrap_or(area.loc);
+            let loc = Point::from((loc.x.clamp(area.loc.x, area.loc.x + (area.size.w - size.w).max(0)),
+                loc.y.clamp(area.loc.y, area.loc.y + (area.size.h - size.h).max(0))));
+            let mapped = self.space.element_location(&window).is_some();
+            self.configure_slot(&window, Rectangle::new(loc, size), mode);
+            if !mapped { self.space.unmap_elem(&window); }
+            for owner in &mut self.workspaces.outputs {
+                for workspace in &mut owner.list.items {
+                    for owned in &mut workspace.windows { if owned.window == window { owned.location = loc; } }
+                }
+            }
+        }
+        self.queue_redraw_all();
+    }
+}

@@ -109,10 +109,16 @@ struct Gpu {
     allocator: GbmAllocator<DrmDeviceFd>,
     scanner: DrmScanner,
     surfaces: HashMap<crtc::Handle, Surface>,
+    disabled_outputs: HashMap<String, Output>,
 }
+
+struct AdvertisedPreferred(Vec<WlMode>);
+
+struct DisabledHdr(bool);
 
 struct Surface {
     output: Output,
+    modes: Vec<smithay::reexports::drm::control::Mode>,
     global: GlobalId,
     drm_output: GbmDrmOutput,
     feedback: Option<SurfaceDmabufFeedback>,
@@ -345,6 +351,7 @@ fn open_gpu(gv: &mut Gavno, node: DrmNode, path: &Path) -> Result<(), Box<dyn st
         allocator,
         scanner: DrmScanner::new(),
         surfaces: HashMap::new(),
+        disabled_outputs: HashMap::new(),
     });
     Ok(())
 }
@@ -360,13 +367,20 @@ fn device_changed(gv: &mut Gavno, node: DrmNode) {
     if gpu.node != node {
         return;
     }
-    let events: Vec<DrmScanEvent> = match gpu.scanner.scan_connectors(gpu.manager.device()) {
+    let mut events: Vec<DrmScanEvent> = match gpu.scanner.scan_connectors(gpu.manager.device()) {
         Ok(result) => result.into_iter().collect(),
         Err(err) => {
             warn!(?err, "connector scan failed");
             return;
         }
     };
+    // Try enabled connectors first, so an explicitly disabled panel is only
+    // kept as a safety fallback when no configured output can be initialized.
+    events.sort_by_key(|event| match event {
+        DrmScanEvent::Connected { connector, .. } => gv.config.outputs.get(&format!("{}-{}", connector.interface().as_str(), connector.interface_id()))
+            .is_some_and(|o| o.enabled == Some(false)),
+        _ => false,
+    });
     for event in events {
         match event {
             DrmScanEvent::Connected {
@@ -403,20 +417,51 @@ fn device_removed(gv: &mut Gavno, node: DrmNode) {
     warn!(?node, "GPU removed");
 }
 
+fn connector_identity(gv: &Gavno, connector: &connector::Info) -> Option<(String, String)> {
+    use smithay::reexports::drm::control::Device;
+    let Backend::Udev(data) = &gv.backend else { return None };
+    let fd = data.gpu.as_ref()?.manager.device().device_fd();
+    let props = fd.get_properties(connector.handle()).ok()?;
+    for (handle, value) in props {
+        if fd.get_property(handle).ok()?.name().to_bytes() == b"EDID" {
+            let bytes = fd.get_property_blob(value).ok()?;
+            return edid_identity(&bytes);
+        }
+    }
+    None
+}
+
+fn edid_identity(bytes: &[u8]) -> Option<(String, String)> {
+    let base = bytes.get(..128)?;
+    if base[..8] != [0, 255, 255, 255, 255, 255, 255, 0] || base.iter().fold(0_u8, |sum, b| sum.wrapping_add(*b)) != 0 { return None; }
+    let vendor = u16::from_be_bytes([base[8], base[9]]);
+    let mut make = String::new();
+    for shift in [10, 5, 0] {
+        let letter = ((vendor >> shift) & 31) as u8;
+        if !(1..=26).contains(&letter) { return None; }
+        make.push(char::from(b'A' + letter - 1));
+    }
+    let model = base[54..126].chunks_exact(18).find_map(|descriptor| {
+        if descriptor[..5] != [0, 0, 0, 252, 0] { return None; }
+        let text = std::str::from_utf8(&descriptor[5..]).ok()?.trim_matches(|c: char| c.is_ascii_whitespace() || c == '\0');
+        (!text.is_empty() && !text.chars().any(char::is_control)).then(|| text.to_owned())
+    }).unwrap_or_else(|| format!("{}", u16::from_le_bytes([base[10], base[11]])));
+    Some((make, model))
+}
+
 fn connector_connected(gv: &mut Gavno, connector: connector::Info, crtc: crtc::Handle) {
     let name = format!("{}-{}", connector.interface().as_str(), connector.interface_id());
     let internal = matches!(
         connector.interface(),
         connector::Interface::EmbeddedDisplayPort | connector::Interface::LVDS | connector::Interface::DSI
     );
-    let scale = if internal { gv.config.internal_scale } else { 1.0 };
+    let (requested, scale, hdr_requested, enabled) = gv.config.output_settings(&name, internal);
 
     let modes: Vec<_> = connector.modes().iter().map(|m| {
         let wl = WlMode::from(*m);
         Candidate { width: m.size().0, height: m.size().1, refresh: wl.refresh,
             preferred: m.mode_type().contains(ModeTypeFlags::PREFERRED) }
     }).collect();
-    let requested = gv.config.output_mode;
     if requested.is_some() && mode::select(&modes, requested).is_none() {
         warn!(name, ?requested, "requested output mode unavailable; using preferred mode");
     }
@@ -424,7 +469,6 @@ fn connector_connected(gv: &mut Gavno, connector: connector::Info, crtc: crtc::H
         warn!(name, "connector has no modes");
         return;
     }
-    let hdr_requested = gv.config.output_hdr;
     let white_nits = gv.config.sdr_white_nits;
 
     // Outputs are placed left to right in connection order.
@@ -436,16 +480,35 @@ fn connector_connected(gv: &mut Gavno, connector: connector::Info, crtc: crtc::H
         .max()
         .unwrap_or(0);
 
+    let (make, model) = connector_identity(gv, &connector).unwrap_or_else(|| ("Unknown".into(), name.clone()));
     let (phys_w, phys_h) = connector.size().unwrap_or((0, 0));
     let output = Output::new(
         name.clone(),
         PhysicalProperties {
             size: (phys_w as i32, phys_h as i32).into(),
             subpixel: connector.subpixel().into(),
-            make: "Unknown".into(),
-            model: name.clone(),
+            make,
+            model,
         },
     );
+    for (index, timing) in connector.modes().iter().enumerate() {
+        let wl = WlMode::from(*timing);
+        output.add_mode(wl);
+        if modes[index].preferred { output.set_preferred(wl); }
+    }
+    output.user_data().insert_if_missing(|| AdvertisedPreferred(connector.modes().iter()
+        .filter(|m| m.mode_type().contains(ModeTypeFlags::PREFERRED)).map(|m| WlMode::from(*m)).collect()));
+    if !enabled && gv.space.outputs().next().is_some() {
+        output.change_current_state(None, Some(Transform::Normal), Some(OutputScale::Fractional(scale)), Some((x, 0).into()));
+        if let Some(gpu) = udev(gv).and_then(|d| d.gpu.as_mut()) {
+            let color = if gpu.manager.device().is_atomic() {
+                ConnectorColor::probe(gpu.manager.device().device_fd().clone(), connector.handle())
+            } else { Err("HDR requires atomic modesetting".into()) };
+            output.user_data().insert_if_missing(|| DisabledHdr(color.is_ok()));
+            gpu.disabled_outputs.insert(name, output);
+        }
+        return;
+    }
     let global = output.create_global::<Gavno>(&gv.display_handle);
     output.change_current_state(
         None,
@@ -486,7 +549,7 @@ fn connector_connected(gv: &mut Gavno, connector: connector::Info, crtc: crtc::H
         return;
     };
     let wl_mode = WlMode::from(connector.modes()[index]);
-    output.set_preferred(wl_mode);
+    // Preferred flags come from the connector, not the selected timing.
     info!(name, width = wl_mode.size.w, height = wl_mode.size.h,
         refresh_hz = f64::from(wl_mode.refresh) / 1000.0, scale, "selected output mode");
     let feedback = surface_dmabuf_feedback(&drm_output, &gpu.renderer, primary, gpu.render_node);
@@ -500,6 +563,7 @@ fn connector_connected(gv: &mut Gavno, connector: connector::Info, crtc: crtc::H
         crtc,
         Surface {
             output: output.clone(),
+            modes: connector.modes().to_vec(),
             global,
             drm_output,
             feedback,
@@ -516,6 +580,9 @@ fn connector_connected(gv: &mut Gavno, connector: connector::Info, crtc: crtc::H
 }
 
 fn connector_disconnected(gv: &mut Gavno, connector: connector::Info, crtc: crtc::Handle) {
+    if let Some(gpu) = udev(gv).and_then(|d| d.gpu.as_mut()) {
+        gpu.disabled_outputs.remove(&format!("{}-{}", connector.interface().as_str(), connector.interface_id()));
+    }
     let Some(mut surface) = udev(gv).and_then(|d| d.gpu.as_mut()).and_then(|g| g.surfaces.remove(&crtc)) else {
         return;
     };
@@ -577,7 +644,60 @@ pub fn set_hdr(gv: &mut Gavno, output: &str, enabled: bool) -> Result<(), String
     Ok(())
 }
 
+/// Includes connected outputs intentionally disabled by configuration.
+pub fn disabled_outputs(backend: &Backend) -> Vec<Output> {
+    let Backend::Udev(data) = backend else { return Vec::new() };
+    data.gpu.as_ref().map(|g| g.disabled_outputs.values().cloned().collect()).unwrap_or_default()
+}
+
+/// Test the requested timing before publishing the Wayland state. In-flight
+/// flips own the previous buffers: callers retry once the flip has completed.
+pub fn set_mode(gv: &mut Gavno, output: &Output, mode: WlMode) -> Result<(), String> {
+    let Backend::Udev(data) = &mut gv.backend else {
+        return if output.current_mode() == Some(mode) { Ok(()) } else { Err("mode changes require the DRM backend".into()) };
+    };
+    let gpu = data.gpu.as_mut().ok_or("GPU unavailable")?;
+    let surface = gpu.surfaces.values_mut().find(|s| s.output == *output).ok_or("unknown output")?;
+    if output.current_mode() == Some(mode) { return Ok(()); }
+    if matches!(surface.redraw, RedrawState::WaitingForVBlank { .. } | RedrawState::WaitingForTimer { .. }) {
+        return Err("output is presenting; retry".into());
+    }
+    let timing = surface.modes.iter().find(|m| WlMode::from(**m) == mode).copied().ok_or("mode unavailable")?;
+    let previous = output.current_mode().and_then(|old| surface.modes.iter().find(|m| WlMode::from(**m) == old)).copied();
+    if let Err(error) = surface.drm_output.use_mode::<_, GavnoRenderElement>(timing, &mut gpu.renderer, &DrmOutputRenderElements::default()) {
+        if let Some(previous) = previous {
+            surface.drm_output.use_mode::<_, GavnoRenderElement>(previous, &mut gpu.renderer, &DrmOutputRenderElements::default())
+                .map_err(|restore| format!("modeset failed: {error:?}; restore failed: {restore:?}"))?;
+        }
+        return Err(format!("modeset failed: {error:?}"));
+    }
+    output.change_current_state(Some(mode), None, None, None);
+    surface.drm_output.reset_buffers();
+    Ok(())
+}
+
+/// HDR's offscreen buffer and damage tracker use physical mode and logical
+/// scale. Recreate both after a live geometry change before the next frame.
+pub fn refresh_output_geometry(gv: &mut Gavno, output: &Output) -> Result<(), String> {
+    let Backend::Udev(data) = &mut gv.backend else { return Ok(()) };
+    let gpu = data.gpu.as_mut().ok_or("GPU unavailable")?;
+    let surface = gpu.surfaces.values_mut().find(|s| s.output == *output).ok_or("unknown output")?;
+    if surface.hdr.is_some() {
+        let composition = Composition::new(&mut gpu.renderer, output, surface.white_nits)?;
+        surface.hdr = Some(composition);
+    }
+    surface.drm_output.reset_buffers();
+    Ok(())
+}
+
+pub fn mode_preferred(output: &Output, mode: WlMode) -> bool {
+    output.user_data().get::<AdvertisedPreferred>().map_or(output.preferred_mode() == Some(mode), |p| p.0.contains(&mode))
+}
+
 pub fn hdr_status(backend: &Backend, output: &Output) -> Option<crate::hdr::Status> {
+    if let Some(hdr) = output.user_data().get::<DisabledHdr>() {
+        return Some(crate::hdr::Status { enabled: false, pending: None, supported: hdr.0, sdr_white_nits: 203.0 });
+    }
     let Backend::Udev(data) = backend else { return None };
     let surface = data.gpu.as_ref()?.surfaces.values().find(|s| s.output == *output)?;
     Some(crate::hdr::Status {

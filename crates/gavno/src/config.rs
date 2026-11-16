@@ -6,7 +6,7 @@
 //! Live reload of the file is planned but not implemented yet; keep the field
 //! names stable.
 
-use std::{ffi::OsString, path::PathBuf};
+use std::{collections::BTreeMap, ffi::OsString, path::PathBuf};
 
 use serde::Deserialize;
 use smithay::input::keyboard::ModifiersState;
@@ -28,6 +28,7 @@ pub struct Config {
     pub internal_scale: f64,
     pub output_mode: Option<crate::hdr::mode::ModeRequest>,
     pub output_hdr: bool,
+    pub outputs: BTreeMap<String, OutputConfig>,
     pub sdr_white_nits: f32,
     pub repeat_delay: i32,
     pub repeat_rate: i32,
@@ -42,6 +43,18 @@ pub struct Config {
     pub tiling: TilingConfig,
     pub lock: LockConfig,
     pub notifications: NotificationsConfig,
+}
+
+/// Connector overrides; absent values inherit the global output settings.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct OutputConfig {
+    pub mode: Option<String>,
+    pub scale: Option<f64>,
+    pub hdr: Option<bool>,
+    pub enabled: Option<bool>,
+    #[serde(flatten)]
+    unknown: toml::Table,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -114,6 +127,7 @@ struct FileConfig {
     polkit_agent: Option<String>,
     gap: Option<i64>,
     output: Output,
+    outputs: BTreeMap<String, OutputConfig>,
     keyboard: Keyboard,
     modules: ModulesConfig,
     dock: DockConfig,
@@ -149,6 +163,14 @@ struct Keyboard {
 }
 
 impl Config {
+    pub fn output_settings(&self, name: &str, internal: bool) -> (Option<crate::hdr::mode::ModeRequest>, f64, bool, bool) {
+        let output = self.outputs.get(name);
+        (output.and_then(|o| o.mode.as_ref()).and_then(|m| m.parse().ok()).or(self.output_mode),
+         output.and_then(|o| o.scale).unwrap_or(if internal { self.internal_scale } else { 1.0 }),
+         output.and_then(|o| o.hdr).unwrap_or(self.output_hdr),
+         output.and_then(|o| o.enabled).unwrap_or(true))
+    }
+
     pub fn load(nested: bool) -> Self {
         let path = config_path(|name| std::env::var_os(name));
         let text = path.as_ref().and_then(|path| match std::fs::read_to_string(path) {
@@ -186,6 +208,19 @@ impl Config {
             [("", &file.unknown), ("output.", &file.output.unknown), ("keyboard.", &file.keyboard.unknown), ("dock.", &file.dock.unknown), ("bar.", &file.bar.unknown), ("tiling.", &file.tiling.unknown), ("notifications.", &file.notifications.unknown), ("lock.", &file.lock.unknown), ("modules.", &file.modules.unknown)]
         {
             unknown.extend(extra.keys().map(|key| format!("{prefix}{key}")));
+        }
+        for (name, output) in &file.outputs {
+            unknown.extend(output.unknown.keys().map(|key| format!("outputs.{name}.{key}")));
+        }
+        for (name, output) in &mut file.outputs {
+            if output.scale.is_some_and(|s| !s.is_finite() || !(0.5..=3.0).contains(&s)) {
+                warnings.push(format!("invalid outputs.{name}.scale; using global fallback"));
+                output.scale = None;
+            }
+            if output.mode.as_ref().is_some_and(|m| m.parse::<crate::hdr::mode::ModeRequest>().is_err()) {
+                warnings.push(format!("invalid outputs.{name}.mode; using global fallback"));
+                output.mode = None;
+            }
         }
         if !unknown.is_empty() {
             warnings.push(format!("unknown config keys ignored: {}", unknown.join(", ")));
@@ -249,6 +284,7 @@ impl Config {
                 internal_scale: scale_clamped,
                 output_mode,
                 output_hdr,
+                outputs: file.outputs,
                 sdr_white_nits,
                 repeat_delay: file.keyboard.repeat_delay.unwrap_or(300).clamp(0, 5000),
                 repeat_rate: file.keyboard.repeat_rate.unwrap_or(30).clamp(0, 100),
@@ -323,6 +359,7 @@ options = "caps:escape"
             internal_scale: 1.75,
             output_mode: None,
             output_hdr: false,
+            outputs: Default::default(),
             sdr_white_nits: 203.0,
             repeat_delay: 300,
             repeat_rate: 30,
@@ -362,6 +399,7 @@ options = "caps:escape"
             internal_scale: 2.0,
             output_mode: None,
             output_hdr: false,
+            outputs: Default::default(),
             sdr_white_nits: 203.0,
             repeat_delay: 300,
             repeat_rate: 30,
@@ -609,5 +647,44 @@ mod notification_tests {
         assert_eq!(config.notifications.max_visible, 1);
         assert_eq!(config.notifications.timeout_ms, 5000);
         assert_eq!(warnings.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod output_settings_tests {
+    use super::*;
+    #[test]
+    fn connector_overrides_and_global_fallbacks() {
+        let (config, warnings) = Config::build(false, Some(r#"
+[output]
+internal_scale = 2.0
+mode = "2880x1620@120"
+hdr = true
+[outputs."eDP-1"]
+mode = "1920x1080@59.94"
+scale = 1.75
+hdr = false
+enabled = false
+[outputs."DP-2"]
+scale = 1.25
+"#), |_| None);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let (mode, scale, hdr, enabled) = config.output_settings("eDP-1", true);
+        assert_eq!(mode.unwrap().refresh, Some(59940));
+        assert_eq!((scale, hdr, enabled), (1.75, false, false));
+        assert_eq!(config.output_settings("DP-2", false), (config.output_mode, 1.25, true, true));
+        assert_eq!(config.output_settings("DP-3", false), (config.output_mode, 1.0, true, true));
+        assert_eq!(config.output_settings("eDP-2", true), (config.output_mode, 2.0, true, true));
+    }
+    #[test]
+    fn invalid_connector_values_use_fallbacks() {
+        let (config, warnings) = Config::build(false, Some("[outputs.'eDP-1']\nmode = 'bad'\nscale = nan\nunknown = 1"), |_| None);
+        assert_eq!(warnings.len(), 3);
+        assert_eq!(config.output_settings("eDP-1", true), (None, 1.75, false, true));
+        for scale in [0.49, 3.01, f64::INFINITY] {
+            let (config, warnings) = Config::build(false, Some(&format!("[outputs.'DP-1']\nscale = {scale}")), |_| None);
+            assert!(!warnings.is_empty());
+            assert_eq!(config.output_settings("DP-1", false).1, 1.0);
+        }
     }
 }
