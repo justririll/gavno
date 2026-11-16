@@ -287,7 +287,7 @@ See [the lock screen](lock.md).
 | Ctrl+Alt+Delete | Quit GAVNO. Works while a client inhibits keyboard shortcuts, but not while the session is locked. |
 | Ctrl+Alt+F1 ... F12 | Switch to virtual terminal 1-12 (TTY backend only). Works while locked. |
 
-In `--greeter` mode every key except VT switching goes to the login screen.
+In `--greeter` mode every key except VT switching and hardware media keys goes to the login screen.
 
 ## HDR output (DRM backend)
 
@@ -307,3 +307,20 @@ wlr-screencopy protocol. Files go to `$XDG_PICTURES_DIR/Screenshots` (default
 |---|---|
 | Print | Capture the active output. |
 | Shift+Print, Mod+Shift+S | Select an area with slurp and capture it. |
+
+## Hardware media keys
+
+These compositor-owned keys require no modifier and work while locked or when
+an application inhibits shortcuts. Held keys use `[keyboard] repeat_delay`
+(default 300 ms) and `repeat_rate` (default 30 Hz; 0 disables repeat).
+
+| Keys | Action |
+|---|---|
+| XF86AudioRaiseVolume / XF86AudioLowerVolume | Increase / decrease the default PipeWire sink by 5%, capped at 100%. |
+| XF86AudioMute | Toggle default sink mute. |
+| XF86AudioMicMute | Toggle default source mute. |
+| XF86MonBrightnessUp / XF86MonBrightnessDown | Adjust backlight by 5% through logind, never below 1. Unavailable in the nested backend. |
+
+Audio control uses `wpctl`. A glass OSD shows the level/mute state for about
+1.5 seconds after the last change. Quick settings also offers audio and
+brightness sliders; Esc or Super closes either quick settings or the calendar.

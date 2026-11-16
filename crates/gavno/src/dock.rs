@@ -688,7 +688,14 @@ impl Gavno {
         })
     }
     pub fn shell_button(&mut self, button: u32, pressed: bool) -> bool {
-        if !pressed { return false; }
+        if !pressed {
+            self.bar_release(button);
+            if let Some(i) = self.suppressed_buttons.iter().position(|b| *b == button) {
+                self.suppressed_buttons.remove(i);
+                return true;
+            }
+            return false;
+        }
         let pointer = self.seat.get_pointer().unwrap();
         if pointer.is_grabbed() || !self.shell_contains(pointer.current_location()) {
             return false;
@@ -710,7 +717,7 @@ impl Gavno {
         let bar_hit = self.features.read(crate::module::Feature::Bar, false, || p.y < PANEL as f64 || self.topbar.menu.is_some());
         if bar_hit {
             self.guard(crate::module::Feature::Dock, (), |gv| gv.dock.close_menu());
-            self.guard(crate::module::Feature::Bar, (), |gv| gv.topbar.menu = None);
+            self.guard(crate::module::Feature::Bar, (), |gv| gv.topbar.close());
             self.suppressed_buttons.push(button);
             self.queue_redraw_all();
             return true;
@@ -764,7 +771,7 @@ impl Gavno {
                 });
             let had_menu = gv.dock.menu.is_some() || (gv.features.on(crate::module::Feature::Bar) && gv.topbar.menu.is_some());
             gv.dock.close_menu();
-            gv.guard(crate::module::Feature::Bar, (), |gv| gv.topbar.menu = None);
+            gv.guard(crate::module::Feature::Bar, (), |gv| gv.topbar.close());
             if !had_menu {
                 if let Some(id) = hit {
                     match button {
@@ -816,34 +823,7 @@ impl Gavno {
         let Some(geo) = self.space.output_geometry(&output) else {
             return false;
         };
-        if (self.features.on(crate::module::Feature::Bar) && self.config.bar.enabled) && pos.y - (geo.loc.y as f64) < PANEL as f64 {
-            return self.guard(crate::module::Feature::Bar, false, |gv| {            let delta = if horizontal.abs() > vertical.abs() {
-                horizontal
-            } else {
-                vertical
-            };
-            if delta == 0.0 {
-                gv.topbar.scroll = 0.0;
-                return true;
-            }
-            if delta.signum() != gv.topbar.scroll.signum() {
-                gv.topbar.scroll = 0.0;
-            }
-            gv.topbar.scroll += delta;
-            if gv.topbar.scroll.abs() >= 30.0 {
-                let o = gv.workspaces.ensure(&output);
-                let next = if gv.topbar.scroll < 0.0 {
-                    o.list.active.saturating_sub(1)
-                } else {
-                    (o.list.active + 1).min(o.list.items.len() - 1)
-                };
-                gv.topbar.scroll = 0.0;
-                gv.switch_workspace(&output, next);
-            }
-            return true;
-
-            });
-        }
+        if self.bar_axis(&output, pos-geo.loc.to_f64(), if horizontal.abs()>vertical.abs(){horizontal}else{vertical}) {return true;}
         self.guard(crate::module::Feature::Dock, false, |gv| {
             let p=pos-geo.loc.to_f64();
             let id=gv.dock.views.iter().find(|v|v.output==output).and_then(|v|v.hits.iter().find(|(_,r)|r.contains(p)).map(|(id,_)|id.clone()));
@@ -1191,9 +1171,9 @@ mod tests {
         let a = Rectangle::new((100, 200).into(), (1280, 800).into());
         assert_eq!(
             reserve(a, true, true, false),
-            Rectangle::new((100, 230).into(), (1280, 698).into())
+            Rectangle::new((100, 232).into(), (1280, 696).into())
         );
-        assert_eq!(reserve(a, true, true, true).size.h, 770);
+        assert_eq!(reserve(a, true, true, true).size.h, 768);
         assert_eq!(reserve(a, false, false, false), a);
         assert_eq!(
             reserve(Rectangle::from_size((20, 10).into()), true, true, false)

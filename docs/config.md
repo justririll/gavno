@@ -43,6 +43,8 @@ default": see `terminal` and `launcher` below.
 | `[output] mode` | string, `WIDTHxHEIGHT[@HZ]` | preferred mode, highest refresh among preferred modes | `GAVNO_OUTPUT_MODE` |
 | `[output] hdr` | boolean | `false` | `GAVNO_HDR` (`true`/`false` or `1`/`0`) |
 | `[output] sdr_white_nits` | float, cd/m² | `203` | `GAVNO_SDR_WHITE_NITS` |
+| `[keyboard] repeat_delay` | integer, 0–5000 ms | `300` | — |
+| `[keyboard] repeat_rate` | integer, 0–100 Hz | `30` | — |
 | `[keyboard] layout` | string | `"us,ru"` | `GAVNO_XKB_LAYOUT` |
 | `[keyboard] variant` | string | `""` | `GAVNO_XKB_VARIANT` |
 | `[keyboard] options` | string | `"grp:alt_shift_toggle"` | `GAVNO_XKB_OPTIONS` |

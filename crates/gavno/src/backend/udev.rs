@@ -739,6 +739,7 @@ fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
         &mut gv.topbar,
         &gv.config,
         &mut gv.features,
+        &mut gv.media.osd,
     );
     let mut result = draw_frame(surface, &mut gpu.renderer, &elements);
     if result.is_err() && surface.hdr.is_some() {
@@ -959,6 +960,7 @@ pub fn capture_output(gv: &mut Gavno, output: &Output, cursor: bool) -> Option<(
         &mut gv.topbar,
         &gv.config,
         &mut gv.features,
+        &mut gv.media.osd,
     );
     let bytes = render::capture_elements(&mut gpu.renderer, &elements, (mode.size.w, mode.size.h), scale)?;
     Some((mode.size.w as u32, mode.size.h as u32, bytes))

@@ -118,6 +118,7 @@ pub fn output_elements(
     topbar: &mut crate::topbar::TopBar,
     config: &crate::config::Config,
     features: &mut Features,
+    osd: &mut crate::topbar::osd::Osd,
 ) -> Vec<GavnoRenderElement> {
     let mut elements: Vec<GavnoRenderElement> = Vec::new();
     let Some(output_geo) = space.output_geometry(output) else {
@@ -138,11 +139,13 @@ pub fn output_elements(
                     renderer, loc, &buffer, None, None, None, Kind::Cursor,
                 ) { elements.push(GavnoRenderElement::Memory(cursor)); }
             }
+            elements.extend(osd.elements(renderer, output, output_geo.size, time, &config.dock.icon_theme, topbar.accent()));
             elements.extend(lock.elements(renderer, output_geo.size, scale.x, time));
             // Desktop pixels are permitted only after local PAM success. Input
             // remains blocked until the fade completes on the event loop.
             if !lock.desktop_visible() { return elements; }
         } else {
+            elements.extend(osd.elements(renderer, output, output_geo.size, time, &config.dock.icon_theme, topbar.accent()));
             if let Some(surface) = locks.surface(output) {
                 elements.extend(render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<_>>(
                     renderer, surface, (0, 0), scale, 1.0, Kind::Unspecified,
@@ -195,6 +198,8 @@ pub fn output_elements(
             }
         }
     }
+
+    if !locks.locked { elements.extend(osd.elements(renderer, output, output_geo.size, time, &config.dock.icon_theme, topbar.accent())); }
 
     if let Some(greeter) = greeter {
         let size = output_geo.size;

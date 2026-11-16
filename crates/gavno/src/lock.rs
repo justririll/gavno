@@ -188,7 +188,7 @@ impl Gavno {
         self.gestures = Default::default();
         self.overview.drag = None;
         self.overview.flick = None;
-        self.topbar.menu = None;
+        self.guard(crate::module::Feature::Bar, (), |gv| gv.topbar.close());
         self.guard(crate::module::Feature::Dock, (), |gv| gv.dock.close_menu());
         self.create_lock_ui();
         self.update_lock_modifiers();

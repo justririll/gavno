@@ -54,6 +54,7 @@ pub struct Gavno {
     pub overview: crate::overview::Overview,
     pub dock: crate::dock::Dock,
     pub topbar: crate::topbar::TopBar,
+    pub media: crate::topbar::control::MediaState,
     pub gestures: crate::gesture::Gestures,
     pub window_gestures: crate::window_gesture::WindowGestures,
     pub pointer_gestures: smithay::wayland::pointer_gestures::PointerGesturesState,
@@ -121,9 +122,9 @@ impl Gavno {
             options: config.xkb_options.clone(),
             ..Default::default()
         };
-        if let Err(err) = seat.add_keyboard(xkb, 300, 30) {
+        if let Err(err) = seat.add_keyboard(xkb, config.repeat_delay, config.repeat_rate) {
             tracing::warn!(?err, "bad xkb config, falling back to us");
-            seat.add_keyboard(Default::default(), 300, 30)
+            seat.add_keyboard(Default::default(), config.repeat_delay, config.repeat_rate)
                 .expect("default xkb keymap must compile");
         }
         seat.add_pointer();
@@ -150,6 +151,7 @@ impl Gavno {
             overview: Default::default(),
             dock: Default::default(),
             topbar: Default::default(),
+            media: Default::default(),
             gestures: Default::default(),
             window_gestures: Default::default(),
             pointer_gestures: smithay::wayland::pointer_gestures::PointerGesturesState::new::<Self>(&dh),
@@ -247,15 +249,15 @@ impl Gavno {
 
     /// True while something animates and needs the next frame drawn.
     pub fn is_animating(&mut self) -> bool {
-        if self.protocols.locks.locked { return self.lock.is_animating(); }
-        if let Some(g) = self.greeter.as_mut() { return g.safe_call(false, |g| g.is_animating()); }
+        if self.protocols.locks.locked { return self.lock.is_animating() || self.media.osd.is_animating(); }
+        if let Some(g) = self.greeter.as_mut() { return g.safe_call(false, |g| g.is_animating()) || self.media.osd.is_animating(); }
         let animations = self.guard(Feature::Animations, false, |gv| gv.window_animations.is_animating());
         let overlay = self.guard(Feature::Switcher, false, |gv| gv.overlay.is_animating());
         let overview = self.guard(Feature::Overview, false, |gv| gv.overview.progress.is_active()
             || gv.overview.flick.as_ref().is_some_and(|(_, x, y)| x.is_active() || y.is_active()));
         let dock = self.guard(Feature::Dock, false, |gv| gv.dock.active());
         let bar = self.guard(Feature::Bar, false, |gv| gv.topbar.active());
-        animations || overlay || self.workspaces.active() || overview || dock || bar
+        animations || overlay || self.workspaces.active() || overview || dock || bar || self.media.osd.is_animating()
     }
 
     pub fn pointer_location(&self) -> Point<f64, Logical> {
