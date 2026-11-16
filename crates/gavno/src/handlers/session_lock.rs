@@ -27,6 +27,8 @@ use smithay::{
 #[derive(Default)]
 pub struct Locks {
     pub locked: bool,
+    /// One-shot observer, also notified for an undamaged rendered frame.
+    pub(crate) after_frame: Option<(Output, Box<dyn FnOnce()>)>,
     owner: Option<ExtSessionLockV1>,
     confirmation: Option<SessionLocker>,
     confirmed: bool,
@@ -53,6 +55,9 @@ impl Locks {
             .map(|(_, s)| s.wl_surface())
     }
     pub fn submitted(&mut self, output: &Output) {
+        if self.after_frame.as_ref().is_some_and(|(wanted, _)| wanted == output) {
+            if let Some((_, notify)) = self.after_frame.take() { notify(); }
+        }
         if self.locked && self.pending.contains(output) && !self.submitted.contains(output) {
             self.submitted.push(output.clone());
         }

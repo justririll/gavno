@@ -1,5 +1,8 @@
 //! Local window management IPC. No rendering/backend work runs outside calloop.
 mod protocol;
+pub(crate) mod debug_input;
+mod client;
+pub use client::run as run_client;
 pub(crate) mod settings;
 mod transport;
 
@@ -27,6 +30,7 @@ struct WindowId(u64);
 
 #[derive(Default)]
 pub struct IpcState {
+    pub debug_input: debug_input::State,
     last_id: u64,
     keyboard_pending: bool,
     reload_pending: bool,
@@ -121,10 +125,27 @@ fn bind(path: &Path) -> io::Result<(UnixListener, SocketPath)> {
 }
 
 pub fn init(gv: &mut Gavno) -> io::Result<()> {
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| io::Error::other("XDG_RUNTIME_DIR is required for gavno IPC"))?;
-    let path = PathBuf::from(runtime).join("gavno/ipc.sock");
+    let path = match std::env::var_os("GAVNO_SOCKET").filter(|s| !s.is_empty()) {
+        Some(path) => {
+            let path = PathBuf::from(path);
+            if let Some(parent) = path.parent() {
+                if let Ok(meta) = fs::symlink_metadata(parent) {
+                    // bind restricts its directory: never chmod a shared parent
+                    // such as /tmp when an override points directly into it.
+                    if !meta.file_type().is_dir() || meta.uid() != unsafe { libc::geteuid() }
+                        || meta.permissions().mode() & 0o777 != 0o700 {
+                        return Err(io::Error::other("GAVNO_SOCKET directory must be private (0700) and owned by this user"));
+                    }
+                }
+            }
+            path
+        },
+        None => {
+            let runtime = std::env::var_os("XDG_RUNTIME_DIR").filter(|s| !s.is_empty())
+                .ok_or_else(|| io::Error::other("XDG_RUNTIME_DIR is required for gavno IPC"))?;
+            PathBuf::from(runtime).join("gavno/ipc.sock")
+        }
+    };
     let (listener, socket) = bind(&path)?;
     let listener = transport::listen_async(gv.loop_handle.clone(), listener, request_async)?;
     gv.ipc.listener = Some(listener);
@@ -200,6 +221,7 @@ fn screen(gv: &Gavno) -> Value {
 
 fn dispatch(gv: &mut Gavno, method: &str, params: &Value) -> Result<Value, String> {
     if gv.protocols.locks.locked && method != "screen" { return Err("session locked".into()); }
+    if debug_input::handles(method) { return debug_input::dispatch(gv, method, params); }
     if method == "screen" {
         return Ok(screen(gv));
     }
@@ -590,6 +612,10 @@ fn request_async(line: &[u8], gv: &mut Gavno, reply: transport::Reply<Gavno>) {
 }
 
 fn request_settings(line: &[u8], gv: &mut Gavno, reply: transport::Reply<Gavno>) {
+    if serde_json::from_slice::<Value>(line).ok().and_then(|v| v["method"].as_str().map(debug_input::handles)).unwrap_or(false) {
+        debug_input::request(line, gv, reply);
+        return;
+    }
     if serde_json::from_slice::<Value>(line).ok().is_some_and(|v|v["method"]=="reload_config") {
         request_reload(line,gv,reply);
         return;

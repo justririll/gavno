@@ -78,6 +78,9 @@ fn limit_malloc_arenas() {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::args().nth(1).as_deref() == Some("msg") {
+        return ipc::run_client(std::env::args().skip(2));
+    }
     perf::start_process();
     limit_malloc_arenas();
     init_logging();
@@ -98,6 +101,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "-h" | "--help" => {
                 println!("usage: gavno [--tty | --winit] [--greeter] [-c <command>]");
                 println!("       gavno --version");
+                println!("       gavno msg <method> [json]");
                 return Ok(());
             }
             "-V" | "--version" => {
@@ -130,6 +134,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     perf::startup("config.loaded");
     perf::startup("gavno.new.begin");
     let mut state = Gavno::new(&mut event_loop, display, config);
+    ipc::debug_input::init(&mut state);
 
     perf::startup("gavno.new.end");
 

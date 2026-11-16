@@ -60,3 +60,84 @@ journalctl -t gavno | grep -E 'gavno::(startup|stall)'
 
 The default `info` tracing filter includes both targets. If using a restrictive
 `RUST_LOG`, include `gavno::startup=info,gavno::stall=warn`.
+
+# Automated input and screenshots
+
+Start a development compositor with `GAVNO_DEBUG_INPUT=1 gavno --winit`.
+This prints one WARN at startup and enables the methods below in the existing
+local JSON IPC. Without that exact environment value they return `unknown
+method`. All debug methods, including `state` and `screenshot`, refuse requests
+while locked or running the greeter. Greeter startup does not expose window IPC.
+Deferred requests check the gate again before acting; a lock interrupts a
+pending injected gesture and prevents a pending screenshot from being written.
+
+Use `gavno msg <method> '[json object]'` to send one request and print its JSON
+reply (`{"id":1,"result":...}` or `{"id":1,"error":...}`). Errors produce a
+nonzero exit status. The client tries `GAVNO_SOCKET`, then the existing
+`GAVNO_SOCK` advertised to compositor children, then
+`$XDG_RUNTIME_DIR/gavno/ipc.sock`. The compositor also accepts `GAVNO_SOCKET` as
+a socket-path override; use a private directory for a separate nested instance.
+The socket remains local and restricted to its owner. No new dependencies are
+needed for the client.
+
+```sh
+export GAVNO_SOCKET="$XDG_RUNTIME_DIR/gavno/ipc.sock"
+gavno msg state
+gavno msg inject_gesture '{"kind":"swipe","fingers":3,"dx":-240,"dy":0}'
+gavno msg inject_key '{"key":"super","state":"press"}'
+gavno msg inject_gesture '{"kind":"swipe","fingers":3,"dy":340}'
+gavno msg inject_key '{"key":"super","state":"release"}'
+gavno msg screenshot '{"path":"/tmp/gavno-workspace.png"}'
+```
+
+`inject_gesture` supports `swipe`, `pinch`, and `hold`, with `fingers` from 2 to
+5 (default 3), total `dx`/`dy` (default 0), `duration_ms` (default 250, range
+1..60000), `steps` (default `max(1, duration_ms / 8)`, range 1..10000), and
+`cancel` (default false). Pinch `scale` is the final positive scale relative to
+begin (default 1); `rotation` is the total angle in degrees (default 0). Updates
+split motion and rotation evenly; pinch scale interpolates from 1. Calloop timers
+space updates over the duration, and the reply arrives after end. Holds have
+begin and end only, as on libinput. Only one injected gesture runs at a time;
+keys can be held or released while it runs. The compositor thread never sleeps.
+A gesture reply means end was handled; springs can still be settling.
+
+Synthetic events enter the same input dispatcher as hardware, including XKB,
+shortcuts, client forwarding, modifier taps, gesture routing, velocity projection,
+and window gestures. Positive deltas mean right/down with the default natural
+scroll direction. A fast horizontal swipe can project across multiple workspaces.
+Super must be held for a mode-changing vertical gesture. With Overview enabled,
+swipe down enters Classic and up returns; with Overview disabled, up enters and
+down returns. Nested mode normally uses Alt as its configured shell modifier;
+set `mod_key = "super"` (or `GAVNO_MOD=super`) to test Super taps opening the
+launcher in GAVNO or Start in Classic.
+
+Other methods:
+
+- `inject_key`: `key` is `super`, `ctrl`, `alt`, `shift`, `return`, `escape`,
+  `tab`, `space`, `backspace`, an arrow name, `a`..`z`, `0`..`9`, `f1`..`f12`,
+  or an integer Linux evdev keycode (0..767, without the XKB offset).
+  `state` is `press`, `release`, or `tap` (press then release).
+- `inject_pointer`: required finite `x` and `y` in global logical coordinates,
+  including output offsets. Uses the normal absolute pointer path and constraints.
+- `inject_button`: `button` is `left`, `right`, or `middle`; `state` is `press`,
+  `release`, or `click` (press then release).
+- `inject_scroll`: finite `dx`/`dy` (default 0), `source` is `finger` or `wheel`.
+  Values use the ordinary logical scroll units; a zero finger axis sends its stop.
+- `screenshot`: optional nonempty `path`, default
+  `$XDG_RUNTIME_DIR/gavno/shot.png`, as for SIGUSR1. Queues a redraw and captures
+  after the next drawn frame of the first output using the same half-resolution
+  PNG encoder. Replies with `path`, `width`, and `height` after writing the file;
+  times out after five seconds if no frame is drawn. Only one capture can wait.
+- `state`: shell mode, settled mode and progress, Overview visibility, active
+  workspace per output, focused window title/app ID, launcher/Start/music/polkit
+  visibility, pointer coordinates, and pressed modifiers.
+
+Run `scripts/input-demo.sh /tmp/gavno-input-demo` after building (`GAVNO_BIN`
+can select a binary, otherwise `${CARGO_TARGET_DIR:-target}/debug/gavno`). It
+starts and stops a private nested instance, uses a temporary home/runtime/config
+and a clean environment, prints state replies, and saves four screenshots plus
+`compositor.log`. Its config uses Super and disables Overview so swipe up enters
+Classic. It opens foot or zenity if installed so the horizontal swipe has an
+occupied workspace to leave; `GAVNO_DEMO_CLIENT` can supply another command.
+A host Wayland or X display and Python 3 (only for safe path encoding in
+the script) are required. Debug input adds no recurring idle timers or workers.

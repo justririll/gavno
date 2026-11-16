@@ -26,6 +26,10 @@ pub fn reply(line: &[u8], dispatch: impl FnOnce(&str, &Value) -> Result<Value, S
             }
             dispatch(method, params)
         });
+    response(id, result)
+}
+
+pub fn response(id: Value, result: Result<Value, String>) -> Vec<u8> {
     let response = match result {
         Ok(value) => json!({"id": id, "result": value}),
         Err(error) => json!({"id": id, "error": error}),
