@@ -1,0 +1,5 @@
+// The root password is locked on GAVNO machines: let members of wheel
+// authenticate as administrators with their own password.
+polkit.addAdminRule(function(action, subject) {
+    return ["unix-group:wheel"];
+});

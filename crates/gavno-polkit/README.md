@@ -6,16 +6,22 @@ It stays windowless until needed and opens a separate dark GTK4/libadwaita
 window for each request. Passwords are checked by the system's setuid
 `polkit-agent-helper-1`; no polkit policy changes are needed.
 
-`dist/gavno-session` starts it through GAVNO's `-c` command after the Wayland
-socket and first output are ready. Install the updated session wrapper as
-`/usr/local/bin/gavno-session` and install the binary:
+GAVNO starts it once its Wayland socket is up, using the `polkit_agent`
+config key (default `gavno-polkit-agent`, an empty string disables it), if
+the binary is in `PATH`. Install a release build:
 
 ```sh
-install -Dm755 /home/kirill/HDD/ds-build/target-polkit/debug/gavno-polkit-agent /usr/local/bin/gavno-polkit-agent
+install -Dm755 "$CARGO_TARGET_DIR/release/gavno-polkit-agent" /usr/local/bin/gavno-polkit-agent
 ```
 
-For a manually started compositor, use `gavno --tty -c gavno-polkit-agent`,
-or run `gavno-polkit-agent` from a terminal in the existing session.
+polkit's default administrator is root. When the root account is locked,
+let wheel members authenticate admin actions with their own password:
+
+```sh
+install -Dm644 dist/polkit-1/rules.d/49-gavno-wheel-admin.rules /etc/polkit-1/rules.d/49-gavno-wheel-admin.rules
+```
+
+Outside GAVNO, run `gavno-polkit-agent` from a terminal in the existing session.
 The agent uses `XDG_SESSION_ID`, falling back to logind's session for its PID.
 An existing session agent makes it exit successfully. SIGTERM and SIGINT
 cancel active prompts and unregister before exiting.
