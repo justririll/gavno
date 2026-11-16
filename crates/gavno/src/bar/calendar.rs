@@ -137,3 +137,36 @@ mod tests {
         assert_eq!(first_weekday(2024, 1), 0);
     }
 }
+
+/// The same layout rectangles drive rendering and pointer actions.
+pub(super) fn draw_notifications(
+    c: &mut super::Canvas,
+    renderer: &mut smithay::backend::renderer::gles::GlesRenderer,
+    panel: &super::PopoverLayout,
+    history: &[crate::notify::History],
+    hover: Option<&super::BarAction>,
+) {
+    use super::{geometry::Item, BarAction};
+    if !panel.items.iter().any(|(i, _)| *i == Item::ClearNotifications) { return; }
+    let x = panel.panel.loc.x;
+    let y = panel.panel.loc.y + 316;
+    c.label(renderer, "Notifications", x + 16, y + 6, 212, 13.0);
+    for (item, r) in &panel.items {
+        match *item {
+            Item::ClearNotifications => {
+                if hover == Some(&BarAction::ClearNotifications) { super::capsule(c, *r, true); }
+                c.label(renderer, "Clear", r.loc.x + 10, r.loc.y + 6, 48, 12.0);
+            }
+            Item::Notification(i) => {
+                let Some(h) = history.get(i) else { continue };
+                if hover == Some(&BarAction::Notification(h.notice.id)) { super::capsule(c, *r, true); }
+                let title = format!("{} · {}", h.notice.app, h.time);
+                let mut style = super::label_style(10.5); style.color[3] = 0.55;
+                c.styled_label(renderer, &title, r.loc.x + 6, r.loc.y + 2, r.size.w - 12, style);
+                c.label(renderer, &h.notice.summary, r.loc.x + 6, r.loc.y + 16, r.size.w - 12, 12.0);
+                c.styled_label(renderer, &h.notice.body, r.loc.x + 6, r.loc.y + 32, r.size.w - 12, style);
+            }
+            _ => {}
+        }
+    }
+}

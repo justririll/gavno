@@ -677,6 +677,11 @@ impl Gavno {
             })
     }
     pub fn shell_contains(&self, pos: Point<f64, Logical>) -> bool {
+        if !self.protocols.locks.locked && !self.lock.internal() && self.greeter.is_none()
+            && self.features.read(crate::module::Feature::Notifications, false, || {
+                self.space.outputs().any(|o| self.space.output_geometry(o).is_some_and(|g|
+                    self.notifications.borrow().contains(o, pos - g.loc.to_f64())))
+            }) { return true; }
         self.space.outputs().any(|o| {
             if !self.shell_visible(o) {
                 return false;

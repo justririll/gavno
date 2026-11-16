@@ -325,3 +325,10 @@ an application inhibits shortcuts. Held keys use `[keyboard] repeat_delay`
 Audio control uses `wpctl`. A glass OSD shows the level/mute state for about
 1.5 seconds after the last change. Quick settings also offers audio and
 brightness sliders; Esc or Super closes either quick settings or the calendar.
+
+Built-in notifications are controlled with the pointer: click a card to invoke
+its default action and dismiss it, click × to dismiss, or choose an action
+button. Hover pauses its timeout. Click the clock for notification history and
+**Clear**; quick settings includes **Do not disturb** (critical alerts bypass
+it). The clock dot marks unread history. These controls belong to the optional
+`Notifications` feature (`[modules] notifications = true` by default).

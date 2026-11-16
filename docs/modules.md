@@ -6,7 +6,7 @@ basic surface rendering remain core even when their implementation lives beside
 a feature. Lock and Greeter are always present security boundaries.
 
 The optional features are Dock, Bar, Overview, Tiling, Snap, Switcher,
-Gestures, WindowGestures, ResizeMode, Animations, Decorations, Ipc and Screencopy.
+Gestures, WindowGestures, ResizeMode, Animations, Decorations, Ipc, Screencopy, Launcher and Notifications.
 `module.rs` stores their startup state. A feature is enabled, disabled by config,
 or crashed. A crash disables it until the compositor restarts. The registry has
 no timer, animation, or periodic redraw source.
@@ -56,6 +56,11 @@ after an inner call failed. Recovery requests one coalesced redraw.
 - IPC removes its listener and socket and shuts down connected streams, giving
   clients EOF. Screencopy fails pending requests; later requests fail too.
 
+- Launcher drops its panel. Notifications drop cards and history and remove the
+  expiry timer. Their D-Bus worker remains alive, returning unique IDs and
+  handling protocol calls, but no notification UI runs until restart. Bar reset
+  preserves the shared notification state, so the features fail independently.
+
 ## Startup configuration
 
 All keys default to `true`; omitted keys retain that default. Unknown keys warn.
@@ -76,6 +81,8 @@ animations = true
 decorations = true
 ipc = true
 screencopy = true
+launcher = true
+notifications = true
 ```
 
 Legacy `[dock] enabled = false` and `[bar] enabled = false` still disable their
@@ -97,3 +104,22 @@ location, message and a forced backtrace to `$XDG_STATE_HOME/gavno/crash.log`, o
 `~/.local/state/gavno/crash.log`. Its directory is private (0700), and logs larger
 than about 1 MiB are truncated before the next entry. Unit tests exercise the
 writer directly without replacing the process-wide hook.
+
+## Notification worker
+
+`notify/dbus.rs` owns a blocking zbus connection with its internal executor.
+It requests the session name with `DoNotQueue` only, without replacing an owner.
+Methods validate input and allocate IDs atomically; the live registry makes a
+valid replacement reuse its ID. A calloop channel carries notification data,
+close requests and activation to the compositor. The compositor never waits for
+a bus reply. An ordinary unbounded command channel carries action/closed signals
+back to the blocking worker. The worker checks the sending application's unique
+bus name before invoking history actions.
+
+`notify/mod.rs` owns queue order, deadlines, hover pauses, DND and the 50-item
+history. `notify/ui.rs` uses the shared Canvas, text renderer and springs. A
+shared reference in TopBar lets `output_elements` render cards through the
+Notifications guard without changing backend rendering APIs. History and DND
+controls use snapshots in the bar and enter Notifications guards for mutations.
+A single one-shot expiry timer tracks the earliest visible deadline. Springs
+request frames only while a visible card enters or leaves.

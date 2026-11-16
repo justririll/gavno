@@ -20,6 +20,7 @@ mod debug;
 mod greeter;
 mod lock;
 mod launcher;
+mod notify;
 mod grabs;
 mod handlers;
 mod input;
