@@ -48,12 +48,30 @@ pub fn elapsed_ms() -> f64 {
         .map_or(0.0, |start| start.elapsed().as_secs_f64() * 1000.0)
 }
 
+/// Asset loads (icons, fonts) reuse these checkpoints all session long; only
+/// the startup window logs at info, later loads drop to debug.
+const STARTUP_WINDOW_MS: f64 = 10_000.0;
+
+pub fn in_startup() -> bool {
+    elapsed_ms() < STARTUP_WINDOW_MS
+}
+
 pub fn startup(stage: &'static str) {
-    tracing::info!(target: "gavno::startup", stage, ms = elapsed_ms());
+    let ms = elapsed_ms();
+    if ms < STARTUP_WINDOW_MS {
+        tracing::info!(target: "gavno::startup", stage, ms);
+    } else {
+        tracing::debug!(target: "gavno::startup", stage, ms);
+    }
 }
 
 pub fn startup_output(stage: &'static str, output: &str) {
-    tracing::info!(target: "gavno::startup", stage, ms = elapsed_ms(), output);
+    let ms = elapsed_ms();
+    if ms < STARTUP_WINDOW_MS {
+        tracing::info!(target: "gavno::startup", stage, ms, output);
+    } else {
+        tracing::debug!(target: "gavno::startup", stage, ms, output);
+    }
 }
 
 /// Also records the end of fallible cold paths that return early.

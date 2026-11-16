@@ -179,7 +179,7 @@ fn raster(path: &Path, size: u32, tint: bool) -> Option<MemoryRenderBuffer> {
 }
 fn raster_color(path: &Path, size: u32, tint: bool, color: Option<[u8; 3]>) -> Option<MemoryRenderBuffer> {
     let _startup = crate::perf::Startup::new("image.decode.begin", "image.decode.end");
-    tracing::info!(target: "gavno::startup", stage = "image.decode.path", ms = crate::perf::elapsed_ms(), path = %path.display(), size);
+    if crate::perf::in_startup() { tracing::info!(target: "gavno::startup", stage = "image.decode.path", ms = crate::perf::elapsed_ms(), path = %path.display(), size); }
     let mut pixels = if path
         .extension()
         .is_some_and(|e| e == "svg" || e == "svgz")

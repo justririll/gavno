@@ -242,7 +242,7 @@ fn load(dirs: &[PathBuf]) -> Vec<DesktopEntry> {
         let root = dir.join("applications");
         let mut files = Vec::new();
         walk(&root, &root, &mut files, 0);
-        tracing::info!(target: "gavno::startup", stage = "desktop_entries.directory_scanned", ms = crate::perf::elapsed_ms(), path = %root.display(), files = files.len());
+        if crate::perf::in_startup() { tracing::info!(target: "gavno::startup", stage = "desktop_entries.directory_scanned", ms = crate::perf::elapsed_ms(), path = %root.display(), files = files.len()); }
         for (id, path) in files {
             // Hidden entries also mask lower-priority system entries.
             if !seen.insert(id.clone()) {
