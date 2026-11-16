@@ -22,7 +22,13 @@ impl Gavno {
         let location = self.space.element_location(window)?;
         let geometry = window.geometry().to_f64();
         let fallback = Rectangle::new(location.to_f64(), geometry.size);
-        let motion = self.features.read(crate::module::Feature::Animations, None, || self.window_animations.motion(window));
+        // Animated geometry is drawn only by the decoration renderer; without
+        // it windows are drawn plainly, so hit testing must match that.
+        let motion = if self.features.on(crate::module::Feature::Decorations) {
+            self.features.read(crate::module::Feature::Animations, None, || self.window_animations.motion(window))
+        } else {
+            None
+        };
         if motion.is_some_and(|m| m.closing) {
             return None;
         }

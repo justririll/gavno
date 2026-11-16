@@ -70,6 +70,9 @@ pub struct CursorCache {
 }
 
 impl CursorCache {
+    pub fn animated(&self, name: &str) -> bool {
+        self.cursor.animated(name)
+    }
     pub fn new() -> Self {
         Self {
             cursor: Cursor::load(),
@@ -80,6 +83,11 @@ impl CursorCache {
     /// Buffer and hotspot (logical px) for an integer `scale`.
     fn get(&mut self, name: &str, scale: u32, time: Duration) -> (MemoryRenderBuffer, Point<f64, Logical>) {
         let image = self.cursor.image(name, scale, time);
+        // The theme may lack the size for `scale` (or fall back to the 24px
+        // arrow): derive the buffer scale from the image actually chosen so
+        // the cursor keeps its logical size.
+        let base = self.cursor.base_size().max(1) as f64;
+        let scale = ((image.size.max(image.width) as f64 / base).round() as u32).clamp(1, scale.max(1));
         let hotspot = Point::from((image.xhot as f64 / scale as f64, image.yhot as f64 / scale as f64));
         if let Some((_, _, buf)) = self.buffers.iter().find(|(i, s, _)| *s == scale && i == &image) {
             return (buf.clone(), hotspot);

@@ -260,7 +260,9 @@ impl Gavno {
         let dock = self.guard(Feature::Dock, false, |gv| gv.dock.active());
         let bar = self.guard(Feature::Bar, false, |gv| gv.topbar.active());
         let launcher = self.guard(Feature::Launcher, false, |gv| gv.launcher.is_animating());
-        animations || overlay || self.workspaces.active() || overview || dock || bar || launcher || self.media.osd.is_animating()
+        // Animated named cursors (wait, progress) need frames while shown.
+        let cursor = matches!(&self.cursor_status, smithay::input::pointer::CursorImageStatus::Named(icon) if self.cursor.animated(icon.name()));
+        cursor || animations || overlay || self.workspaces.active() || overview || dock || bar || launcher || self.media.osd.is_animating()
     }
 
     pub fn pointer_location(&self) -> Point<f64, Logical> {

@@ -16,6 +16,16 @@ pub struct Cursor {
 }
 
 impl Cursor {
+    /// Nominal cursor size in logical pixels.
+    pub fn base_size(&self) -> u32 {
+        self.size
+    }
+    /// True when `name` resolved to an animated cursor at any scale.
+    pub fn animated(&self, name: &str) -> bool {
+        self.cache
+            .iter()
+            .any(|((n, _), images)| n == name && images.len() > 1 && images.iter().any(|i| i.delay > 0))
+    }
     pub fn load() -> Cursor {
         let theme = std::env::var("XCURSOR_THEME").unwrap_or_else(|_| "Adwaita".into());
         let size = std::env::var("XCURSOR_SIZE")

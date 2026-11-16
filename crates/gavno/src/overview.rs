@@ -399,6 +399,11 @@ impl Gavno {
             return true;
         };
         if !geo.to_f64().contains(self.pointer_location()) {
+            // A drag released off the overview output ends here, or a later
+            // release would still drop that window somewhere.
+            if !pressed {
+                self.overview.drag = None;
+            }
             return false;
         }
         let pos = self.pointer_location() - geo.loc.to_f64();
