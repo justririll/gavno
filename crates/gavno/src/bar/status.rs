@@ -103,6 +103,11 @@ pub struct Brightness {
     pub max: u32,
 }
 impl Brightness {
+    /// Lowest value GAVNO sets: 5 % of max. Panels go fully dark near 0, which
+    /// leaves the user with a black screen and no way to see the controls.
+    pub fn min_value(&self) -> u32 {
+        ((self.max as f64 * 0.05).round() as u32).max(1).min(self.max)
+    }
     pub fn level(&self) -> f64 {
         self.value as f64 / self.max as f64
     }
@@ -359,7 +364,7 @@ pub fn spawn(handle: &LoopHandle<'static, Gavno>, hardware: bool) -> Option<Send
                     Command::Brightness(level) => {
                         if let Some(b) = snapshot.brightness.as_mut() {
                             let value = ((level.clamp(0.0, 1.0) * b.max as f64).round() as u32)
-                                .clamp(1, b.max);
+                                .clamp(b.min_value(), b.max);
                             match set_brightness(b, value) {
                                 Ok(()) => b.value = value,
                                 Err(error) => {
@@ -404,7 +409,7 @@ pub fn spawn(handle: &LoopHandle<'static, Gavno>, hardware: bool) -> Option<Send
                                 let value = if action == Media::BrightnessUp {
                                     b.value.saturating_add(step).min(b.max)
                                 } else {
-                                    b.value.saturating_sub(step).max(1)
+                                    b.value.saturating_sub(step).max(b.min_value())
                                 };
                                 match set_brightness(b, value) {
                                     Ok(()) => b.value = value,
@@ -653,6 +658,14 @@ mod tests {
         assert_eq!(t.take(Duration::from_secs(2)), None);
         assert_eq!(t.wait(Duration::from_secs(2)), None);
     }
+    #[test]
+    fn brightness_never_goes_dark() {
+        let b = Brightness { name: "bl".into(), value: 10, max: 2047 };
+        assert_eq!(b.min_value(), 102);
+        let tiny = Brightness { name: "bl".into(), value: 1, max: 3 };
+        assert_eq!(tiny.min_value(), 1);
+    }
+
     #[test]
     fn brightness_fixture() {
         let root = std::path::PathBuf::from(format!("/tmp/gavno-backlight-{}", std::process::id()));

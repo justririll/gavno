@@ -245,7 +245,7 @@ impl Gavno {
             Command::Volume(level)
         } else {
             let actual = if let Some(b) = self.media.status.brightness.as_mut() {
-                b.value = ((b.max as f64 * level).round() as u32).clamp(1, b.max);
+                b.value = ((b.max as f64 * level).round() as u32).clamp(b.min_value(), b.max);
                 b.level()
             } else {
                 level
