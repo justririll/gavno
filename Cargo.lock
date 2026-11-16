@@ -908,8 +908,20 @@ dependencies = [
  "lru",
  "md5",
  "serde",
+ "serde_json",
  "toml 0.9.12+spec-1.1.0",
  "vte4",
+]
+
+[[package]]
+name = "gavno-polkit"
+version = "0.1.0"
+dependencies = [
+ "gio",
+ "glib",
+ "gtk4",
+ "libadwaita",
+ "libc",
 ]
 
 [[package]]

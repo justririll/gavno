@@ -1,0 +1,16 @@
+@define-color window_bg_color #181b28;
+@define-color window_fg_color #e7e8f1;
+@define-color view_bg_color #181b28;
+@define-color dialog_bg_color #181b28;
+@define-color popover_bg_color #1e2232;
+@define-color accent_bg_color #f2a46a;
+@define-color accent_fg_color #1b1209;
+@define-color accent_color #f2a46a;
+window.polkit { background: #181b28; }
+.polkit passwordentry, .polkit dropdown > button {
+  border: 1px solid #2a2f42;
+  border-radius: 9px;
+  background: #1e2232;
+}
+.polkit passwordentry:focus-within { border-color: #f2a46a; }
+.polkit expander { color: #949ab0; }
