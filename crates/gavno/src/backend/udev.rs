@@ -350,6 +350,12 @@ fn open_gpu(gv: &mut Gavno, node: DrmNode, path: &Path) -> Result<(), Box<dyn st
 }
 
 fn device_changed(gv: &mut Gavno, node: DrmNode) {
+    // While another VT owns the seat, output setup fails with DeviceInactive
+    // but the scanner would still record the connector as handled. Leave the
+    // scan to on_session_activate, which calls this again.
+    if udev(gv).is_some_and(|d| !d.session.is_active()) {
+        return;
+    }
     let Some(gpu) = udev(gv).and_then(|d| d.gpu.as_mut()) else { return };
     if gpu.node != node {
         return;
@@ -387,6 +393,7 @@ fn device_removed(gv: &mut Gavno, node: DrmNode) {
         if let Ok(color) = &mut surface.color { let _ = color.restore(); }
         crate::handlers::layer_shell::close_layers(&surface.output);
         gv.space.unmap_output(&surface.output);
+        gv.protocols.screencopy.output_removed(&surface.output);
         gv.display_handle.remove_global::<Gavno>(surface.global);
     }
     gv.loop_handle.remove(gpu.token);
@@ -474,6 +481,7 @@ fn connector_connected(gv: &mut Gavno, connector: connector::Info, crtc: crtc::H
     let Some((index, drm_output)) = initialized else {
         error!(name, "failed to initialize any advertised output mode");
         gv.space.unmap_output(&output);
+        gv.protocols.screencopy.output_removed(&output);
         gv.display_handle.remove_global::<Gavno>(global);
         return;
     };
@@ -518,6 +526,7 @@ fn connector_disconnected(gv: &mut Gavno, connector: connector::Info, crtc: crtc
     info!(output = surface.output.name(), ?connector, "output disconnected");
     crate::handlers::layer_shell::close_layers(&surface.output);
     gv.space.unmap_output(&surface.output);
+    gv.protocols.screencopy.output_removed(&surface.output);
     gv.display_handle.remove_global::<Gavno>(surface.global);
     gv.queue_redraw_all();
 }
@@ -655,8 +664,15 @@ fn draw_frame(surface: &mut Surface, renderer: &mut GlesRenderer,
         }
         Ok((result.is_empty, states))
     } else {
-        surface.drm_output.render_frame(renderer, elements, render::CLEAR_COLOR, FrameFlags::DEFAULT)
-            .map(|r| (r.is_empty, r.states)).map_err(|e| format!("SDR render: {e:?}"))
+        let result = surface.drm_output.render_frame(renderer, elements, render::CLEAR_COLOR, FrameFlags::DEFAULT)
+            .map_err(|e| format!("SDR render: {e:?}"))?;
+        // Legacy KMS cannot take an in-fence: wait before queueing the frame.
+        if result.needs_sync() {
+            if let PrimaryPlaneElement::Swapchain(element) = &result.primary_element {
+                element.sync.wait().map_err(|e| format!("SDR scanout fence: {e:?}"))?;
+            }
+        }
+        Ok((result.is_empty, result.states))
     }
 }
 

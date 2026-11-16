@@ -27,11 +27,25 @@ const VERSION: u32 = 3;
 #[derive(Default)]
 pub struct Screencopy {
     pending: Vec<Pending>,
+    /// Outputs that presented new content since their last completed
+    /// capture; a `copy_with_damage` for them is answered at once.
+    dirty: Vec<Output>,
 }
 
 impl Screencopy {
     pub(crate) fn fail_pending(&mut self) {
         for p in self.pending.drain(..) { p.frame.failed(); }
+    }
+    /// Fails captures waiting on an output that is going away.
+    pub(crate) fn output_removed(&mut self, output: &Output) {
+        self.dirty.retain(|o| o != output);
+        self.pending.retain(|p| {
+            let ours = p.frame.data::<FrameData>().and_then(|d| d.output.as_ref()) == Some(output);
+            if ours && p.frame.is_alive() {
+                p.frame.failed();
+            }
+            !ours
+        });
     }
 }
 
@@ -229,7 +243,9 @@ impl Dispatch<ZwlrScreencopyFrameV1, FrameData> for Gavno {
             return;
         }
         let pending = Pending { frame: frame.clone(), buffer };
-        if with_damage {
+        let output = frame.data::<FrameData>().and_then(|d| d.output.clone());
+        let dirty = output.as_ref().is_some_and(|o| state.protocols.screencopy.dirty.contains(o));
+        if with_damage && !dirty {
             state.protocols.screencopy.pending.push(pending);
             state.queue_redraw_all();
         } else {
@@ -242,6 +258,9 @@ impl Dispatch<ZwlrScreencopyFrameV1, FrameData> for Gavno {
 pub fn frame_drawn(gv: &mut Gavno, output: &Output) {
     gv.guard(crate::module::Feature::Screencopy, (), |gv| {
         if gv.protocols.screencopy.pending.is_empty() {
+            if !gv.protocols.screencopy.dirty.contains(output) {
+                gv.protocols.screencopy.dirty.push(output.clone());
+            }
             return;
         }
         let mut ready = Vec::new();
@@ -272,6 +291,7 @@ fn complete(gv: &mut Gavno, p: Pending) {
         return;
     };
     let region = data.region;
+    gv.protocols.screencopy.dirty.retain(|o| o != &output);
     let Some((frame_w, _, pixels)) = crate::backend::capture_output(gv, &output, data.cursor) else {
         p.frame.failed();
         return;
