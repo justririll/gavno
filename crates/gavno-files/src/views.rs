@@ -265,6 +265,11 @@ fn name_factory(
             return;
         };
         label.set_text(info.display_name().as_str());
+        if info.is_hidden() {
+            label.add_css_class("hidden-file");
+        } else {
+            label.remove_css_class("hidden-file");
+        }
         label.set_widget_name(model::file(&info).uri().as_str());
         row.set_tooltip_text(Some(&format!(
             "{}\n{}",

@@ -19,6 +19,7 @@ fn main() -> glib::ExitCode {
         .flags(gio::ApplicationFlags::HANDLES_OPEN | gio::ApplicationFlags::CAN_OVERRIDE_APP_ID)
         .build();
     app.connect_startup(|app| {
+        gtk::Window::set_default_icon_name("org.gavno.Files");
         adw::StyleManager::default().set_color_scheme(adw::ColorScheme::PreferDark);
         let provider = gtk::CssProvider::new();
         provider.load_from_string(include_str!("style.css"));

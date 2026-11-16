@@ -126,6 +126,7 @@ install -Dm755 "$CARGO_TARGET_DIR/debug/gavno-files" "$HOME/.local/bin/gavno-fil
 install -Dm644 dist/applications/org.gavno.Files.desktop "$HOME/.local/share/applications/org.gavno.Files.desktop"
 install -Dm644 dist/dbus-1/services/org.gavno.Files.service "$HOME/.local/share/dbus-1/services/org.gavno.Files.service"
 install -Dm644 dist/dbus-1/services/org.freedesktop.FileManager1.service "$HOME/.local/share/dbus-1/services/org.freedesktop.FileManager1.service"
+install -Dm644 dist/icons/hicolor/scalable/apps/org.gavno.Files.svg "$HOME/.local/share/icons/hicolor/scalable/apps/org.gavno.Files.svg"
 update-desktop-database "$HOME/.local/share/applications"
 ```
 

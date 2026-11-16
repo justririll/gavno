@@ -309,3 +309,6 @@ popover modelbutton:hover {
 .dock-terminal {
   padding: 6px 12px 10px;
 }
+.file-tile editablelabel.hidden-file {
+  color: @muted;
+}
