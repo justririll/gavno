@@ -47,6 +47,8 @@ impl Gavno {
                 let brightness_changed = self.media.status.brightness != snapshot.brightness;
                 self.guard(crate::module::Feature::Bar, (), |gv| gv.topbar.status = snapshot.clone());
                 self.media.status = snapshot;
+                let battery = self.media.status.battery.clone();
+                self.battery_notification(battery.as_ref());
                 // A status refresh can correct visible feedback, but never opens
                 // an OSD on its own.
                 if self.media.osd.deadline.is_some() {

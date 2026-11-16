@@ -294,6 +294,7 @@ pub fn spawn(handle: &LoopHandle<'static, Gavno>, hardware: bool) -> Option<Send
             let mut visible = false;
             let mut fallback = false;
             let mut refresh_at = None;
+            let mut battery_at = Instant::now() + Duration::from_secs(60);
             let mut throttle = VolumeThrottle::default();
             let mut mic = None;
             refresh(&mut snapshot, hardware, false);
@@ -322,6 +323,12 @@ pub fn spawn(handle: &LoopHandle<'static, Gavno>, hardware: bool) -> Option<Send
                     refresh(&mut snapshot, hardware, fallback);
                     refresh_at = Some(Instant::now() + Duration::from_secs(30));
                 }
+                // Low battery warnings must also fire while the bar is hidden
+                // (fullscreen); only the battery is read then, once a minute.
+                if !visible && battery_at <= Instant::now() {
+                    snapshot.battery = super::read_battery(Path::new("/sys/class/power_supply"));
+                    battery_at = Instant::now() + Duration::from_secs(60);
+                }
                 if snapshot != previous {
                     if events.send(Event::Status(snapshot.clone())).is_err() {
                         break;
@@ -336,6 +343,7 @@ pub fn spawn(handle: &LoopHandle<'static, Gavno>, hardware: bool) -> Option<Send
                             .filter(|_| visible)
                             .map(|t| t.saturating_duration_since(Instant::now())),
                     )
+                    .chain((!visible).then(|| battery_at.saturating_duration_since(Instant::now())))
                     .min();
                 let command = match wait {
                     Some(d) => match receive.recv_timeout(d) {

@@ -110,6 +110,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !greeter_mode {
         xwayland::start(&mut state);
         start_polkit_agent(&state.config.polkit_agent);
+        // A nested compositor must not repoint the host session's services.
+        if backend_choice == BackendChoice::Tty {
+            export_session_environment();
+        }
     }
     tracing::info!(socket = ?state.socket_name, "gavno is listening");
 
@@ -135,6 +139,19 @@ fn init_logging() {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
     tracing_subscriber::fmt().with_env_filter(filter).init();
+}
+
+/// D-Bus activated and systemd user services (xdg-desktop-portal and its
+/// wlr backend for screen sharing, for example) need our display variables.
+fn export_session_environment() {
+    let mut names = vec!["WAYLAND_DISPLAY", "XDG_CURRENT_DESKTOP", "XDG_SESSION_TYPE"];
+    if std::env::var_os("DISPLAY").is_some() {
+        names.push("DISPLAY");
+    }
+    state::spawn_shell(&format!(
+        "dbus-update-activation-environment --systemd {0} 2>/dev/null || systemctl --user import-environment {0}",
+        names.join(" ")
+    ));
 }
 
 /// Starts the session polkit agent when it is installed, so pkexec and other
