@@ -427,8 +427,9 @@ impl Request {
 }
 
 /// GTK's software renderer for this small, mostly static window: it starts
-/// faster and keeps about 100 MB less than the GL or Vulkan renderers
-/// (measured on the Snapdragon laptop). An explicit GSK_RENDERER still wins.
+/// faster and skips the GPU driver's per-process memory (the resident polkit
+/// agent measured 48 MB PSS on Vulkan on the Snapdragon laptop; cairo needs
+/// about half). An explicit GSK_RENDERER still wins.
 fn prefer_software_rendering() {
     if std::env::var_os("GSK_RENDERER").is_none() {
         std::env::set_var("GSK_RENDERER", "cairo");
