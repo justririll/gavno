@@ -1,3 +1,16 @@
+/* Palette and metrics follow design/files-mockup.html (dark variant). */
+@define-color bg #0d0f17;
+@define-color surface #181b28;
+@define-color surface2 #1e2232;
+@define-color surface3 #262b3d;
+@define-color fg #e7e8f1;
+@define-color muted #949ab0;
+@define-color line #2a2f42;
+@define-color accent #f2a46a;
+@define-color accent_soft alpha(#f2a46a, 0.15);
+@define-color accent_line alpha(#f2a46a, 0.55);
+@define-color root #ff6b5e;
+
 @define-color accent_bg_color #f2a46a;
 @define-color accent_fg_color #1b1209;
 @define-color accent_color #f2a46a;
@@ -7,22 +20,256 @@
 @define-color view_fg_color #e7e8f1;
 @define-color headerbar_bg_color #1e2232;
 @define-color headerbar_fg_color #e7e8f1;
+@define-color headerbar_backdrop_color #1e2232;
 @define-color sidebar_bg_color #1e2232;
 @define-color sidebar_fg_color #e7e8f1;
-window { font-family: "Geist", sans-serif; }
-headerbar { border-bottom: 1px solid #2a2f42; }
-.path-bar { background: #181b28; border: 1px solid #2a2f42; border-radius: 9px; padding: 0 4px; }
-.path-bar button { padding: 4px 7px; min-height: 24px; }
-.places { background: #1e2232; padding: 10px 8px; }
-.places button { padding: 6px 8px; border-radius: 8px; font-size: 13px; }
-.place-heading { font-size: 11px; font-weight: 600; color: #949ab0; margin: 12px 8px 4px; }
-.folder-icon { color: #7f8be6; }
-.files-grid { padding: 14px; }
-.files-grid child { border-radius: 10px; margin: 3px; }
-.files-grid child:selected, .files-list row:selected { background: alpha(#f2a46a, 0.15); outline: 1px solid alpha(#f2a46a, 0.55); }
-.files-grid .file-tile { padding: 10px 6px 8px; }
-.files-list .file-tile { padding: 5px 8px; }
-.files-list { padding: 6px 10px; }
-.file-tile editablelabel { font-size: 13px; }
-.status-footer { background: #1e2232; color: #949ab0; border-top: 1px solid #2a2f42; padding: 6px 14px; font-size: 12px; }
-.dim-label { color: #949ab0; }
+@define-color popover_bg_color #1e2232;
+@define-color popover_fg_color #e7e8f1;
+@define-color card_bg_color #1e2232;
+@define-color dialog_bg_color #1e2232;
+
+window {
+  font-family: "Geist", "Inter", sans-serif;
+  font-size: 13.5px;
+}
+
+/* ---------- header ---------- */
+.files-header {
+  min-height: 48px;
+  padding: 0 8px 0 10px;
+  background: @surface2;
+  border-bottom: 1px solid @line;
+  box-shadow: none;
+}
+.files-header button,
+.files-header menubutton > button {
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0;
+  border-radius: 9px;
+  color: @fg;
+  background: none;
+  box-shadow: none;
+  border: none;
+}
+.files-header button:hover,
+.files-header menubutton > button:hover {
+  background: @surface3;
+}
+.files-header button:checked {
+  background: @accent_soft;
+  color: @accent;
+}
+.files-header button:disabled {
+  opacity: 0.35;
+  background: none;
+}
+.files-header entry {
+  min-height: 32px;
+  border-radius: 9px;
+  background: @surface;
+  border: 1px solid @line;
+  box-shadow: none;
+}
+.files-header entry:focus-within {
+  border-color: @accent_line;
+  outline: none;
+}
+
+.files-header windowcontrols {
+  margin-left: 6px;
+}
+.files-header windowcontrols button {
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0;
+  margin: 0 2px;
+  border-radius: 999px;
+  background: @surface3;
+}
+.path-bar {
+  min-height: 32px;
+  margin: 0 6px;
+  border-radius: 9px;
+  background: @surface;
+  border: 1px solid @line;
+  padding: 0 4px;
+}
+.path-bar entry {
+  border: none;
+  background: none;
+  font-family: "Geist Mono", monospace;
+  font-size: 13px;
+  font-weight: 500;
+}
+.path-bar button.crumb {
+  min-height: 24px;
+  min-width: 0;
+  padding: 2px 7px;
+  border-radius: 6px;
+  font-size: 13.5px;
+  font-weight: 400;
+}
+.path-bar button.crumb:hover {
+  background: @surface3;
+}
+.path-bar button.crumb.current {
+  font-weight: 600;
+}
+.crumb-sep {
+  color: @muted;
+  font-size: 12px;
+  margin: 0 1px;
+}
+
+/* ---------- sidebar ---------- */
+.places {
+  background: @surface2;
+  padding: 10px 8px;
+  border-right: 1px solid @line;
+}
+paned > separator {
+  min-width: 1px;
+  background: @line;
+}
+.place-heading {
+  margin: 12px 8px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: @muted;
+}
+.places button {
+  min-height: 0;
+  padding: 6px 8px;
+  border-radius: 8px;
+  font-size: 13.5px;
+  font-weight: 400;
+}
+.places button:hover {
+  background: @surface3;
+}
+.places button image {
+  color: @muted;
+}
+.places button.place.on {
+  background: @accent_soft;
+  font-weight: 550;
+}
+.places button.place.on image {
+  color: @accent;
+}
+.capacity {
+  font-family: "Geist Mono", monospace;
+  font-size: 10.5px;
+  font-weight: 500;
+  color: @muted;
+}
+
+/* ---------- items ---------- */
+.files-grid,
+.files-list {
+  background: @surface;
+}
+.files-grid {
+  padding: 14px;
+}
+.files-grid > child {
+  margin: 3px;
+  padding: 0;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: none;
+}
+.files-grid > child:hover {
+  background: @surface2;
+}
+.files-grid > child:selected,
+.files-list row:selected {
+  background: @accent_soft;
+  border-color: @accent_line;
+  color: @fg;
+}
+.files-grid .file-tile {
+  padding: 10px 6px 8px;
+}
+.files-grid .file-tile editablelabel {
+  font-size: 12.5px;
+}
+.files-list {
+  padding: 6px 10px;
+}
+.files-list header button {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: @muted;
+  border-bottom: 1px solid @line;
+  padding: 4px 8px;
+}
+.files-list row {
+  border-radius: 7px;
+  border: 1px solid transparent;
+}
+.files-list row:hover {
+  background: @surface2;
+}
+.files-list .file-tile {
+  padding: 3px 8px;
+}
+.files-list .file-tile editablelabel {
+  font-size: 13px;
+}
+.files-list .dim-label {
+  font-family: "Geist Mono", monospace;
+  font-size: 12px;
+}
+.thumb {
+  border-radius: 6px;
+}
+
+/* ---------- footer ---------- */
+.status-footer {
+  background: @surface2;
+  color: @muted;
+  border-top: 1px solid @line;
+  padding: 6px 14px;
+  font-size: 12px;
+}
+.keycap {
+  font-family: "Geist Mono", monospace;
+  font-size: 10.5px;
+  font-weight: 500;
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid @line;
+  background: @surface;
+  color: @fg;
+}
+.who {
+  font-family: "Geist Mono", monospace;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: @surface3;
+  color: @fg;
+}
+
+.dim-label {
+  color: @muted;
+  opacity: 1;
+}
+
+/* ---------- menus ---------- */
+popover > contents {
+  border-radius: 12px;
+  padding: 5px;
+  border: 1px solid @line;
+}
+popover modelbutton {
+  border-radius: 7px;
+  padding: 6px 9px;
+}
+popover modelbutton:hover {
+  background: @accent_soft;
+}

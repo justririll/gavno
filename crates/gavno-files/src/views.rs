@@ -199,11 +199,18 @@ fn name_factory(
             row.set_width_request(112);
             row.set_height_request(108);
         }
+        let size = if grid { 56 } else { 22 };
         let image = gtk::Image::new();
-        image.set_pixel_size(if grid { 56 } else { 24 });
-        if grid {
-            image.set_halign(gtk::Align::Center);
-        }
+        image.set_pixel_size(size);
+        image.add_css_class("thumb");
+        let icon = crate::icons::icon_area(size);
+        let slot = gtk::Stack::new();
+        slot.set_hhomogeneous(false);
+        slot.set_vhomogeneous(false);
+        slot.add_named(&icon, Some("icon"));
+        slot.add_named(&image, Some("thumb"));
+        slot.set_halign(gtk::Align::Center);
+        slot.set_valign(gtk::Align::Center);
         let label = gtk::EditableLabel::new("");
         label.set_hexpand(true);
         label.set_halign(if grid {
@@ -212,6 +219,9 @@ fn name_factory(
             gtk::Align::Fill
         });
         label.set_width_chars(1);
+        if grid {
+            label.set_alignment(0.5);
+        }
         label.set_max_width_chars(if grid { 16 } else { 120 });
         label.connect_editing_notify(glib::clone!(
             #[weak]
@@ -230,7 +240,7 @@ fn name_factory(
                 }
             }
         ));
-        row.append(&image);
+        row.append(&slot);
         row.append(&label);
         item.set_child(Some(&row));
     });
@@ -242,7 +252,13 @@ fn name_factory(
             return;
         };
         let Some(row) = item.child() else { return };
-        let Some(image) = row.first_child().and_downcast::<gtk::Image>() else {
+        let Some(slot) = row.first_child().and_downcast::<gtk::Stack>() else {
+            return;
+        };
+        let (Some(icon), Some(image)) = (
+            slot.child_by_name("icon").and_downcast::<gtk::DrawingArea>(),
+            slot.child_by_name("thumb").and_downcast::<gtk::Image>(),
+        ) else {
             return;
         };
         let Some(label) = row.last_child().and_downcast::<gtk::EditableLabel>() else {
@@ -255,21 +271,26 @@ fn name_factory(
             info.display_name(),
             model::file(&info).parse_name()
         )));
+        slot.set_visible_child_name("icon");
+        image.set_paintable(None::<&gtk::gdk::Paintable>);
         if model::is_dir(&info) {
-            image.set_icon_name(Some("folder-symbolic"));
-            image.add_css_class("folder-icon");
+            let glyph = model::file(&info)
+                .path()
+                .map(|p| crate::icons::folder_glyph(&p, &glib::home_dir()))
+                .unwrap_or(crate::icons::Glyph::None);
+            crate::icons::set_icon(&icon, &crate::icons::Icon::Folder(glyph));
         } else {
-            image.remove_css_class("folder-icon");
-            if let Some(icon) = info.icon() {
-                image.set_from_gicon(&icon);
-            } else {
-                image.set_icon_name(Some("text-x-generic-symbolic"));
-            }
+            let text = info
+                .content_type()
+                .is_some_and(|t| gio::content_type_is_a(&t, "text/plain"));
+            crate::icons::set_icon(&icon, &crate::icons::file_icon(info.name().to_str().unwrap_or(""), text));
             if grid && crate::thumbs::supported(&info) {
                 let uri = model::file(&info).uri();
                 glib::spawn_future_local(glib::clone!(
                     #[weak]
                     image,
+                    #[weak]
+                    slot,
                     #[weak]
                     item,
                     #[strong]
@@ -285,6 +306,7 @@ fn name_factory(
                                     .is_some_and(|i| model::file(&i).uri() == uri)
                                 {
                                     image.set_paintable(Some(&texture));
+                                    slot.set_visible_child_name("thumb");
                                 }
                             }
                             Ok(None) => {}

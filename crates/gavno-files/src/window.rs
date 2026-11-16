@@ -56,6 +56,7 @@ pub struct FileWindow {
     operations: Operations,
     thumbs: Thumbnails,
     volume_monitor: RefCell<Option<gio::VolumeMonitor>>,
+    places: RefCell<Option<gtk::ScrolledWindow>>,
 }
 
 pub fn open(app: &adw::Application, file: gio::File, selected: Vec<String>) -> Rc<FileWindow> {
@@ -98,14 +99,17 @@ impl FileWindow {
             .default_width(1120)
             .default_height(720)
             .build();
-        let header = adw::HeaderBar::new();
-        header.set_show_title(true);
+        // A hand-built header: AdwHeaderBar only gives its title its natural
+        // width, while the path pill should take all the free space.
+        let header = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        header.add_css_class("files-header");
+        let mut header_end: Vec<gtk::Widget> = Vec::new();
         let back_button = icon_button("go-previous-symbolic", "Back (Alt+Left)");
         let forward_button = icon_button("go-next-symbolic", "Forward (Alt+Right)");
         let up_button = icon_button("go-up-symbolic", "Up (Alt+Up)");
-        header.pack_start(&back_button);
-        header.pack_start(&forward_button);
-        header.pack_start(&up_button);
+        header.append(&back_button);
+        header.append(&forward_button);
+        header.append(&up_button);
         let path_stack = gtk::Stack::new();
         path_stack.add_css_class("path-bar");
         path_stack.set_hexpand(true);
@@ -120,21 +124,21 @@ impl FileWindow {
         path.set_has_frame(false);
         path.set_placeholder_text(Some("Path or file URI · Tab to complete"));
         path_stack.add_named(&path, Some("entry"));
-        header.set_title_widget(Some(&path_stack));
+        header.append(&path_stack);
         let search = gtk::Entry::new();
         search.set_placeholder_text(Some("Filter this folder"));
         search.set_visible(false);
         search.set_width_chars(22);
-        header.pack_end(&search);
+        header_end.push(search.clone().upcast());
         let search_button = gtk::ToggleButton::builder()
             .icon_name("system-search-symbolic")
             .tooltip_text("Search (Ctrl+F for subfolders)")
             .build();
-        header.pack_end(&search_button);
+        header_end.push(search_button.clone().upcast());
         let list_button = icon_button("view-list-symbolic", "List view (Ctrl+2)");
         let grid_button = icon_button("view-grid-symbolic", "Grid view (Ctrl+1)");
-        header.pack_end(&list_button);
-        header.pack_end(&grid_button);
+        header_end.push(list_button.clone().upcast());
+        header_end.push(grid_button.clone().upcast());
         let menu = gio::Menu::new();
         menu.append(Some("Show Hidden Files"), Some("win.hidden"));
         menu.append(Some("New Window"), Some("win.new-window"));
@@ -145,11 +149,11 @@ impl FileWindow {
             .icon_name("open-menu-symbolic")
             .menu_model(&menu)
             .build();
-        header.pack_end(&menu_button);
+        header_end.push(menu_button.clone().upcast());
         let operations = Operations::new();
-        header.pack_end(&operations.button);
+        header_end.push(operations.button.clone().upcast());
         let spinner = gtk::Spinner::new();
-        header.pack_end(&spinner);
+        header_end.push(spinner.clone().upcast());
         let store = gio::ListStore::new::<gio::FileInfo>();
         let query = Rc::new(RefCell::new(String::new()));
         let hidden = Rc::new(Cell::new(false));
@@ -203,8 +207,24 @@ impl FileWindow {
         status.set_hexpand(true);
         status.set_xalign(0.);
         footer.append(&status);
-        let hint = gtk::Label::new(Some("Space  preview   ·   Shift+F4  terminal"));
-        footer.append(&hint);
+        let hints = gtk::Box::new(gtk::Orientation::Horizontal, 5);
+        for (index, (key, what)) in [("Space", "preview"), ("Shift+F4", "terminal")]
+            .into_iter()
+            .enumerate()
+        {
+            if index > 0 {
+                hints.append(&gtk::Label::new(Some("·")));
+            }
+            let keycap = gtk::Label::new(Some(key));
+            keycap.add_css_class("keycap");
+            hints.append(&keycap);
+            hints.append(&gtk::Label::new(Some(what)));
+        }
+        let who = gtk::Label::new(Some(&glib::user_name().to_string_lossy()));
+        who.add_css_class("who");
+        who.set_margin_start(6);
+        hints.append(&who);
+        footer.append(&hints);
         content.append(&footer);
         let paned = gtk::Paned::new(gtk::Orientation::Horizontal);
         paned.set_position(196);
@@ -212,7 +232,13 @@ impl FileWindow {
         paned.set_shrink_start_child(false);
         paned.set_end_child(Some(&content));
         let layout = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        layout.append(&header);
+        for widget in header_end.iter().rev() {
+            header.append(widget);
+        }
+        header.append(&gtk::WindowControls::new(gtk::PackType::End));
+        let handle = gtk::WindowHandle::new();
+        handle.set_child(Some(&header));
+        layout.append(&handle);
         layout.append(&paned);
         paned.set_vexpand(true);
         let toast = adw::ToastOverlay::new();
@@ -257,6 +283,7 @@ impl FileWindow {
             operations,
             thumbs,
             volume_monitor: RefCell::new(None),
+            places: RefCell::new(None),
         });
         slot.replace(Rc::downgrade(&this));
         let (side, monitor) = sidebar::build(
@@ -269,6 +296,7 @@ impl FileWindow {
             this.reporter(),
         );
         paned.set_start_child(Some(&side));
+        this.places.replace(Some(side));
         this.volume_monitor.replace(Some(monitor));
         this.connect();
         this.actions();
@@ -800,13 +828,46 @@ impl FileWindow {
                     self,
                     move |_| this.navigate(gio::File::for_path(&path), true)
                 ));
+                if self.crumbs.first_child().is_some() {
+                    let separator = gtk::Label::new(Some("›"));
+                    separator.add_css_class("crumb-sep");
+                    self.crumbs.append(&separator);
+                }
+                button.add_css_class("crumb");
                 self.crumbs.append(&button);
-                self.crumbs.append(&gtk::Label::new(Some("›")));
+            }
+            if let Some(last) = self.crumbs.last_child() {
+                last.add_css_class("current");
             }
         } else {
             self.crumbs.append(&gtk::Label::new(Some("Trash")));
         }
         self.path_stack.set_visible_child_name("crumbs");
+        drop(file);
+        self.mark_place();
+    }
+    /// Highlights the sidebar entry for the current folder.
+    fn mark_place(&self) {
+        let Some(side) = self.places.borrow().clone() else {
+            return;
+        };
+        let current = self.current.borrow().parse_name().to_string();
+        fn walk(widget: &gtk::Widget, current: &str) {
+            if widget.has_css_class("place") {
+                if widget.tooltip_text().is_some_and(|t| t == current) {
+                    widget.add_css_class("on");
+                } else {
+                    widget.remove_css_class("on");
+                }
+                return;
+            }
+            let mut child = widget.first_child();
+            while let Some(c) = child {
+                walk(&c, current);
+                child = c.next_sibling();
+            }
+        }
+        walk(side.upcast_ref(), &current);
     }
     fn reload(self: &Rc<Self>) {
         if self.recursive.get() {

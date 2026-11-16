@@ -1,5 +1,6 @@
 mod clipboard;
 mod config;
+mod icons;
 mod dbus;
 mod model;
 mod ops;
@@ -14,7 +15,7 @@ use adw::prelude::*;
 fn main() -> glib::ExitCode {
     let app = adw::Application::builder()
         .application_id("org.gavno.Files")
-        .flags(gio::ApplicationFlags::HANDLES_OPEN)
+        .flags(gio::ApplicationFlags::HANDLES_OPEN | gio::ApplicationFlags::CAN_OVERRIDE_APP_ID)
         .build();
     app.connect_startup(|app| {
         adw::StyleManager::default().set_color_scheme(adw::ColorScheme::PreferDark);

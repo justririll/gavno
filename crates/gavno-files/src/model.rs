@@ -106,6 +106,21 @@ pub fn natural_cmp(a: &str, b: &str) -> Ordering {
     (a.len() - i).cmp(&(b.len() - j)).then_with(|| a.cmp(b))
 }
 
+/// Disk capacity the way drives are labelled: decimal units, whole numbers.
+pub fn format_capacity(bytes: u64) -> String {
+    let units = ["B", "KB", "MB", "GB", "TB", "PB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1000. && unit < units.len() - 1 {
+        value /= 1000.;
+        unit += 1;
+    }
+    if value < 10. && unit > 0 {
+        format!("{value:.1} {}", units[unit])
+    } else {
+        format!("{value:.0} {}", units[unit])
+    }
+}
 pub fn format_size(bytes: u64) -> String {
     if bytes < 1024 {
         return format!("{bytes} B");

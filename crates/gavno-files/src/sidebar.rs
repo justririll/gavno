@@ -103,13 +103,14 @@ pub fn build(
                 );
             }
             heading(&container, "Devices");
-            place(
+            let system = place(
                 &container,
                 "System",
                 "drive-harddisk-symbolic",
                 gio::File::for_path("/"),
                 &navigate,
             );
+            capacity(&system, gio::File::for_path("/"));
             for mount in monitor.mounts() {
                 let row = gtk::Box::new(gtk::Orientation::Horizontal, 2);
                 let button = place(
@@ -120,6 +121,7 @@ pub fn build(
                     &navigate,
                 );
                 button.set_hexpand(true);
+                capacity(&button, mount.root());
                 if mount.can_unmount() || mount.can_eject() {
                     let eject = gtk::Button::from_icon_name("media-eject-symbolic");
                     eject.add_css_class("flat");
@@ -310,6 +312,7 @@ fn place(
 ) -> gtk::Button {
     let button = gtk::Button::new();
     button.add_css_class("flat");
+    button.add_css_class("place");
     button.set_tooltip_text(Some(&file.parse_name()));
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
     row.append(&gtk::Image::from_icon_name(icon));
@@ -325,4 +328,31 @@ fn place(
     ));
     container.append(&button);
     button
+}
+
+/// Appends the filesystem size ("512 GB") to a device row once it is known.
+fn capacity(button: &gtk::Button, file: gio::File) {
+    glib::spawn_future_local(glib::clone!(
+        #[weak]
+        button,
+        async move {
+            let Ok(info) = file
+                .query_filesystem_info_future("filesystem::size", glib::Priority::LOW)
+                .await
+            else {
+                return;
+            };
+            let size = info.attribute_uint64("filesystem::size");
+            if size == 0 {
+                return;
+            }
+            if let Some(row) = button.child().and_downcast::<gtk::Box>() {
+                let label = gtk::Label::new(Some(&crate::model::format_capacity(size)));
+                label.add_css_class("capacity");
+                label.set_hexpand(true);
+                label.set_xalign(1.);
+                row.append(&label);
+            }
+        }
+    ));
 }
