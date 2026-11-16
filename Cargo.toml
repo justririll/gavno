@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/gavno", "crates/gavno-agent"]
+members = ["crates/gavno", "crates/gavno-agent", "crates/gavno-files"]
 resolver = "2"
 
 [workspace.package]
