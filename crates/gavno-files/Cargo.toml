@@ -1,0 +1,19 @@
+[package]
+name = "gavno-files"
+description = "A Nautilus-like file manager for the GAVNO desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+gtk = { package = "gtk4", version = "0.10", features = ["v4_18"] }
+adw = { package = "libadwaita", version = "0.8", features = ["v1_6"] }
+gio = "0.21"
+glib = "0.21"
+gdk-pixbuf = "0.21"
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"
+md5 = "0.8"
+lru = "0.16"
+futures-channel = "0.3"
+

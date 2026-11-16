@@ -1,0 +1,28 @@
+@define-color accent_bg_color #f2a46a;
+@define-color accent_fg_color #1b1209;
+@define-color accent_color #f2a46a;
+@define-color window_bg_color #181b28;
+@define-color window_fg_color #e7e8f1;
+@define-color view_bg_color #181b28;
+@define-color view_fg_color #e7e8f1;
+@define-color headerbar_bg_color #1e2232;
+@define-color headerbar_fg_color #e7e8f1;
+@define-color sidebar_bg_color #1e2232;
+@define-color sidebar_fg_color #e7e8f1;
+window { font-family: "Geist", sans-serif; }
+headerbar { border-bottom: 1px solid #2a2f42; }
+.path-bar { background: #181b28; border: 1px solid #2a2f42; border-radius: 9px; padding: 0 4px; }
+.path-bar button { padding: 4px 7px; min-height: 24px; }
+.places { background: #1e2232; padding: 10px 8px; }
+.places button { padding: 6px 8px; border-radius: 8px; font-size: 13px; }
+.place-heading { font-size: 11px; font-weight: 600; color: #949ab0; margin: 12px 8px 4px; }
+.folder-icon { color: #7f8be6; }
+.files-grid { padding: 14px; }
+.files-grid child { border-radius: 10px; margin: 3px; }
+.files-grid child:selected, .files-list row:selected { background: alpha(#f2a46a, 0.15); outline: 1px solid alpha(#f2a46a, 0.55); }
+.files-grid .file-tile { padding: 10px 6px 8px; }
+.files-list .file-tile { padding: 5px 8px; }
+.files-list { padding: 6px 10px; }
+.file-tile editablelabel { font-size: 13px; }
+.status-footer { background: #1e2232; color: #949ab0; border-top: 1px solid #2a2f42; padding: 6px 14px; font-size: 12px; }
+.dim-label { color: #949ab0; }

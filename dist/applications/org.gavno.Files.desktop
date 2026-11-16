@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Files
+Comment=Browse and manage files on the GAVNO desktop
+Exec=gavno-files %U
+Icon=system-file-manager
+Terminal=false
+Categories=System;FileTools;FileManager;
+MimeType=inode/directory;
+StartupNotify=true
+DBusActivatable=true
