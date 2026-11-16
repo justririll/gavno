@@ -10,7 +10,7 @@ pub enum Feature {
     WindowGestures, ResizeMode, Animations, Decorations, Ipc, Screencopy, Launcher, Notifications, Media, ColorManagement,
 }
 impl Feature {
-    pub const ALL: [Self; 16] = [Self::Dock, Self::Bar, Self::Overview, Self::Tiling,
+    pub const ALL: [Self; 17] = [Self::Dock, Self::Bar, Self::Overview, Self::Tiling,
         Self::Snap, Self::Switcher, Self::Gestures, Self::WindowGestures,
         Self::ResizeMode, Self::Animations, Self::Decorations, Self::Ipc, Self::Screencopy, Self::Launcher, Self::Notifications, Self::Media, Self::ColorManagement];
 }
@@ -23,13 +23,13 @@ pub enum FeatureState {
 }
 
 pub struct Features {
-    states: [RefCell<FeatureState>; 16],
-    pending: [Cell<bool>; 16],
+    states: [RefCell<FeatureState>; 17],
+    pending: [Cell<bool>; 17],
     resetting: bool,
     #[cfg(test)]
-    injected: [Cell<bool>; 16],
+    injected: [Cell<bool>; 17],
     #[cfg(test)]
-    pub reset_count: [usize; 16],
+    pub reset_count: [usize; 17],
 }
 impl Features {
     pub fn new(config: &Config) -> Self {
@@ -41,7 +41,7 @@ impl Features {
             states: enabled.map(|on| RefCell::new(if on { FeatureState::Enabled } else { FeatureState::Disabled })),
             pending: std::array::from_fn(|_| Cell::new(false)), resetting: false,
             #[cfg(test)] injected: std::array::from_fn(|_| Cell::new(false)),
-            #[cfg(test)] reset_count: [0; 16],
+            #[cfg(test)] reset_count: [0; 17],
         }
     }
     pub fn on(&self, id: Feature) -> bool { matches!(*self.states[id as usize].borrow(), FeatureState::Enabled) }
