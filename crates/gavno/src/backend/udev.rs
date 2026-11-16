@@ -998,6 +998,9 @@ fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
                 if failures == 1 || failures % 600 == 0 {
                     warn!(?err, output = output.name(), failures, "queue_frame failed");
                 }
+                // The rejected frame's damage counts as drawn; without this the
+                // retry can render nothing and leave the old image on screen.
+                surface.drm_output.reset_buffers();
                 // Re-read the CRTC state from the kernel so the next frame is a
                 // full commit instead of another flip on top of a rejected state.
                 if failures % 3 == 0 {
