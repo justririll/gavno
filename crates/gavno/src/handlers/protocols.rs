@@ -17,6 +17,7 @@ use smithay::{
 };
 
 pub struct Protocols {
+    pub color_management: super::color_management::ColorManagement,
     pub _cursor_shape: CursorShapeManagerState,
     pub activation: XdgActivationState,
     pub activation_serials: std::collections::VecDeque<(
@@ -43,8 +44,10 @@ impl Protocols {
         dh: &DisplayHandle,
         handle: LoopHandle<'static, Gavno>,
         primary: &PrimarySelectionState,
+        color_management: bool,
     ) -> Self {
         Self {
+            color_management: super::color_management::ColorManagement::new(dh, color_management),
             _cursor_shape: CursorShapeManagerState::new::<Gavno>(dh),
             activation: XdgActivationState::new::<Gavno>(dh),
             activation_serials: Default::default(),

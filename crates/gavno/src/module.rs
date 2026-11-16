@@ -7,12 +7,12 @@ use crate::{config::Config, Gavno};
 #[repr(usize)]
 pub enum Feature {
     Dock, Bar, Overview, Tiling, Snap, Switcher, Gestures,
-    WindowGestures, ResizeMode, Animations, Decorations, Ipc, Screencopy, Launcher, Notifications, Media,
+    WindowGestures, ResizeMode, Animations, Decorations, Ipc, Screencopy, Launcher, Notifications, Media, ColorManagement,
 }
 impl Feature {
     pub const ALL: [Self; 16] = [Self::Dock, Self::Bar, Self::Overview, Self::Tiling,
         Self::Snap, Self::Switcher, Self::Gestures, Self::WindowGestures,
-        Self::ResizeMode, Self::Animations, Self::Decorations, Self::Ipc, Self::Screencopy, Self::Launcher, Self::Notifications, Self::Media];
+        Self::ResizeMode, Self::Animations, Self::Decorations, Self::Ipc, Self::Screencopy, Self::Launcher, Self::Notifications, Self::Media, Self::ColorManagement];
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -36,7 +36,7 @@ impl Features {
         let m = &config.modules;
         let enabled = [m.dock && config.dock.enabled, m.bar && config.bar.enabled,
             m.overview, m.tiling, m.snap, m.switcher, m.gestures, m.window_gestures,
-            m.resize_mode, m.animations, m.decorations, m.ipc, m.screencopy, m.launcher, m.notifications, m.media];
+            m.resize_mode, m.animations, m.decorations, m.ipc, m.screencopy, m.launcher, m.notifications, m.media, m.color_management];
         Self {
             states: enabled.map(|on| RefCell::new(if on { FeatureState::Enabled } else { FeatureState::Disabled })),
             pending: std::array::from_fn(|_| Cell::new(false)), resetting: false,
@@ -60,6 +60,10 @@ impl Features {
             *self.states[id as usize].borrow_mut() = FeatureState::Crashed { message };
         }
         self.pending[id as usize].set(true);
+    }
+    /// Disable a feature on a recoverable implementation error without unwinding.
+    pub fn failed(&self, id: Feature, message: String) {
+        self.crashed(id, Box::new(message));
     }
     /// For disjoint field borrows, especially the render path. Resets run at idle.
     pub fn call<R>(&mut self, id: Feature, default: R, f: impl FnOnce() -> R) -> R {
@@ -144,6 +148,10 @@ impl Gavno {
             Feature::Launcher => self.launcher = Default::default(),
             Feature::Notifications => self.reset_notifications(),
             Feature::Media => self.reset_media(),
+            Feature::ColorManagement => {
+                self.protocols.color_management.reset(&self.display_handle);
+                for output in self.space.outputs() { crate::handlers::color_management::reset_output(output); }
+            },
         }
     }
     fn drop_feature_state(&mut self, id: Feature) {
@@ -162,6 +170,10 @@ impl Gavno {
             Feature::Launcher => self.launcher = Default::default(),
             Feature::Notifications => self.reset_notifications(),
             Feature::Media => self.reset_media(),
+            Feature::ColorManagement => {
+                self.protocols.color_management.reset(&self.display_handle);
+                for output in self.space.outputs() { crate::handlers::color_management::reset_output(output); }
+            },
             Feature::Snap | Feature::Tiling => (),
         }
     }

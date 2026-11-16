@@ -551,6 +551,7 @@ options = "caps:escape"
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct ModulesConfig {
+    pub color_management: bool,
     pub dock: bool,
     pub bar: bool,
     pub overview: bool,
@@ -572,7 +573,7 @@ pub struct ModulesConfig {
 }
 impl Default for ModulesConfig {
     fn default() -> Self {
-        Self { dock: true, bar: true, overview: true, tiling: true, snap: true, switcher: true, gestures: true, window_gestures: true, resize_mode: true, animations: true, decorations: true, ipc: true, screencopy: true, launcher: true, notifications: true, media: true, unknown: Default::default() }
+        Self { dock: true, bar: true, overview: true, tiling: true, snap: true, switcher: true, gestures: true, window_gestures: true, resize_mode: true, animations: true, decorations: true, ipc: true, screencopy: true, launcher: true, notifications: true, media: true, color_management: true, unknown: Default::default() }
     }
 }
 

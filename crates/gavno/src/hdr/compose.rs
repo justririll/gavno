@@ -26,6 +26,7 @@ pub struct Composition {
     program: GlesTexProgram,
     pub white_nits: f32,
     force_damage: bool,
+    extended: bool,
 }
 
 impl Composition {
@@ -37,6 +38,7 @@ impl Composition {
         let mode = output.current_mode().ok_or("output has no mode")?;
         let size = (mode.size.w, mode.size.h).into();
         let mut texture = None;
+        let mut extended = false;
         for format in [Fourcc::Abgr16161616f, Fourcc::Abgr2101010] {
             match renderer.create_buffer(format, size) {
                 Ok(mut candidate) => {
@@ -44,6 +46,7 @@ impl Composition {
                     match renderable {
                         Ok(()) => {
                             texture = Some(candidate);
+                            extended = format == Fourcc::Abgr16161616f;
                             break;
                         }
                         Err(error) => {
@@ -60,7 +63,8 @@ impl Composition {
         let program = renderer
             .compile_custom_texture_shader(
                 crate::color::output_shader(),
-                &[UniformName::new("white_nits", UniformType::_1f)],
+                &[UniformName::new("white_nits", UniformType::_1f),
+                  UniformName::new("extended_input", UniformType::_1f)],
             )
             .map_err(|e| e.to_string())?;
         Ok(Self {
@@ -79,6 +83,7 @@ impl Composition {
             program,
             white_nits,
             force_damage: true,
+            extended,
         })
     }
 
@@ -90,13 +95,17 @@ impl Composition {
         }
     }
 
-    pub fn render<E: RenderElement<GlesRenderer>>(
+    pub fn render(
         &mut self,
         renderer: &mut GlesRenderer,
         output: &Output,
-        elements: &[E],
+        elements: &[crate::render::GavnoRenderElement],
         clear: [f32; 4],
     ) -> Result<(PqElement, RenderElementStates), String> {
+        let extended_input = elements.iter().any(|e| matches!(e, crate::render::GavnoRenderElement::Color(_)));
+        if !self.extended && extended_input {
+            return Err("HDR client color requires renderable FP16 composition".into());
+        }
         let mode = output.current_mode().ok_or("output has no mode")?;
         let mut states = RenderElementStates::default();
         let force = self.force_damage;
@@ -139,6 +148,7 @@ impl Composition {
                 program: self.program.clone(),
                 white_nits: self.white_nits,
                 size: mode.size,
+                extended_input,
             },
             states,
         ))
@@ -153,6 +163,7 @@ pub struct PqElement {
     program: GlesTexProgram,
     white_nits: f32,
     size: Size<i32, Physical>,
+    extended_input: bool,
 }
 impl Element for PqElement {
     fn id(&self) -> &Id {
@@ -192,7 +203,8 @@ impl RenderElement<GlesRenderer> for PqElement {
     ) -> Result<(), GlesError> {
         frame.override_default_tex_program(
             self.program.clone(),
-            vec![Uniform::new("white_nits", self.white_nits)],
+            vec![Uniform::new("white_nits", self.white_nits),
+                 Uniform::new("extended_input", if self.extended_input { 1.0f32 } else { 0.0 })],
         );
         let result = <TextureRenderElement<GlesTexture> as RenderElement<GlesRenderer>>::draw(
             &self.inner,
