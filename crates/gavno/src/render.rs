@@ -132,15 +132,18 @@ pub fn output_elements(
 ) -> Vec<GavnoRenderElement> {
     let mut descriptions = std::collections::HashMap::new();
     if features.on(Feature::ColorManagement) && crate::handlers::color_management::any_tagged() {
-        let mut collect = |surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface| {
-            if let Some(description) = crate::handlers::color_management::surface_description(surface) {
+        // The walks below hold each surface's lock: read the locked states,
+        // never call with_states on the same surface (that deadlocks).
+        let mut collect = |surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+                           states: &smithay::wayland::compositor::SurfaceData| {
+            if let Some(description) = crate::handlers::color_management::states_description(states) {
                 descriptions.insert(crate::handlers::color_management::surface_id(surface), description);
             }
         };
-        for window in space.elements() { window.with_surfaces(|surface, _| collect(surface)); }
-        for layer in layer_map_for_output(output).layers() { layer.with_surfaces(|surface, _| collect(surface)); }
-        if let CursorImageStatus::Surface(surface) = cursor_status { with_surfaces_surface_tree(surface, |s, _| collect(s)); }
-        if let Some(surface) = locks.surface(output) { with_surfaces_surface_tree(surface, |s, _| collect(s)); }
+        for window in space.elements() { window.with_surfaces(|surface, states| collect(surface, states)); }
+        for layer in layer_map_for_output(output).layers() { layer.with_surfaces(|surface, states| collect(surface, states)); }
+        if let CursorImageStatus::Surface(surface) = cursor_status { with_surfaces_surface_tree(surface, |s, states| collect(s, states)); }
+        if let Some(surface) = locks.surface(output) { with_surfaces_surface_tree(surface, |s, states| collect(s, states)); }
     }
     let elements = output_elements_inner(renderer, space, output, pointer_pos, cursor_status, cursor, time, greeter, lock, overlay, window_decor, animations, locks, workspaces, overview, dock, topbar, config, features, osd, launcher);
     if descriptions.is_empty() { crate::hdr::surface::reset(output); return elements; }
@@ -405,7 +408,7 @@ pub fn post_render(
                 default_primary_scanout_output_compare,
             );
             if let Some(primary) = surface_primary_scanout_output(surface, surface_states) {
-                crate::handlers::color_management::surface_output(surface, &primary);
+                crate::handlers::color_management::surface_output(surface_states, &primary);
                 let scale = primary.current_scale().fractional_scale();
                 with_fractional_scale(surface_states, |fs| fs.set_preferred_scale(scale));
             }
@@ -457,7 +460,7 @@ fn layers_post_render(
                 default_primary_scanout_output_compare,
             );
             if let Some(primary) = surface_primary_scanout_output(surface, surface_states) {
-                crate::handlers::color_management::surface_output(surface, &primary);
+                crate::handlers::color_management::surface_output(surface_states, &primary);
                 let scale = primary.current_scale().fractional_scale();
                 with_fractional_scale(surface_states, |fs| fs.set_preferred_scale(scale));
             }

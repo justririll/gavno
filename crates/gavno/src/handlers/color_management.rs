@@ -220,20 +220,26 @@ pub fn output_changed(output: &Output, hdr: bool, caps: crate::hdr::edid::Capabi
     });
 }
 
+#[cfg(test)]
 pub fn surface_description(surface: &WlSurface) -> Option<Arc<Description>> {
-    with_states(surface, |s| s.cached_state.get::<SurfaceColor>().current().description.clone().flatten())
+    with_states(surface, states_description)
+}
+/// A surface's committed description, from states that are already locked
+/// (inside `with_surfaces` walks, where `with_states` would deadlock).
+pub fn states_description(states: &smithay::wayland::compositor::SurfaceData) -> Option<Arc<Description>> {
+    states.cached_state.get::<SurfaceColor>().current().description.clone().flatten()
 }
 /// Refresh feedback on output migration without a timer or a synthetic frame.
-pub fn surface_output(surface: &WlSurface, output: &Output) {
-    with_states(surface, |s| {
-        if let Some(data) = s.data_map.get::<Mutex<SurfaceData>>() {
-            lock(data).feedback.retain(|w| {
-                let Ok(resource) = w.upgrade() else { return false; };
-                if let Some(data) = resource.data::<FeedbackRef>() { prefer(&resource,data,output); }
-                true
-            });
-        }
-    });
+/// Takes the surface's already locked states: it is called from inside
+/// `with_surfaces` walks, and locking the surface again would deadlock.
+pub fn surface_output(states: &smithay::wayland::compositor::SurfaceData, output: &Output) {
+    if let Some(data) = states.data_map.get::<Mutex<SurfaceData>>() {
+        lock(data).feedback.retain(|w| {
+            let Ok(resource) = w.upgrade() else { return false; };
+            if let Some(data) = resource.data::<FeedbackRef>() { prefer(&resource,data,output); }
+            true
+        });
+    }
 }
 fn prefer(resource: &WpColorManagementSurfaceFeedbackV1, data: &FeedbackRef, output: &Output) {
     let mut state = lock(output_color(output));
