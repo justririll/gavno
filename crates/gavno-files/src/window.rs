@@ -57,6 +57,8 @@ pub struct FileWindow {
     thumbs: Thumbnails,
     volume_monitor: RefCell<Option<gio::VolumeMonitor>>,
     places: RefCell<Option<gtk::ScrolledWindow>>,
+    dock: Rc<crate::dock::Dock>,
+    shortcuts: gtk::ShortcutController,
 }
 
 pub fn open(app: &adw::Application, file: gio::File, selected: Vec<String>) -> Rc<FileWindow> {
@@ -199,8 +201,39 @@ impl FileWindow {
         empty.add_css_class("dim-label");
         empty.set_can_target(false);
         overlay.add_overlay(&empty);
+        // File-view shortcuts are local to the view so the docked terminal
+        // and text entries keep Ctrl+C, Ctrl+L and friends.
+        let shortcuts = gtk::ShortcutController::new();
+        overlay.add_controller(shortcuts.clone());
+        let dock = crate::dock::Dock::new(
+            Rc::new(glib::clone!(
+                #[strong]
+                slot,
+                move |path: std::path::PathBuf| if let Some(w) = slot.borrow().upgrade() {
+                    let file = gio::File::for_path(&path);
+                    if file != *w.current.borrow() {
+                        w.navigate(file, true);
+                    }
+                }
+            )),
+            Rc::new(glib::clone!(
+                #[strong]
+                slot,
+                move |path: std::path::PathBuf| if let Some(w) = slot.borrow().upgrade() {
+                    w.external_terminal(path);
+                }
+            )),
+            Rc::new(glib::clone!(
+                #[strong]
+                slot,
+                move |message: String| if let Some(w) = slot.borrow().upgrade() {
+                    w.notify(&message);
+                }
+            )),
+        );
         let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
         content.append(&overlay);
+        content.append(&dock.revealer);
         let footer = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         footer.add_css_class("status-footer");
         let status = gtk::Label::new(Some("Loading…"));
@@ -208,7 +241,7 @@ impl FileWindow {
         status.set_xalign(0.);
         footer.append(&status);
         let hints = gtk::Box::new(gtk::Orientation::Horizontal, 5);
-        for (index, (key, what)) in [("Space", "preview"), ("Shift+F4", "terminal")]
+        for (index, (key, what)) in [("F4", "terminal"), ("Shift+F4", "in window")]
             .into_iter()
             .enumerate()
         {
@@ -284,6 +317,8 @@ impl FileWindow {
             thumbs,
             volume_monitor: RefCell::new(None),
             places: RefCell::new(None),
+            dock,
+            shortcuts,
         });
         slot.replace(Rc::downgrade(&this));
         let (side, monitor) = sidebar::build(
@@ -624,8 +659,21 @@ impl FileWindow {
             move |_, _| run(&this)
         ));
         self.window.add_action(&action);
-        if !keys.is_empty() {
+        if keys.is_empty() {
+            return;
+        }
+        // Terminal keys work everywhere; the rest only in the file view.
+        if matches!(name, "dock" | "terminal" | "new-window") {
             self.app.set_accels_for_action(&format!("win.{name}"), keys);
+            return;
+        }
+        for key in keys {
+            if let Some(trigger) = gtk::ShortcutTrigger::parse_string(key) {
+                self.shortcuts.add_shortcut(gtk::Shortcut::new(
+                    Some(trigger),
+                    Some(gtk::NamedAction::new(&format!("win.{name}"))),
+                ));
+            }
         }
     }
     fn actions(self: &Rc<Self>) {
@@ -674,7 +722,17 @@ impl FileWindow {
         self.action("copy", &["<Control>c"], |w| w.copy(false));
         self.action("cut", &["<Control>x"], |w| w.copy(true));
         self.action("paste", &["<Control>v"], |w| w.paste());
-        self.action("terminal", &["<Shift>F4"], |w| w.terminal());
+        self.action("terminal", &["<Shift>F4"], |w| {
+            if w.dock.has_focus() {
+                if let Some(dir) = w.dock.cwd() {
+                    w.external_terminal(dir);
+                }
+                w.dock.hide();
+            } else {
+                w.terminal();
+            }
+        });
+        self.action("dock", &["F4"], |w| w.toggle_dock());
         self.action("open", &[], |w| w.open_selected());
         self.action("open-with", &[], |w| w.open_with());
         self.action("rename", &[], |w| w.views.rename_selected());
@@ -788,6 +846,9 @@ impl FileWindow {
             self.forward.borrow_mut().clear();
         }
         self.current.replace(file.clone());
+        if let Some(path) = file.path() {
+            self.dock.follow(&path);
+        }
         self.search_cancel.borrow().cancel();
         self.recursive.set(false);
         self.changing.set(true);
@@ -1473,6 +1534,30 @@ impl FileWindow {
             self.notify("Open in Terminal requires a local folder");
             return;
         };
+        self.external_terminal(path);
+    }
+    /// Slides the docked terminal up in the selected folder or the current
+    /// one, or hides it.
+    fn toggle_dock(self: &Rc<Self>) {
+        if self.dock.is_open() {
+            self.dock.hide();
+            self.views.stack.child_focus(gtk::DirectionType::TabForward);
+            return;
+        }
+        let folder = self
+            .views
+            .selected()
+            .first()
+            .filter(|i| model::is_dir(i))
+            .map(model::file)
+            .unwrap_or_else(|| self.current.borrow().clone());
+        match folder.path() {
+            Some(path) => self.dock.open(&path),
+            None => self.notify("The terminal needs a local folder"),
+        }
+    }
+    /// Starts the configured terminal emulator in `path`.
+    fn external_terminal(self: &Rc<Self>, path: std::path::PathBuf) {
         let command = self.config.borrow().terminal_command();
         if command.contains('\0') {
             self.notify("The terminal command contains a null character");
@@ -1709,7 +1794,8 @@ impl FileWindow {
                 }
             }
             if selected.is_empty() || selected.first().is_some_and(model::is_dir) {
-                menu.append(Some("Open in Terminal"), Some("win.terminal"));
+                menu.append(Some("Terminal in This Folder"), Some("win.dock"));
+                menu.append(Some("Terminal in New Window"), Some("win.terminal"));
             }
             let edit = gio::Menu::new();
             if !selected.is_empty() {

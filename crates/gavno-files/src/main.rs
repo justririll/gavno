@@ -1,5 +1,6 @@
 mod clipboard;
 mod config;
+mod dock;
 mod icons;
 mod dbus;
 mod model;

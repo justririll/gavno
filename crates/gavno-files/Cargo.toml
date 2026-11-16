@@ -16,4 +16,6 @@ toml = "0.9"
 md5 = "0.8"
 lru = "0.16"
 futures-channel = "0.3"
+vte4 = { version = "0.9", features = ["v0_76"] }
+libc = "0.2"
 
