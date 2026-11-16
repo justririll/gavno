@@ -55,10 +55,12 @@ pub fn physical_region(
     scale: f64,
     output_size: (i32, i32),
 ) -> Option<Rectangle<i32, Physical>> {
+    // Client-supplied values: add in f64 so huge coordinates cannot overflow,
+    // and let the saturating float-to-int casts clamp them.
     let x0 = (logical.loc.x as f64 * scale).floor() as i32;
     let y0 = (logical.loc.y as f64 * scale).floor() as i32;
-    let x1 = ((logical.loc.x + logical.size.w) as f64 * scale).ceil() as i32;
-    let y1 = ((logical.loc.y + logical.size.h) as f64 * scale).ceil() as i32;
+    let x1 = ((logical.loc.x as f64 + logical.size.w as f64) * scale).ceil() as i32;
+    let y1 = ((logical.loc.y as f64 + logical.size.h as f64) * scale).ceil() as i32;
     let (x0, y0) = (x0.max(0), y0.max(0));
     let (x1, y1) = (x1.min(output_size.0), y1.min(output_size.1));
     (x1 > x0 && y1 > y0).then(|| Rectangle::new((x0, y0).into(), (x1 - x0, y1 - y0).into()))
@@ -295,6 +297,10 @@ mod tests {
         let clipped = physical_region(Rectangle::new((-10, -10).into(), (20, 20).into()), 1.0, (100, 100)).unwrap();
         assert_eq!((clipped.loc.x, clipped.size.w), (0, 10));
         assert!(physical_region(Rectangle::new((200, 0).into(), (10, 10).into()), 1.0, (100, 100)).is_none());
+        let huge = physical_region(Rectangle::new((i32::MAX, i32::MAX).into(), (i32::MAX, i32::MAX).into()), 1.75, (100, 100));
+        assert!(huge.is_none());
+        let negative = physical_region(Rectangle::new((i32::MIN, 0).into(), (i32::MAX, 10).into()), 1.0, (100, 100));
+        assert!(negative.is_none());
     }
 
     #[test]
