@@ -61,6 +61,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "-c" | "--command" => startup_cmd = args.next(),
             "-h" | "--help" => {
                 println!("usage: gavno [--tty | --winit] [--greeter] [-c <command>]");
+                println!("       gavno --version");
+                return Ok(());
+            }
+            "-V" | "--version" => {
+                println!("gavno {}", env!("CARGO_PKG_VERSION"));
+                println!("License GPL-3.0-or-later <https://gnu.org/licenses/gpl.html>.");
+                println!("This is free software: you are free to change and redistribute it.");
+                println!("There is NO WARRANTY, to the extent permitted by law.");
                 return Ok(());
             }
             other => {

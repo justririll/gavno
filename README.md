@@ -141,3 +141,14 @@ It connects via `GAVNO_SOCK`, falling back to `$XDG_RUNTIME_DIR/gavno/ipc.sock`,
 and exposes the same five tools. Window tool arguments use numeric ids;
 compact screen output labels them `w3`, `w4`, etc. If GAVNO is unavailable,
 tool calls return an error while the MCP server stays running.
+
+## License
+
+Copyright (C) 2026 kirill and the GAVNO contributors.
+
+GAVNO is free software: you can redistribute it and/or modify it under the
+terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version. It is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See [COPYING](COPYING) for the full text.
