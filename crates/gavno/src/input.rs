@@ -108,6 +108,11 @@ impl Gavno {
                     gv.switcher_finish(true);
                 }
                 let sym = handle.modified_sym().raw();
+                if gv.bar_key(sym, raw_code, key_state == KeyState::Pressed) {
+                    if key_state == KeyState::Pressed && !gv.suppressed_keys.contains(&raw_code) { gv.suppressed_keys.push(raw_code); }
+                    if key_state == KeyState::Released { gv.suppressed_keys.retain(|k| *k != raw_code); }
+                    return FilterResult::Intercept(None);
+                }
                 if gv.greeter.is_none() && !gv.protocols.locks.locked && !gv.seat.keyboard_shortcuts_inhibited() {
                     let is_super = matches!(sym, keysyms::KEY_Super_L | keysyms::KEY_Super_R);
                     let other_down = gv.desktop_keys.iter().any(|k| *k != raw_code);
@@ -372,6 +377,7 @@ impl Gavno {
             delta: event.delta(), delta_unaccel: event.delta_unaccel(), utime: event.time(),
         });
         if !allowed { pointer.frame(self); return; }
+        self.bar_motion(pos);
         let resizing=self.resize_mode_motion(pos);
         self.overview_motion(pos);
         let new_under = if resizing {None} else {self.surface_under(pos)};
@@ -407,6 +413,7 @@ impl Gavno {
         }
         let serial = SERIAL_COUNTER.next_serial();
         let pointer = self.seat.get_pointer().unwrap();
+        self.bar_motion(pos);
         let resizing=self.resize_mode_motion(pos);
         self.overview_motion(pos);
         let under = if resizing {None} else {self.surface_under(pos)};

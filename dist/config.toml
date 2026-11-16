@@ -41,6 +41,9 @@
 # sdr_white_nits = 203
 
 # [keyboard]
+# Key repeat applies to clients and hardware media keys; 0 Hz disables it.
+# repeat_delay = 300
+# repeat_rate = 30
 # XKB layout(s) passed to the seat keyboard. Default: "us,ru".
 # layout = "us,ru"
 

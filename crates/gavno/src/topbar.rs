@@ -27,16 +27,21 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-pub const PANEL: i32 = 30;
+pub const PANEL: i32 = 32;
 pub const GLASS: [f32; 4] = [0.055, 0.065, 0.09, 0.90];
 pub const LINE: [f32; 4] = [1.0, 1.0, 1.0, 0.14];
-/// The UI font has no power glyph, so the bar draws a themed icon instead.
-const POWER_ICONS: [&str; 3] = [
-    "system-shutdown-symbolic",
-    "system-shutdown",
-    "system-log-out",
-];
-const POWER_ICON: i32 = 16;
+#[path = "bar/calendar.rs"]
+pub mod calendar;
+#[path = "bar/control.rs"]
+mod control;
+#[path = "bar/layout.rs"]
+pub mod geometry;
+#[path = "bar/osd.rs"]
+pub mod osd;
+#[path = "bar/status.rs"]
+pub mod status;
+use geometry::{rect, Item, Layout, PopoverLayout, Rect};
+use smithay::utils::Point;
 
 pub fn next_minute(now: Duration) -> Duration {
     Duration::from_secs(60) - Duration::from_nanos((now.as_nanos() % 60_000_000_000) as u64)
@@ -114,6 +119,11 @@ pub struct Canvas {
     pub text: TextRenderer,
     pub elements: Vec<GavnoRenderElement>,
     pub scale: f64,
+    pub alpha: f32,
+    pub zoom: f64,
+    pub anchor: Point<f64, Logical>,
+    #[cfg(test)]
+    drawn: Vec<Rect>,
 }
 impl Default for Canvas {
     fn default() -> Self {
@@ -125,13 +135,22 @@ impl Default for Canvas {
             text: TextRenderer::new(),
             elements: Vec::new(),
             scale: 1.0,
+            alpha: 1.0,
+            zoom: 1.0,
+            anchor: (0.0, 0.0).into(),
+            #[cfg(test)]
+            drawn: Vec::new(),
         }
     }
 }
 impl Canvas {
     pub fn begin(&mut self, renderer: &mut GlesRenderer, scale: f64) {
         self.scale = scale;
+        self.alpha = 1.0;
+        self.zoom = 1.0;
         self.used = 0;
+        #[cfg(test)]
+        self.drawn.clear();
         self.elements.clear();
         if self.shaders.is_none() && !self.failed {
             match Shaders::compile(renderer) {
@@ -151,6 +170,9 @@ impl Canvas {
         border: f32,
         line: [f32; 4],
     ) {
+        let rect = self.mapped(rect);
+        #[cfg(test)]
+        self.drawn.push(rect);
         if self.used == self.boxes.len() {
             self.boxes.push(ShaderBox::default());
         }
@@ -159,17 +181,18 @@ impl Canvas {
                 &mut self.boxes[self.used],
                 shaders,
                 rect,
-                radius * self.scale as f32,
+                radius * self.scale as f32 * self.zoom as f32,
                 color,
                 border * self.scale as f32,
                 line,
-                1.0,
+                self.alpha,
                 self.scale,
             )));
         }
         self.used += 1;
     }
     pub fn shadow(&mut self, rect: Rectangle<i32, Logical>, radius: f32) {
+        let rect = self.mapped(rect);
         if self.used == self.boxes.len() {
             self.boxes.push(ShaderBox::default());
         }
@@ -179,11 +202,11 @@ impl Canvas {
                     &mut self.boxes[self.used],
                     shaders,
                     rect,
-                    radius,
+                    radius * self.zoom as f32,
                     20,
                     12,
                     [0.0, 0.0, 0.0, 0.38],
-                    1.0,
+                    self.alpha,
                     self.scale,
                 )));
         }
@@ -201,45 +224,88 @@ impl Canvas {
         if width <= 0 {
             return;
         }
-        let style = TextStyleSpec {
-            size,
-            weight: Weight::Medium,
-            color: [0.96, 0.95, 0.98, 1.0],
-            tracking: 0.0,
-        };
-        let mut value: String = value
-            .chars()
-            .filter(|c| !c.is_control())
-            .take(160)
-            .collect();
-        if self.text.measure(&value, style) > width as f32 {
-            while !value.is_empty() && self.text.measure(&format!("{value}…"), style) > width as f32
-            {
-                value.pop();
-            }
-            value.push('…');
-            if self.text.measure(&value, style) > width as f32 {
-                return;
-            }
-        }
+        self.styled_label(renderer, value, x, y, width, label_style(size));
+    }
+    pub fn styled_label(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        value: &str,
+        x: i32,
+        y: i32,
+        width: i32,
+        style: TextStyleSpec,
+    ) {
+        let value = ellipsize(&mut self.text, value, style, width);
         if let Some(img) = self.text.render(&value, style, self.scale) {
+            let destination = self.mapped(rect(x, y, img.logical_w, img.logical_h));
             if let Ok(e) = MemoryRenderBufferRenderElement::from_buffer(
                 renderer,
                 (
-                    (x as f64 * self.scale).round(),
-                    (y as f64 * self.scale).round(),
+                    (destination.loc.x as f64 * self.scale).round(),
+                    (destination.loc.y as f64 * self.scale).round(),
                 ),
                 &img.buffer,
-                None,
+                Some(self.alpha),
                 Some(Rectangle::from_size(
                     (img.width as f64, img.height as f64).into(),
                 )),
-                Some((img.logical_w, img.logical_h).into()),
+                Some(destination.size),
                 Kind::Unspecified,
             ) {
                 self.elements.push(GavnoRenderElement::Memory(e));
             }
         }
+    }
+    pub fn mapped(&self, r: Rect) -> Rect {
+        rect(
+            (self.anchor.x + (r.loc.x as f64 - self.anchor.x) * self.zoom).round() as i32,
+            (self.anchor.y + (r.loc.y as f64 - self.anchor.y) * self.zoom).round() as i32,
+            (r.size.w as f64 * self.zoom).round() as i32,
+            (r.size.h as f64 * self.zoom).round() as i32,
+        )
+    }
+    pub fn icon(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        icons: &mut Icons,
+        names: &[&str],
+        theme: &str,
+        r: Rect,
+    ) -> bool {
+        self.colored_icon(renderer, icons, names, theme, r, None)
+    }
+    pub fn colored_icon(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        icons: &mut Icons,
+        names: &[&str],
+        theme: &str,
+        r: Rect,
+        color: Option<[u8; 3]>,
+    ) -> bool {
+        let px = (r.size.w as f64 * self.scale).ceil() as u32;
+        let Some(buffer) = names.iter().find_map(|name| match color {
+            Some(color) => icons.get_tinted_color(name, px, theme, color),
+            None => icons.get_tinted(name, px, theme),
+        }) else {
+            return false;
+        };
+        let r = self.mapped(r);
+        if let Ok(e) = MemoryRenderBufferRenderElement::from_buffer(
+            renderer,
+            (
+                (r.loc.x as f64 * self.scale).round(),
+                (r.loc.y as f64 * self.scale).round(),
+            ),
+            &buffer,
+            Some(self.alpha),
+            Some(Rectangle::from_size((px as f64, px as f64).into())),
+            Some(r.size),
+            Kind::Unspecified,
+        ) {
+            self.elements.push(GavnoRenderElement::Memory(e));
+        }
+        true
     }
     pub fn finish(&mut self) -> Vec<GavnoRenderElement> {
         std::mem::take(&mut self.elements)
@@ -249,7 +315,35 @@ impl Canvas {
     }
 }
 
-#[derive(Clone, Copy)]
+pub fn label_style(size: f32) -> TextStyleSpec {
+    TextStyleSpec {
+        size,
+        weight: Weight::Medium,
+        color: [0.96, 0.95, 0.98, 1.0],
+        tracking: 0.0,
+    }
+}
+pub fn ellipsize(text: &mut TextRenderer, value: &str, style: TextStyleSpec, width: i32) -> String {
+    if width <= 0 {
+        return String::new();
+    }
+    let mut value: String = value
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(1024)
+        .collect();
+    if text.measure(&value, style) > width as f32 {
+        while !value.is_empty() && text.measure(&format!("{value}…"), style) > width as f32 {
+            value.pop();
+        }
+        value.push('…');
+        if text.measure(&value, style) > width as f32 {
+            value.clear();
+        }
+    }
+    value
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PowerAction {
     Lock,
     Logout,
@@ -257,13 +351,25 @@ pub enum PowerAction {
     Restart,
     Shutdown,
 }
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BarAction {
     Tiling,
     Workspace(usize),
     Layout,
     PowerMenu,
+    Calendar,
+    Month(i32),
     Power(PowerAction),
+    Mute,
+    Volume,
+    Brightness,
+    Network,
+    Consume,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Popover {
+    Quick,
+    Calendar,
 }
 struct BarView {
     output: Output,
@@ -271,44 +377,77 @@ struct BarView {
     dots: Vec<Spring>,
     hits: Vec<(Rectangle<f64, Logical>, BarAction)>,
     visible: bool,
+    hover: Option<BarAction>,
+    layout: Option<Layout>,
+    popover: Option<PopoverLayout>,
 }
-
 pub struct TopBar {
     views: Vec<BarView>,
     pub enabled: bool,
     pub title: String,
     pub layout: String,
+    app_icon: String,
+    entries: crate::desktop_entry::DesktopEntries,
+    multiple_layouts: bool,
     clock: String,
-    battery: Option<Battery>,
     accent: [f32; 4],
     icons: Icons,
     icon_theme: String,
     pub menu: Option<Output>,
+    popover: Popover,
+    popover_output: Option<Output>,
+    opening: Spring,
+    month: (i32, u32),
     clock_timer: Option<RegistrationToken>,
-    battery_timer: Option<RegistrationToken>,
     pub scroll: f64,
+    status: status::Snapshot,
+    worker: Option<std::sync::mpsc::Sender<status::Command>>,
+    worker_started: bool,
+    status_visible: bool,
+    drag: Option<(Output, BarAction)>,
+    pub osd: osd::Osd,
+    osd_timer: Option<RegistrationToken>,
+    repeat: Option<(u32, status::Media, RegistrationToken)>,
+    core_keys: Vec<u32>,
 }
 impl Default for TopBar {
     fn default() -> Self {
+        let today = theme::LocalTime::now();
         Self {
             views: Vec::new(),
             enabled: true,
             title: String::new(),
-            layout: "US".into(),
+            layout: "EN".into(),
+            app_icon: String::new(),
+            entries: Default::default(),
+            multiple_layouts: true,
             clock: clock_label(),
-            battery: None,
             accent: [0.95, 0.64, 0.42, 1.0],
             icons: Default::default(),
             icon_theme: crate::config::DockConfig::default().icon_theme,
             menu: None,
+            popover: Popover::Quick,
+            popover_output: None,
+            opening: Spring::new(0.0, SpringParams::SNAPPY),
+            month: (today.year, today.month),
             clock_timer: None,
-            battery_timer: None,
             scroll: 0.0,
+            status: Default::default(),
+            worker: None,
+            worker_started: false,
+            status_visible: false,
+            drag: None,
+            osd: Default::default(),
+            osd_timer: None,
+            repeat: None,
+            core_keys: Vec::new(),
         }
     }
 }
 impl TopBar {
-    pub fn accent(&self) -> [f32; 4] { self.accent }
+    pub fn accent(&self) -> [f32; 4] {
+        self.accent
+    }
     fn update_clock(&mut self) {
         self.clock = clock_label();
         let t = theme::LocalTime::now();
@@ -317,22 +456,26 @@ impl TopBar {
         self.accent = [a[0], a[1], a[2], 1.0];
     }
     pub fn active(&self) -> bool {
-        self.views
-            .iter()
-            .any(|v| v.visible && v.dots.iter().any(Spring::is_active))
+        self.osd.is_animating()
+            || self.opening.is_active()
+            || self
+                .views
+                .iter()
+                .any(|v| v.visible && v.dots.iter().any(Spring::is_active))
     }
-    pub fn action(
-        &self,
-        output: &Output,
-        pos: smithay::utils::Point<f64, Logical>,
-    ) -> Option<BarAction> {
+    pub fn close(&mut self) {
+        self.menu = None;
+        self.opening.set(0.0);
+        self.drag = None;
+    }
+    pub fn action(&self, output: &Output, p: Point<f64, Logical>) -> Option<BarAction> {
         self.views
             .iter()
             .find(|v| &v.output == output && v.visible)?
             .hits
             .iter()
             .rev()
-            .find(|(r, _)| r.contains(pos))
+            .find(|(r, _)| r.contains(p))
             .map(|(_, a)| a.clone())
     }
     pub fn elements(
@@ -353,27 +496,28 @@ impl TopBar {
                 dots: Vec::new(),
                 hits: Vec::new(),
                 visible,
+                hover: None,
+                layout: None,
+                popover: None,
             });
             self.views.len() - 1
         };
+        self.opening
+            .set(if self.menu.is_some() { 1.0 } else { 0.0 });
+        self.opening.advance(now);
         let v = &mut self.views[index];
         v.visible = visible && self.enabled;
         if !v.visible {
             v.hits.clear();
+            v.popover = None;
             return Vec::new();
         }
         let c = &mut v.canvas;
         c.begin(renderer, output.current_scale().fractional_scale());
         v.hits.clear();
+        c.rect(rect(0, 0, width, PANEL), 0.0, GLASS, 0.0, LINE);
         c.rect(
-            Rectangle::new((0, 0).into(), (width, PANEL).into()),
-            0.0,
-            GLASS,
-            0.0,
-            LINE,
-        );
-        c.rect(
-            Rectangle::new((0, PANEL - 1).into(), (width, 1).into()),
+            rect(0, PANEL - 1, width, 1),
             0.0,
             [self.accent[0], self.accent[1], self.accent[2], 0.22],
             0.0,
@@ -384,112 +528,466 @@ impl TopBar {
         v.dots
             .resize_with(count, || Spring::new(7.0, SpringParams::SNAPPY));
         v.dots.truncate(count);
-        let mut x = 10;
+        let l = Layout::new(width, count as i32 * 12 + 31, self.multiple_layouts);
+        capsule(
+            c,
+            l.workspaces,
+            v.hover
+                .as_ref()
+                .is_some_and(|a| matches!(a, BarAction::Workspace(_))),
+        );
+        let mut x = l.workspaces.loc.x + 8;
         for (i, dot) in v.dots.iter_mut().enumerate() {
-            dot.advance(now);
             dot.set(if i == active { 22.0 } else { 7.0 });
+            dot.advance(now);
             let w = dot.value.round() as i32;
+            if x + w > l.workspaces.loc.x + l.workspaces.size.w - 4 {
+                break;
+            }
             c.rect(
-                Rectangle::new((x, 11).into(), (w, 7).into()),
-                3.5,
+                rect(x, 12, w, 8),
+                4.0,
                 if i == active {
                     self.accent
                 } else {
-                    [0.96, 0.95, 0.98, 0.55]
+                    [0.96, 0.95, 0.98, 0.5]
                 },
                 0.0,
                 LINE,
             );
-            v.hits.push((
-                Rectangle::new(
-                    (x as f64 - 2.0, 0.0).into(),
-                    ((w + 5) as f64, PANEL as f64).into(),
-                ),
-                BarAction::Workspace(i),
-            ));
+            v.hits
+                .push((rect(x - 2, 4, w + 5, 24).to_f64(), BarAction::Workspace(i)));
             x += w + 5;
         }
+        capsule(c, l.toggle, v.hover == Some(BarAction::Tiling));
         let tiling = owner.is_some_and(|o| o.list.items[active].tiling);
-        c.rect(Rectangle::new((x + 5, 4).into(), (66, 22).into()), 6.0, [1.0, 1.0, 1.0, 0.07], 0.0, LINE);
-        c.label(renderer, if tiling { "Tiling" } else { "Floating" }, x + 11, 7, 55, 11.5);
-        v.hits.push((Rectangle::new(((x + 5) as f64, 0.0).into(), (66.0, PANEL as f64).into()), BarAction::Tiling));
-        x += 76;
+        let names = if tiling {
+            &["view-grid-symbolic", "view-app-grid-symbolic"][..]
+        } else {
+            &["view-restore-symbolic", "window-symbolic"][..]
+        };
+        if !c.icon(
+            renderer,
+            &mut self.icons,
+            names,
+            &self.icon_theme,
+            rect(l.toggle.loc.x + 8, 8, 16, 16),
+        ) {
+            let x = l.toggle.loc.x + 8;
+            for i in 0..if tiling { 4 } else { 2 } {
+                c.rect(
+                    rect(
+                        x + (i % 2) * 8,
+                        8 + (i / 2) * 8,
+                        if tiling { 6 } else { 10 },
+                        if tiling { 6 } else { 14 },
+                    ),
+                    2.0,
+                    [0.85, 0.85, 0.9, 0.8],
+                    1.0,
+                    LINE,
+                );
+            }
+        }
+        v.hits.push((l.toggle.to_f64(), BarAction::Tiling));
+        c.icon(
+            renderer,
+            &mut self.icons,
+            &[&self.app_icon, "application-x-executable-symbolic"],
+            &self.icon_theme,
+            l.app,
+        );
         c.label(
             renderer,
             &self.title,
-            x + 10,
-            7,
-            (width / 2 - 105 - x - 10).max(0),
+            l.title.loc.x,
+            l.title.loc.y,
+            l.title.size.w,
             12.5,
         );
-        c.label(renderer, &self.clock, (width - 190) / 2, 7, 190, 12.5);
-        c.label(renderer, &self.layout, width - 177, 7, 40, 12.5);
-        let battery = self
-            .battery
-            .as_ref()
-            .map(|b| format!("{}{}%", if b.charging { "+ " } else { "" }, b.percent))
-            .unwrap_or_else(|| "AC".into());
-        c.label(renderer, &battery, width - 120, 7, 75, 12.5);
-        let px = (POWER_ICON as f64 * c.scale).ceil() as u32;
-        let power = POWER_ICONS
-            .iter()
-            .find_map(|name| self.icons.get_tinted(name, px, &self.icon_theme));
-        let x = width - 29;
-        let y = (PANEL - POWER_ICON) / 2;
-        match power {
-            Some(buffer) => {
-                if let Ok(e) = MemoryRenderBufferRenderElement::from_buffer(
-                    renderer,
-                    ((x as f64 * c.scale).round(), (y as f64 * c.scale).round()),
-                    &buffer,
-                    None,
-                    // An explicit src is required: a size alone crops the buffer.
-                    Some(Rectangle::from_size((px as f64, px as f64).into())),
-                    Some((POWER_ICON, POWER_ICON).into()),
-                    Kind::Unspecified,
-                ) {
-                    c.elements.push(GavnoRenderElement::Memory(e));
-                }
-            }
-            None => c.label(renderer, "Power", width - 38, 9, 36, 12.5),
+        if v.hover == Some(BarAction::Calendar) {
+            capsule(c, l.clock, true);
         }
-        v.hits.push((
-            Rectangle::new(
-                ((width - 185) as f64, 0.0).into(),
-                (55.0, PANEL as f64).into(),
-            ),
-            BarAction::Layout,
-        ));
-        v.hits.push((
-            Rectangle::new(
-                ((width - 38) as f64, 0.0).into(),
-                (38.0, PANEL as f64).into(),
-            ),
-            BarAction::PowerMenu,
-        ));
-        if self.menu.as_ref() == Some(output) {
-            let rect = Rectangle::new(((width - 190).max(0), PANEL + 6).into(), (184, 150).into());
-            c.shadow(rect, 12.0);
-            c.rect(rect, 12.0, [0.065, 0.075, 0.10, 0.98], 1.0, LINE);
-            for (i, (label, action)) in [
-                ("Lock", PowerAction::Lock),
-                ("Log out", PowerAction::Logout),
-                ("Suspend", PowerAction::Suspend),
-                ("Restart", PowerAction::Restart),
-                ("Shut down", PowerAction::Shutdown),
-            ]
-            .into_iter()
-            .enumerate()
-            {
-                let y = rect.loc.y + 5 + i as i32 * 28;
-                c.label(renderer, label, rect.loc.x + 13, y + 5, 160, 13.0);
-                v.hits.push((
-                    Rectangle::new((rect.loc.x as f64, y as f64).into(), (184.0, 28.0).into()),
-                    BarAction::Power(action),
-                ));
+        let mut clock_style = label_style(12.5);
+        clock_style.weight = Weight::SemiBold;
+        let clock_width = c.text.measure(&self.clock, clock_style).ceil() as i32;
+        c.styled_label(
+            renderer,
+            &self.clock,
+            l.clock.loc.x + (l.clock.size.w - clock_width) / 2,
+            7,
+            l.clock.size.w,
+            clock_style,
+        );
+        v.hits.push((l.clock.to_f64(), BarAction::Calendar));
+        capsule(
+            c,
+            l.status,
+            matches!(v.hover, Some(BarAction::PowerMenu | BarAction::Layout)),
+        );
+        push_hit(c, &mut v.hits, l.status, BarAction::PowerMenu);
+        if let Some(r) = l.layout {
+            c.label(renderer, &self.layout, r.loc.x, 7, r.size.w, 11.5);
+            v.hits.push((r.to_f64(), BarAction::Layout));
+        }
+        c.icon(
+            renderer,
+            &mut self.icons,
+            &[self.status.network.icon(), "network-offline-symbolic"],
+            &self.icon_theme,
+            l.network,
+        );
+        c.icon(
+            renderer,
+            &mut self.icons,
+            &[status::volume_icon(self.status.volume)],
+            &self.icon_theme,
+            l.volume,
+        );
+        draw_battery(
+            c,
+            renderer,
+            &mut self.icons,
+            &self.icon_theme,
+            self.status.battery.as_ref(),
+            l.battery,
+            false,
+        );
+        v.layout = Some(l);
+        v.popover = None;
+        // Keep drawing the closing panel until its spring settles.
+        if (self.popover_output.as_ref() == Some(output)) && self.opening.value > 0.001 {
+            let p = if self.popover == Popover::Quick {
+                PopoverLayout::quick(width, self.status.brightness.is_some())
+            } else {
+                PopoverLayout::calendar(width)
+            };
+            c.alpha = self.opening.value.clamp(0.0, 1.0) as f32;
+            c.zoom = 0.94 + 0.06 * self.opening.value;
+            c.anchor = (
+                p.panel.loc.x as f64 + p.panel.size.w as f64 / 2.0,
+                p.panel.loc.y as f64,
+            )
+                .into();
+            c.shadow(p.panel, 20.0);
+            c.rect(p.panel, 20.0, [0.065, 0.075, 0.10, 0.98], 1.0, LINE);
+            push_hit(c, &mut v.hits, p.panel, BarAction::Consume);
+            if self.popover == Popover::Quick {
+                draw_quick(
+                    c,
+                    renderer,
+                    &mut self.icons,
+                    &self.icon_theme,
+                    &self.status,
+                    self.accent,
+                    &p,
+                    v.hover.as_ref(),
+                );
+            } else {
+                draw_calendar(c, renderer, &p, self.month, self.accent, v.hover.as_ref());
             }
+            for (item, r) in &p.items {
+                push_hit(c, &mut v.hits, *r, item_action(*item));
+            }
+            v.popover = Some(p);
         }
         c.finish()
+    }
+}
+fn push_hit(
+    c: &Canvas,
+    hits: &mut Vec<(Rectangle<f64, Logical>, BarAction)>,
+    r: Rect,
+    action: BarAction,
+) {
+    hits.push((c.mapped(r).to_f64(), action));
+}
+fn capsule(c: &mut Canvas, r: Rect, hover: bool) {
+    c.rect(
+        r,
+        9.0,
+        [1.0, 1.0, 1.0, if hover { 0.14 } else { 0.065 }],
+        0.0,
+        LINE,
+    );
+}
+fn item_action(item: Item) -> BarAction {
+    match item {
+        Item::VolumeIcon => BarAction::Mute,
+        Item::Volume => BarAction::Volume,
+        Item::Brightness => BarAction::Brightness,
+        Item::Network => BarAction::Network,
+        Item::Battery => BarAction::Consume,
+        Item::Previous => BarAction::Month(-1),
+        Item::Next => BarAction::Month(1),
+        Item::Power(i) => BarAction::Power(POWER[i].0),
+    }
+}
+const POWER: [(PowerAction, &str, &str); 5] = [
+    (PowerAction::Lock, "system-lock-screen-symbolic", "Lock"),
+    (
+        PowerAction::Suspend,
+        "media-playback-pause-symbolic",
+        "Suspend",
+    ),
+    (PowerAction::Logout, "system-log-out-symbolic", "Log out"),
+    (PowerAction::Restart, "system-reboot-symbolic", "Restart"),
+    (
+        PowerAction::Shutdown,
+        "system-shutdown-symbolic",
+        "Power off",
+    ),
+];
+fn draw_battery(
+    c: &mut Canvas,
+    r: &mut GlesRenderer,
+    icons: &mut Icons,
+    theme: &str,
+    battery: Option<&Battery>,
+    area: Rect,
+    detail: bool,
+) {
+    let Some(b) = battery else {
+        c.label(r, "AC power", area.loc.x, area.loc.y, area.size.w, 12.0);
+        return;
+    };
+    let names = status::battery_icons(b);
+    let low = b.percent <= 15 && !b.charging;
+    if low {
+        c.rect(
+            rect(area.loc.x - 3, area.loc.y - 3, 22, 22),
+            6.0,
+            [0.95, 0.25, 0.3, 0.35],
+            0.0,
+            LINE,
+        );
+    }
+    c.colored_icon(
+        r,
+        icons,
+        &names.iter().map(String::as_str).collect::<Vec<_>>(),
+        theme,
+        rect(area.loc.x, area.loc.y, 16, 16),
+        low.then_some([255, 102, 110]),
+    );
+    let mut style = label_style(12.0);
+    if low {
+        style.color = [1.0, 0.40, 0.43, 1.0];
+    }
+    let text = if detail {
+        format!(
+            "{}% · {}",
+            b.percent,
+            if b.charging { "Charging" } else { "On battery" }
+        )
+    } else {
+        format!("{}%", b.percent)
+    };
+    c.styled_label(
+        r,
+        &text,
+        area.loc.x + 24,
+        area.loc.y - 1,
+        area.size.w - 24,
+        style,
+    );
+}
+fn draw_quick(
+    c: &mut Canvas,
+    r: &mut GlesRenderer,
+    icons: &mut Icons,
+    theme: &str,
+    s: &status::Snapshot,
+    accent: [f32; 4],
+    p: &PopoverLayout,
+    hover: Option<&BarAction>,
+) {
+    for (item, area) in &p.items {
+        let a = *area;
+        match *item {
+            Item::VolumeIcon => {
+                if hover == Some(&BarAction::Mute) {
+                    capsule(c, a, true);
+                }
+                c.icon(
+                    r,
+                    icons,
+                    &[status::volume_icon(s.volume)],
+                    theme,
+                    rect(a.loc.x + 8, a.loc.y + 8, 16, 16),
+                );
+            }
+            Item::Volume | Item::Brightness => {
+                let volume = *item == Item::Volume;
+                let level = if volume {
+                    s.volume.map(|v| v.level).unwrap_or(0.0)
+                } else {
+                    s.brightness.as_ref().map(|b| b.level()).unwrap_or(0.0)
+                };
+                if !volume {
+                    c.icon(
+                        r,
+                        icons,
+                        &["display-brightness-symbolic"],
+                        theme,
+                        rect(a.loc.x - 40, a.loc.y + 8, 16, 16),
+                    );
+                }
+                c.rect(
+                    rect(a.loc.x + 7, a.loc.y + 12, a.size.w - 14, 8),
+                    4.0,
+                    [1.0, 1.0, 1.0, 0.13],
+                    0.0,
+                    LINE,
+                );
+                let mut color = accent;
+                if volume && s.volume.is_some_and(|v| v.muted) {
+                    color[3] = 0.35;
+                }
+                c.rect(
+                    rect(
+                        a.loc.x + 7,
+                        a.loc.y + 12,
+                        ((a.size.w - 14) as f64 * level).round() as i32,
+                        8,
+                    ),
+                    4.0,
+                    color,
+                    0.0,
+                    LINE,
+                );
+                c.rect(
+                    rect(
+                        a.loc.x + ((a.size.w - 14) as f64 * level).round() as i32,
+                        a.loc.y + 9,
+                        14,
+                        14,
+                    ),
+                    7.0,
+                    [0.97, 0.97, 1.0, 1.0],
+                    0.0,
+                    LINE,
+                );
+            }
+            Item::Network => {
+                capsule(c, a, hover == Some(&BarAction::Network));
+                c.icon(
+                    r,
+                    icons,
+                    &[s.network.icon(), "network-offline-symbolic"],
+                    theme,
+                    rect(a.loc.x + 12, a.loc.y + 12, 16, 16),
+                );
+                c.label(
+                    r,
+                    s.network.label(),
+                    a.loc.x + 40,
+                    a.loc.y + 11,
+                    a.size.w - 56,
+                    13.0,
+                );
+            }
+            Item::Battery => draw_battery(
+                c,
+                r,
+                icons,
+                theme,
+                s.battery.as_ref(),
+                rect(a.loc.x + 12, a.loc.y + 12, a.size.w - 24, 16),
+                true,
+            ),
+            Item::Power(i) => {
+                c.rect(
+                    a,
+                    20.0,
+                    [
+                        1.0,
+                        1.0,
+                        1.0,
+                        if hover == Some(&BarAction::Power(POWER[i].0)) {
+                            0.16
+                        } else {
+                            0.065
+                        },
+                    ],
+                    0.0,
+                    LINE,
+                );
+                if !c.icon(
+                    r,
+                    icons,
+                    &[POWER[i].1],
+                    theme,
+                    rect(a.loc.x + 12, a.loc.y + 12, 16, 16),
+                ) {
+                    c.label(r, &POWER[i].2[..1], a.loc.x + 15, a.loc.y + 10, 20, 14.0);
+                }
+                if hover == Some(&BarAction::Power(POWER[i].0)) {
+                    let w = c.text.measure(POWER[i].2, label_style(11.0)).ceil() as i32;
+                    c.label(r, POWER[i].2, a.loc.x + (40 - w) / 2, a.loc.y + 48, w, 11.0);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+fn draw_calendar(
+    c: &mut Canvas,
+    r: &mut GlesRenderer,
+    p: &PopoverLayout,
+    month: (i32, u32),
+    accent: [f32; 4],
+    hover: Option<&BarAction>,
+) {
+    let x = p.panel.loc.x;
+    let y = p.panel.loc.y;
+    let header = format!("{} {}", calendar::MONTHS[month.1 as usize - 1], month.0);
+    let w = c.text.measure(&header, label_style(14.0)).ceil() as i32;
+    c.label(r, &header, x + (320 - w) / 2, y + 20, w, 14.0);
+    for (item, a) in &p.items {
+        if hover == Some(&item_action(*item)) {
+            capsule(c, *a, true);
+        }
+        c.label(
+            r,
+            if *item == Item::Previous {
+                "‹"
+            } else {
+                "›"
+            },
+            a.loc.x + 10,
+            a.loc.y + 5,
+            20,
+            18.0,
+        );
+    }
+    for (i, day) in ["M", "T", "W", "T", "F", "S", "S"].iter().enumerate() {
+        let mut st = label_style(11.0);
+        st.color[3] = 0.5;
+        let w = c.text.measure(day, st).ceil() as i32;
+        c.styled_label(r, day, x + 36 + i as i32 * 40 - w / 2, y + 64, 24, st);
+    }
+    let today = theme::LocalTime::now();
+    for (i, date) in calendar::month_grid(month.0, month.1).iter().enumerate() {
+        let a = rect(
+            x + 20 + (i % 7) as i32 * 40,
+            y + 88 + (i / 7) as i32 * 34,
+            32,
+            30,
+        );
+        if (date.year, date.month, date.day) == (today.year, today.month, today.day) {
+            c.rect(a, 10.0, accent, 0.0, LINE);
+        }
+        let mut st = label_style(12.5);
+        if date.month != month.1 {
+            st.color[3] = 0.3;
+        }
+        if (date.year, date.month, date.day) == (today.year, today.month, today.day) {
+            st.color = [0.08, 0.10, 0.14, 1.0];
+        }
+        let value = date.day.to_string();
+        let w = c.text.measure(&value, st).ceil() as i32;
+        c.styled_label(r, &value, a.loc.x + (32 - w) / 2, a.loc.y + 6, 32, st);
     }
 }
 
@@ -503,13 +1001,23 @@ impl Gavno {
             &self.space,
             self.start_time.elapsed(),
         );
-        let title = self
+        let (title, app) = self
             .focused_window()
-            .map(|w| {
-                let (title, app) = crate::overlay::window_labels(&w);
-                format!("{app}  {title}")
-            })
+            .map(|w| crate::overlay::window_labels(&w))
             .unwrap_or_default();
+        self.topbar.app_icon = self
+            .topbar
+            .entries
+            .resolve(&app)
+            .map(|e| e.icon)
+            .unwrap_or(app);
+        self.topbar.multiple_layouts = self
+            .config
+            .xkb_layout
+            .split(',')
+            .filter(|s| !s.is_empty())
+            .count()
+            > 1;
         let layouts = self.config.xkb_layout.clone();
         let layout = self
             .seat
@@ -518,10 +1026,10 @@ impl Gavno {
                 k.with_xkb_state(self, |ctx| {
                     let xkb = ctx.xkb().lock().unwrap_or_else(|e| e.into_inner());
                     let index = xkb.active_layout().0 as usize;
-                    layouts.split(',').nth(index).unwrap_or("us").to_uppercase()
+                    short_layout(layouts.split(',').nth(index).unwrap_or("us"))
                 })
             })
-            .unwrap_or_else(|| "US".into());
+            .unwrap_or_else(|| "EN".into());
         let changed = self.topbar.title != title || self.topbar.layout != layout;
         self.topbar.title = title;
         self.topbar.layout = layout;
@@ -529,8 +1037,19 @@ impl Gavno {
         self.topbar.icon_theme = self.config.dock.icon_theme.clone();
         self.topbar.views.retain(|v| outputs.contains(&v.output));
         let visible = outputs.iter().any(|o| self.shell_visible(o));
+        if !self.config.bar.enabled
+            || self
+                .topbar
+                .menu
+                .as_ref()
+                .is_some_and(|o| !self.shell_visible(o))
+        {
+            self.topbar.close();
+            self.topbar.opening.jump(0.0);
+        }
         if !visible {
-            self.topbar.menu = None;
+            self.topbar.close();
+            self.topbar.opening.jump(0.0);
             self.dock.close_menu();
         }
         if visible && self.config.bar.enabled {
@@ -538,18 +1057,12 @@ impl Gavno {
                 self.topbar.update_clock();
                 self.schedule_bar_clock();
             }
-            if self.topbar.battery_timer.is_none() {
-                self.topbar.battery = read_battery(Path::new("/sys/class/power_supply"));
-                self.schedule_bar_battery();
-            }
         } else {
             if let Some(token) = self.topbar.clock_timer.take() {
                 self.loop_handle.remove(token);
             }
-            if let Some(token) = self.topbar.battery_timer.take() {
-                self.loop_handle.remove(token);
-            }
         }
+        self.refresh_bar_status(visible && self.config.bar.enabled);
         if changed && visible {
             self.queue_redraw_all();
         }
@@ -571,26 +1084,6 @@ impl Gavno {
             Err(error) => tracing::warn!(%error,"cannot schedule panel clock"),
         }
     }
-    fn schedule_bar_battery(&mut self) {
-        match self.loop_handle.insert_source(
-            Timer::from_duration(Duration::from_secs(30)),
-            |_, _, gv| {
-                gv.topbar.battery_timer = None;
-                let battery = read_battery(Path::new("/sys/class/power_supply"));
-                if battery != gv.topbar.battery {
-                    gv.topbar.battery = battery;
-                    gv.queue_redraw_all();
-                }
-                if gv.space.outputs().any(|o| gv.shell_visible(o)) {
-                    gv.schedule_bar_battery();
-                }
-                TimeoutAction::Drop
-            },
-        ) {
-            Ok(t) => self.topbar.battery_timer = Some(t),
-            Err(error) => tracing::warn!(%error,"cannot schedule battery refresh"),
-        }
-    }
     pub fn bar_action(&mut self, output: &Output, action: BarAction) {
         match action {
             BarAction::Tiling => self.toggle_workspace_tiling(output),
@@ -602,19 +1095,50 @@ impl Gavno {
                     keyboard.with_xkb_state(self, |mut ctx| ctx.cycle_next_layout());
                 }
             }
-            BarAction::PowerMenu => {
+            BarAction::Calendar | BarAction::PowerMenu => {
                 self.dock.close_menu();
-                self.topbar.menu = if self.topbar.menu.as_ref() == Some(output) {
-                    None
+                let kind = if action == BarAction::Calendar {
+                    Popover::Calendar
                 } else {
-                    Some(output.clone())
+                    Popover::Quick
                 };
+                if self.topbar.menu.as_ref() == Some(output) && self.topbar.popover == kind {
+                    self.topbar.close();
+                } else {
+                    self.topbar.menu = Some(output.clone());
+                    self.topbar.popover_output = Some(output.clone());
+                    self.topbar.popover = kind;
+                    self.topbar.opening.set(1.0);
+                    let today = theme::LocalTime::now();
+                    self.topbar.month = (today.year, today.month);
+                }
             }
+            BarAction::Month(delta) => {
+                self.topbar.month =
+                    calendar::shift_month(self.topbar.month.0, self.topbar.month.1, delta)
+            }
+            BarAction::Mute => self.bar_media(status::Media::Mute),
+            BarAction::Volume | BarAction::Brightness => {
+                self.topbar.drag = Some((output.clone(), action.clone()));
+                self.bar_drag(self.pointer_location());
+            }
+            BarAction::Network => {
+                std::thread::spawn(|| {
+                    if let Ok(mut child) =
+                        std::process::Command::new("nm-connection-editor").spawn()
+                    {
+                        let _ = child.wait();
+                    }
+                });
+            }
+            BarAction::Consume => {}
             BarAction::Power(action) => {
-                self.topbar.menu = None;
+                self.topbar.close();
                 match action {
                     PowerAction::Logout => self.quit(),
-                    PowerAction::Lock => { self.lock_session(); },
+                    PowerAction::Lock => {
+                        self.lock_session();
+                    }
                     PowerAction::Suspend => power_command("systemctl", "suspend"),
                     PowerAction::Restart => power_command("systemctl", "reboot"),
                     PowerAction::Shutdown => power_command("systemctl", "poweroff"),
@@ -641,6 +1165,39 @@ fn power_command(program: &str, arg: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn hits_match_drawn_status_and_transformed_popover_rectangles() {
+        let mut c = Canvas::default();
+        c.scale = 1.75;
+        let status = Layout::new(1646, 55, true).status;
+        let mut hits = Vec::new();
+        capsule(&mut c, status, true);
+        push_hit(&c, &mut hits, status, BarAction::PowerMenu);
+        assert_eq!(hits[0].0, c.drawn[0].to_f64());
+        for opening in [0.1, 0.5, 1.0] {
+            for p in [
+                PopoverLayout::quick(1646, true),
+                PopoverLayout::quick(800, false),
+                PopoverLayout::calendar(1280),
+            ] {
+                c.zoom = 0.94 + 0.06 * opening;
+                c.anchor = (p.panel.loc.x as f64 + 160.0, p.panel.loc.y as f64).into();
+                c.drawn.clear();
+                hits.clear();
+                for (item, r) in &p.items {
+                    // The production painter and hit registration use the same
+                    // logical item rect and the same animated Canvas transform.
+                    capsule(&mut c, *r, false);
+                    push_hit(&c, &mut hits, *r, item_action(*item));
+                }
+                for ((hit, _), drawn) in hits.iter().zip(&c.drawn) {
+                    assert_eq!(*hit, drawn.to_f64());
+                    assert!(hit.contains((drawn.loc.x as f64 + 0.1, drawn.loc.y as f64 + 0.1)));
+                    assert!(!hit.contains((drawn.loc.x as f64 - 0.1, drawn.loc.y as f64 - 0.1)));
+                }
+            }
+        }
+    }
     #[test]
     fn minute_boundaries_preserve_subseconds() {
         assert_eq!(next_minute(Duration::ZERO), Duration::from_secs(60));
@@ -687,5 +1244,13 @@ mod tests {
         std::fs::write(b.join("present"), "0").unwrap();
         assert!(read_battery(&root).is_none());
         std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+fn short_layout(layout: &str) -> String {
+    match layout.trim() {
+        "us" | "gb" => "EN".into(),
+        "ru" => "RU".into(),
+        other => other.chars().take(2).collect::<String>().to_uppercase(),
     }
 }

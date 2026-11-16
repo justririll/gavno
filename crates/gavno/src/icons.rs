@@ -101,6 +101,7 @@ pub fn lookup(name: &str, theme: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
 pub struct Icons {
     cache: HashMap<(String, u32, bool), Option<MemoryRenderBuffer>>,
     paths: HashMap<String, Option<PathBuf>>,
+    colored: HashMap<(String, u32, [u8; 3]), Option<MemoryRenderBuffer>>,
 }
 impl Icons {
     pub fn get(&mut self, name: &str, size: u32, theme: &str) -> Option<MemoryRenderBuffer> {
@@ -109,6 +110,17 @@ impl Icons {
     /// Symbolic icons are dark-on-transparent; bars ask for premultiplied white.
     pub fn get_tinted(&mut self, name: &str, size: u32, theme: &str) -> Option<MemoryRenderBuffer> {
         self.load(name, size, theme, true)
+    }
+    /// Cache an alert tint separately from the normal dark-shell white tint.
+    pub fn get_tinted_color(&mut self, name: &str, size: u32, theme: &str, color: [u8; 3]) -> Option<MemoryRenderBuffer> {
+        let size = size.clamp(1, 1024);
+        let key = (name.to_owned(), size, color);
+        if let Some(buffer) = self.colored.get(&key) { return buffer.clone(); }
+        self.get_tinted(name, size, theme)?;
+        let buffer = self.paths.get(name).and_then(Option::as_ref).and_then(|p| raster_color(p, size, true, Some(color)));
+        if self.colored.len() > 128 { self.colored.clear(); }
+        self.colored.insert(key, buffer.clone());
+        buffer
     }
     fn load(
         &mut self,
@@ -162,6 +174,9 @@ fn read_svg(path: &Path) -> Option<Vec<u8>> {
     Some(data)
 }
 fn raster(path: &Path, size: u32, tint: bool) -> Option<MemoryRenderBuffer> {
+    raster_color(path, size, tint, None)
+}
+fn raster_color(path: &Path, size: u32, tint: bool, color: Option<[u8; 3]>) -> Option<MemoryRenderBuffer> {
     let mut pixels = if path
         .extension()
         .is_some_and(|e| e == "svg" || e == "svgz")
@@ -227,6 +242,9 @@ fn raster(path: &Path, size: u32, tint: bool) -> Option<MemoryRenderBuffer> {
         tint_white(&mut pixels);
     }
     for p in pixels.chunks_exact_mut(4) {
+        if let Some(color) = color {
+            for i in 0..3 { p[i] = (color[i] as u16 * p[3] as u16 / 255) as u8; }
+        }
         p.swap(0, 2);
     }
     Some(MemoryRenderBuffer::from_slice(

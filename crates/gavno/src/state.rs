@@ -119,9 +119,9 @@ impl Gavno {
             options: config.xkb_options.clone(),
             ..Default::default()
         };
-        if let Err(err) = seat.add_keyboard(xkb, 300, 30) {
+        if let Err(err) = seat.add_keyboard(xkb, config.repeat_delay, config.repeat_rate) {
             tracing::warn!(?err, "bad xkb config, falling back to us");
-            seat.add_keyboard(Default::default(), 300, 30)
+            seat.add_keyboard(Default::default(), config.repeat_delay, config.repeat_rate)
                 .expect("default xkb keymap must compile");
         }
         seat.add_pointer();
@@ -244,10 +244,10 @@ impl Gavno {
     /// True while something animates and needs the next frame drawn.
     pub fn is_animating(&self) -> bool {
         if self.protocols.locks.locked {
-            return self.lock.is_animating();
+            return self.lock.is_animating() || self.topbar.osd.is_animating();
         }
         match self.greeter.as_ref() {
-            Some(g) => g.is_animating(),
+            Some(g) => g.is_animating() || self.topbar.osd.is_animating(),
             None => self.window_animations.is_animating() || self.overlay.is_animating()
                 || self.workspaces.active() || self.overview.progress.is_active()
                 || self.overview.flick.as_ref().is_some_and(|(_,x,y)|x.is_active() || y.is_active())

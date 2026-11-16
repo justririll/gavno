@@ -41,9 +41,16 @@ What works today:
   click to focus, drag a window onto a thumbnail to move it, middle click to
   close (`crates/gavno/src/overview.rs`).
 - Built-in dock and top bar: pinned and running apps, icon magnification,
-  an app menu, scroll-to-cycle windows, workspace dots, a tiling/floating
-  chip, layout switching and a power menu
-  (`crates/gavno/src/dock.rs`, `crates/gavno/src/topbar.rs`).
+  an app menu and scroll-to-cycle windows. The 32 px glass bar has workspace
+  pills, an icon tiling toggle, the focused app icon/title and a centered clock.
+  Click the clock for a Monday-first calendar; click the status capsule for
+  quick settings with volume/brightness sliders, NetworkManager status,
+  battery and session power controls. Scroll workspace pills to switch
+  workspaces, scroll the volume icon to adjust audio, and click the layout
+  code to cycle keyboard layouts. Popovers close on an outside click, Esc or
+  Super. Hardware media keys work while locked and show a spring-animated OSD.
+  Status I/O runs off the main loop; periodic refreshes stop while the bar is
+  hidden (`crates/gavno/src/topbar.rs`, `crates/gavno/src/bar/`).
 - 3-finger touchpad gestures: horizontal swipes switch workspaces, vertical
   swipes open and close the overview, hold catches an animation
   (`crates/gavno/src/gesture.rs`).

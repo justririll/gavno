@@ -170,7 +170,7 @@ impl Gavno {
         self.gestures = Default::default();
         self.overview.drag = None;
         self.overview.flick = None;
-        self.topbar.menu = None;
+        self.topbar.close();
         self.dock.close_menu();
         self.create_lock_ui();
         self.update_lock_modifiers();

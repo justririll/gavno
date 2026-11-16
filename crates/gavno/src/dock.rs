@@ -691,6 +691,7 @@ impl Gavno {
     }
     pub fn shell_button(&mut self, button: u32, pressed: bool) -> bool {
         if !pressed {
+            self.bar_release(button);
             if let Some(i) = self.dock.buttons.iter().position(|b| *b == button) {
                 self.dock.buttons.remove(i);
                 return true;
@@ -763,7 +764,7 @@ impl Gavno {
             });
         let had_menu = self.dock.menu.is_some() || self.topbar.menu.is_some();
         self.dock.close_menu();
-        self.topbar.menu = None;
+        self.topbar.close();
         if !had_menu {
             if let Some(id) = hit {
                 match button {
@@ -812,32 +813,7 @@ impl Gavno {
         let Some(geo) = self.space.output_geometry(&output) else {
             return false;
         };
-        if self.config.bar.enabled && pos.y - (geo.loc.y as f64) < PANEL as f64 {
-            let delta = if horizontal.abs() > vertical.abs() {
-                horizontal
-            } else {
-                vertical
-            };
-            if delta == 0.0 {
-                self.topbar.scroll = 0.0;
-                return true;
-            }
-            if delta.signum() != self.topbar.scroll.signum() {
-                self.topbar.scroll = 0.0;
-            }
-            self.topbar.scroll += delta;
-            if self.topbar.scroll.abs() >= 30.0 {
-                let o = self.workspaces.ensure(&output);
-                let next = if self.topbar.scroll < 0.0 {
-                    o.list.active.saturating_sub(1)
-                } else {
-                    (o.list.active + 1).min(o.list.items.len() - 1)
-                };
-                self.topbar.scroll = 0.0;
-                self.switch_workspace(&output, next);
-            }
-            return true;
-        }
+        if self.config.bar.enabled && self.bar_axis(&output, pos-geo.loc.to_f64(), if horizontal.abs()>vertical.abs(){horizontal}else{vertical}) {return true;}
         let p=pos-geo.loc.to_f64();
         let id=self.dock.views.iter().find(|v|v.output==output).and_then(|v|v.hits.iter().find(|(_,r)|r.contains(p)).map(|(id,_)|id.clone()));
         if let Some(id)=id {
@@ -1167,9 +1143,9 @@ mod tests {
         let a = Rectangle::new((100, 200).into(), (1280, 800).into());
         assert_eq!(
             reserve(a, true, true, false),
-            Rectangle::new((100, 230).into(), (1280, 698).into())
+            Rectangle::new((100, 232).into(), (1280, 696).into())
         );
-        assert_eq!(reserve(a, true, true, true).size.h, 770);
+        assert_eq!(reserve(a, true, true, true).size.h, 768);
         assert_eq!(reserve(a, false, false, false), a);
         assert_eq!(
             reserve(Rectangle::from_size((20, 10).into()), true, true, false)

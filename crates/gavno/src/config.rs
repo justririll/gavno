@@ -25,6 +25,8 @@ pub struct Config {
     pub output_mode: Option<crate::hdr::mode::ModeRequest>,
     pub output_hdr: bool,
     pub sdr_white_nits: f32,
+    pub repeat_delay: i32,
+    pub repeat_rate: i32,
     pub xkb_layout: String,
     pub xkb_variant: String,
     pub xkb_options: Option<String>,
@@ -127,6 +129,8 @@ struct Output {
 #[derive(Default, Deserialize)]
 #[serde(default)]
 struct Keyboard {
+    repeat_delay: Option<i32>,
+    repeat_rate: Option<i32>,
     layout: Option<String>,
     variant: Option<String>,
     options: Option<String>,
@@ -223,6 +227,8 @@ impl Config {
                 output_mode,
                 output_hdr,
                 sdr_white_nits,
+                repeat_delay: file.keyboard.repeat_delay.unwrap_or(300).clamp(0, 5000),
+                repeat_rate: file.keyboard.repeat_rate.unwrap_or(30).clamp(0, 100),
                 xkb_layout: var("GAVNO_XKB_LAYOUT").or(file.keyboard.layout).unwrap_or_else(|| "us,ru".into()),
                 xkb_variant: var("GAVNO_XKB_VARIANT").or(file.keyboard.variant).unwrap_or_default(),
                 xkb_options: Some(
@@ -272,6 +278,15 @@ options = "caps:escape"
     }
 
     #[test]
+    fn keyboard_repeat_settings() {
+        let config=build(false,Some("[keyboard]\nrepeat_delay=450\nrepeat_rate=25"),&[]).0;
+        assert_eq!((config.repeat_delay,config.repeat_rate),(450,25));
+        let config=build(false,Some("[keyboard]\nrepeat_delay=-1\nrepeat_rate=999"),&[]).0;
+        assert_eq!((config.repeat_delay,config.repeat_rate),(0,100));
+        assert_eq!(build(false,Some("[keyboard]\nrepeat_rate=0"),&[]).0.repeat_rate,0);
+    }
+
+    #[test]
     fn defaults_and_example() {
         let expected = Config {
             mod_key: ModKey::Super,
@@ -281,6 +296,8 @@ options = "caps:escape"
             output_mode: None,
             output_hdr: false,
             sdr_white_nits: 203.0,
+            repeat_delay: 300,
+            repeat_rate: 30,
             xkb_layout: "us,ru".into(),
             xkb_variant: "".into(),
             xkb_options: Some("grp:alt_shift_toggle".into()),
@@ -314,6 +331,8 @@ options = "caps:escape"
             output_mode: None,
             output_hdr: false,
             sdr_white_nits: 203.0,
+            repeat_delay: 300,
+            repeat_rate: 30,
             xkb_layout: "de".into(),
             xkb_variant: "nodeadkeys".into(),
             xkb_options: Some("caps:escape".into()),
