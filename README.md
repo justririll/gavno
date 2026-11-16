@@ -72,7 +72,18 @@ What works today:
 
 Keyboard binds: [docs/keybinds.md](docs/keybinds.md)
 
+## Configuration
+
 Configuration: [docs/config.md](docs/config.md)
+
+The startup config supports `[modules]` boolean flags `dock`, `bar`, `overview`,
+`tiling`, `snap`, `switcher`, `gestures`, `window_gestures`, `resize_mode`,
+`animations`, `decorations`, `ipc`, and `screencopy`, all `true` by default.
+For example, `[modules]` followed by `dock = false` disables the dock. The legacy
+`dock.enabled` and `bar.enabled` switches also apply; either flag can disable the
+feature. Feature panics disable and reset only that feature until restart.
+Lock and Greeter stay core and fail closed. See [docs/modules.md](docs/modules.md).
+
 
 Lock screen: [docs/lock.md](docs/lock.md)
 

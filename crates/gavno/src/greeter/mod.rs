@@ -60,6 +60,7 @@ enum MsgKind {
     Warn,
 }
 
+#[derive(Clone)]
 pub struct User {
     pub name: String,
     pub display: String,
@@ -69,6 +70,7 @@ const WHITE: [f32; 3] = [1.0, 1.0, 1.0];
 const MAX_DOTS: usize = 14;
 
 pub struct Greeter {
+    ui_failures: u8,
     users: Vec<User>,
     selected: usize,
     password: Secret,
@@ -109,6 +111,29 @@ pub struct Greeter {
 }
 
 impl Greeter {
+    pub(crate) fn safe_call<R>(&mut self, default: R, f: impl FnOnce(&mut Self) -> R) -> R {
+        if self.ui_failures >= 2 { return default; }
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(self))) {
+            Ok(value) => value,
+            Err(payload) => {
+                tracing::error!(message = %crate::module::panic_message(payload.as_ref()), "greeter UI panicked; retaining input gate");
+                let failures = self.ui_failures + 1;
+                if let Some(ipc) = &self.ipc { ipc.invalidate(); }
+                self.password.clear();
+                self.quit_requested = false;
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    Self::create(self.ipc.take(), self.lock_tx.clone(), self.users.clone())
+                }));
+                if let Ok(mut ui) = result {
+                    ui.ui_failures = failures;
+                    *self = ui;
+                } else { self.ui_failures = 2; }
+                default
+            }
+        }
+    }
+    pub(crate) fn settle_intro(&mut self) { self.intro.jump(1.0); }
+
     pub fn new(loop_handle: &LoopHandle<'static, Gavno>) -> Self {
         Self::create(Some(Ipc::spawn(loop_handle)), None, load_users())
     }
@@ -131,6 +156,7 @@ impl Greeter {
             tracing::warn!("no GREETD_SOCK: demo mode, the password is \"gavno\"");
         }
         Self {
+            ui_failures: 0,
             users,
             selected: 0,
             password: Secret::new(),
@@ -785,11 +811,11 @@ pub fn start(gv: &mut Gavno) {
     let until_next_minute = |t: LocalTime| Duration::from_secs(60 - t.second as u64 % 60) + Duration::from_millis(20);
     let first = until_next_minute(LocalTime::now());
     let _ = gv.loop_handle.insert_source(Timer::from_duration(first), move |_, _, gv| {
+        if gv.greeter.as_ref().is_none_or(|g| g.ui_failures >= 2) { return TimeoutAction::Drop; }
         gv.queue_redraw_all();
         TimeoutAction::ToDuration(until_next_minute(LocalTime::now()))
     });
 }
-
 
 #[cfg(test)]
 mod lock_ui_tests {

@@ -177,9 +177,17 @@ impl Default for Gestures {
 }
 impl Gavno {
     fn gestures_enabled(&self) -> bool {
+        self.features.read(crate::module::Feature::Gestures, Default::default(), || self.gestures_enabled_feature())
+    }
+
+    fn gestures_enabled_feature(&self) -> bool {
         self.greeter.is_none() && !self.protocols.locks.locked
     }
     fn client_gesture(&self, fingers: u32) -> bool {
+        self.features.read(crate::module::Feature::Gestures, Default::default(), || self.client_gesture_feature(fingers))
+    }
+
+    fn client_gesture_feature(&self, fingers: u32) -> bool {
         fingers == 2
             && !self
                 .seat
@@ -187,308 +195,385 @@ impl Gavno {
                 .is_some_and(|k| k.modifier_state().logo)
     }
     fn catch_desktop(&mut self, output: &Output) {
+        self.guard(crate::module::Feature::Gestures, Default::default(), |gv| gv.catch_desktop_feature(output))
+    }
+
+    fn catch_desktop_feature(&mut self, output: &Output) {
         let now = self.start_time.elapsed();
         let o = self.workspaces.ensure(output);
         o.position.advance(now);
         o.position.jump(o.position.value);
         o.held = true;
         if self.overview.output.as_ref() == Some(output) {
-            self.overview.progress.advance(now);
-            self.overview.progress.jump(self.overview.progress.value);
-            self.overview.held = true;
+            self.features.call(crate::module::Feature::Overview, Default::default(), || self.overview.progress.advance(now));
+            self.features.call(crate::module::Feature::Overview, Default::default(), || self.overview.progress.jump(self.overview.progress.value));
+            self.features.call(crate::module::Feature::Overview, (), || { self.overview.held = true; });
         }
     }
     pub fn on_gesture_swipe_begin<I: InputBackend>(&mut self, event: I::GestureSwipeBeginEvent) {
-        if !self.gestures_enabled() {
+        if !self.features.on(crate::module::Feature::Gestures) {
+            if self.greeter.is_none() && !self.protocols.locks.locked {
+                self.seat.get_pointer().unwrap().gesture_swipe_begin(self, &GestureSwipeBeginEvent { serial: SERIAL_COUNTER.next_serial(), time: event.time_msec(), fingers: event.fingers() });
+            }
             return;
         }
-        self.gestures.super_tap.cancel();
-        self.gestures.swipe_client = self.client_gesture(event.fingers()) || (event.fingers()==4 && self.window_gesture_locked());
-        if self.gestures.swipe_client {
-            self.seat.get_pointer().unwrap().gesture_swipe_begin(
-                self,
-                &GestureSwipeBeginEvent {
-                    serial: SERIAL_COUNTER.next_serial(),
-                    time: event.time_msec(),
-                    fingers: event.fingers(),
-                },
-            );
-            return;
-        }
-        if event.fingers()==4 {self.begin_window_drag(event.time());return;}
-        if event.fingers() != 3
-            && !(event.fingers() == 2 && self.seat.get_keyboard().unwrap().modifier_state().logo)
-        {
-            return;
-        }
-        let Some(output) = self.active_output() else {
-            return;
-        };
-        self.workspaces.snapshot(&self.space);
-        let o = self.workspaces.ensure(&output);
-        let workspace_origin = o.list.active;
-        let overview_origin = self.overview.open();
-        self.catch_desktop(&output);
-        let workspace_start = self.workspaces.ensure(&output).position.value;
-        let overview_start = if self.overview.output.as_ref() == Some(&output) {
-            self.overview.progress.value
-        } else {
-            0.0
-        };
-        let mut history = MotionHistory::default();
-        history.push(event.time(), (workspace_start, overview_start).into());
-        self.gestures.swipe = Some(Swipe {
-            output,
-            axis: None,
-            delta: (0.0, 0.0).into(),
-            workspace_start,
-            overview_start,
-            workspace_origin,
-            overview_origin,
-            history,
-            last_value: (workspace_start, overview_start).into(),
-        });
+
+        self.guard(crate::module::Feature::Gestures, Default::default(), |gv| {
+            if !gv.gestures_enabled() {
+                return;
+            }
+            gv.gestures.super_tap.cancel();
+            gv.gestures.swipe_client = gv.client_gesture(event.fingers()) || (event.fingers()==4 && (!gv.features.on(crate::module::Feature::WindowGestures) || gv.window_gesture_locked()));
+            if gv.gestures.swipe_client {
+                gv.seat.get_pointer().unwrap().gesture_swipe_begin(
+                    gv,
+                    &GestureSwipeBeginEvent {
+                        serial: SERIAL_COUNTER.next_serial(),
+                        time: event.time_msec(),
+                        fingers: event.fingers(),
+                    },
+                );
+                return;
+            }
+            if event.fingers()==4 {gv.begin_window_drag(event.time());return;}
+            if event.fingers() != 3
+                && !(event.fingers() == 2 && gv.seat.get_keyboard().unwrap().modifier_state().logo)
+            {
+                return;
+            }
+            let Some(output) = gv.active_output() else {
+                return;
+            };
+            gv.workspaces.snapshot(&gv.space);
+            let o = gv.workspaces.ensure(&output);
+            let workspace_origin = o.list.active;
+            let overview_origin = gv.features.read(crate::module::Feature::Overview, false, || gv.overview.open());
+            gv.catch_desktop(&output);
+            let workspace_start = gv.workspaces.ensure(&output).position.value;
+            let overview_start = if gv.overview.output.as_ref() == Some(&output) {
+                gv.overview.progress.value
+            } else {
+                0.0
+            };
+            let mut history = MotionHistory::default();
+            history.push(event.time(), (workspace_start, overview_start).into());
+            gv.gestures.swipe = Some(Swipe {
+                output,
+                axis: None,
+                delta: (0.0, 0.0).into(),
+                workspace_start,
+                overview_start,
+                workspace_origin,
+                overview_origin,
+                history,
+                last_value: (workspace_start, overview_start).into(),
+            });
+        })
     }
     pub fn on_gesture_swipe_update<I: InputBackend>(&mut self, event: I::GestureSwipeUpdateEvent)
     where
         I::GestureSwipeUpdateEvent: 'static,
     {
-        if !self.gestures_enabled() {
-            return;
-        }
-        if self.gestures.swipe_client {
-            self.seat.get_pointer().unwrap().gesture_swipe_update(
-                self,
-                &GestureSwipeUpdateEvent {
-                    time: event.time_msec(),
-                    delta: event.delta(),
-                },
-            );
-            return;
-        }
-        use smithay::reexports::input::event::gesture::GestureEventCoordinates;
-        let delta = (&event as &dyn Any)
-            .downcast_ref::<smithay::reexports::input::event::gesture::GestureSwipeUpdateEvent>()
-            .map(|e| Point::from((e.dx_unaccelerated(), e.dy_unaccelerated())))
-            .unwrap_or_else(|| event.delta());
-        if !delta.x.is_finite() || !delta.y.is_finite() {
-            return;
-        }
-        if self.update_window_drag(delta.upscale(self.gestures.direction),event.time()) {return;}
-        let Some(s) = &mut self.gestures.swipe else {return;};
-        s.delta += delta.upscale(self.gestures.direction);
-        if s.axis.is_none() {
-            s.axis = lock_axis(s.delta.x, s.delta.y);
-        }
-        let o = self.workspaces.ensure(&s.output);
-        let position = Point::from((
-            rubber_band(
-                progress(s.workspace_start, s.delta.x, self.gestures.distance),
-                (o.list.items.len() - 1) as f64,
-            ),
-            progress(s.overview_start, s.delta.y, OVERVIEW_SWIPE_DISTANCE).clamp(0.0, 1.0),
-        ));
-        s.history.push(event.time(), position);
-        let Some(axis) = s.axis else {
-            return;
-        };
-        let now = self.start_time.elapsed();
-        let value = match axis {
-            Axis::Horizontal => {
-                let value = position.x;
-                o.position.follow(value, now);
-                value
+        if !self.features.on(crate::module::Feature::Gestures) {
+            if self.greeter.is_none() && !self.protocols.locks.locked {
+                self.seat.get_pointer().unwrap().gesture_swipe_update(self, &GestureSwipeUpdateEvent { time: event.time_msec(), delta: event.delta() });
             }
-            Axis::Vertical => {
-                let value = position.y;
-                self.overview.output = Some(s.output.clone());
-                self.overview.held = true;
-                self.overview.progress.follow(value, now);
-                value
+            return;
+        }
+
+        self.guard(crate::module::Feature::Gestures, Default::default(), |gv| {
+            if !gv.gestures_enabled() {
+                return;
             }
-        };
-        let old = match axis {
-            Axis::Horizontal => s.last_value.x,
-            Axis::Vertical => s.last_value.y,
-        };
-        if axis == Axis::Horizontal {
-            s.last_value.x = value;
-        } else {
-            s.last_value.y = value;
-        }
-        if value != old {
-            self.clear_desktop_pointer();
-            self.queue_redraw_all();
-        }
+            if gv.gestures.swipe_client {
+                gv.seat.get_pointer().unwrap().gesture_swipe_update(
+                    gv,
+                    &GestureSwipeUpdateEvent {
+                        time: event.time_msec(),
+                        delta: event.delta(),
+                    },
+                );
+                return;
+            }
+            use smithay::reexports::input::event::gesture::GestureEventCoordinates;
+            let delta = (&event as &dyn Any)
+                .downcast_ref::<smithay::reexports::input::event::gesture::GestureSwipeUpdateEvent>()
+                .map(|e| Point::from((e.dx_unaccelerated(), e.dy_unaccelerated())))
+                .unwrap_or_else(|| event.delta());
+            if !delta.x.is_finite() || !delta.y.is_finite() {
+                return;
+            }
+            if gv.update_window_drag(delta.upscale(gv.gestures.direction),event.time()) {return;}
+            let Some(s) = &mut gv.gestures.swipe else {return;};
+            s.delta += delta.upscale(gv.gestures.direction);
+            if s.axis.is_none() {
+                s.axis = lock_axis(s.delta.x, s.delta.y);
+            }
+            let o = gv.workspaces.ensure(&s.output);
+            let position = Point::from((
+                rubber_band(
+                    progress(s.workspace_start, s.delta.x, gv.gestures.distance),
+                    (o.list.items.len() - 1) as f64,
+                ),
+                progress(s.overview_start, s.delta.y, OVERVIEW_SWIPE_DISTANCE).clamp(0.0, 1.0),
+            ));
+            s.history.push(event.time(), position);
+            let Some(axis) = s.axis else {
+                return;
+            };
+            let now = gv.start_time.elapsed();
+            let value = match axis {
+                Axis::Horizontal => {
+                    let value = position.x;
+                    o.position.follow(value, now);
+                    value
+                }
+                Axis::Vertical => {
+                    if !gv.features.on(crate::module::Feature::Overview) { return; }
+                    let value = position.y;
+                    gv.features.call(crate::module::Feature::Overview, (), || { gv.overview.output = Some(s.output.clone()); });
+                    gv.features.call(crate::module::Feature::Overview, (), || { gv.overview.held = true; });
+                    gv.features.call(crate::module::Feature::Overview, Default::default(), || gv.overview.progress.follow(value, now));
+                    value
+                }
+            };
+            let old = match axis {
+                Axis::Horizontal => s.last_value.x,
+                Axis::Vertical => s.last_value.y,
+            };
+            if axis == Axis::Horizontal {
+                s.last_value.x = value;
+            } else {
+                s.last_value.y = value;
+            }
+            if value != old {
+                gv.clear_desktop_pointer();
+                gv.queue_redraw_all();
+            }
+        })
     }
     pub fn on_gesture_swipe_end<I: InputBackend>(&mut self, event: I::GestureSwipeEndEvent) {
-        if self.gestures.swipe_client {
-            self.gestures.swipe_client = false;
-            self.seat.get_pointer().unwrap().gesture_swipe_end(
-                self,
-                &GestureSwipeEndEvent {
-                    serial: SERIAL_COUNTER.next_serial(),
-                    time: event.time_msec(),
-                    cancelled: event.cancelled(),
-                },
-            );
-            return;
-        }
-        if self.end_window_drag(event.time(),event.cancelled()) {return;}
-        let Some(mut s) = self.gestures.swipe.take() else {
-            return;
-        };
-        // Include the stationary interval between the final update and release.
-        s.history.push(event.time(), s.last_value);
-        let velocity = if event.cancelled() {
-            Point::from((0.0, 0.0))
-        } else {
-            s.history.velocity(event.time())
-        };
-        let o = self.workspaces.ensure(&s.output);
-        let now = self.start_time.elapsed();
-        let workspace_target = o.position.target;
-        let overview_target = self.overview.progress.target;
-        o.position.end_follow(0.0, now);
-        self.overview.progress.end_follow(0.0, now);
-        o.held = false;
-        self.overview.held = false;
-        match s.axis {
-            Some(Axis::Horizontal) => {
-                let target = if event.cancelled() {
-                    s.workspace_origin
-                } else {
-                    release_target(workspace_target, velocity.x, o.list.items.len() - 1)
-                };
-                self.switch_workspace(&s.output, target);
-                self.workspaces.ensure(&s.output).position.velocity = velocity.x;
-                self.overview
-                    .progress
-                    .set(if s.overview_origin { 1.0 } else { 0.0 });
+        if !self.features.on(crate::module::Feature::Gestures) {
+            if self.greeter.is_none() && !self.protocols.locks.locked {
+                self.seat.get_pointer().unwrap().gesture_swipe_end(self, &GestureSwipeEndEvent { serial: SERIAL_COUNTER.next_serial(), time: event.time_msec(), cancelled: event.cancelled() });
             }
-            Some(Axis::Vertical) => {
-                let v = velocity.y;
-                let target = if event.cancelled() {
-                    usize::from(s.overview_origin)
-                } else {
-                    release_target(overview_target, v, 1)
-                };
-                self.overview.progress.set(target as f64);
-                self.overview.progress.velocity = v;
-                o.position.set(o.list.active as f64);
-            }
-            None => {
-                o.position.set(o.list.active as f64);
-                self.overview
-                    .progress
-                    .set(if s.overview_origin { 1.0 } else { 0.0 });
-            }
-        }
-        if self.is_animating() {
-            self.queue_redraw_all();
-        }
-    }
-    pub fn on_gesture_pinch_begin<I: InputBackend>(&mut self, event: I::GesturePinchBeginEvent) {
-        if !self.gestures_enabled() {
             return;
         }
-        self.gestures.super_tap.cancel();
-        self.gestures.pinch_client = self.client_gesture(event.fingers()) || (event.fingers()==4 && self.window_gesture_locked());
-        if !self.gestures.pinch_client && (event.fingers()==4 || event.fingers()==2) {
-            self.begin_window_pinch(event.fingers()==2);
-        }
-        if self.gestures.pinch_client {
-            self.seat.get_pointer().unwrap().gesture_pinch_begin(
-                self,
-                &GesturePinchBeginEvent {
-                    serial: SERIAL_COUNTER.next_serial(),
-                    time: event.time_msec(),
-                    fingers: event.fingers(),
-                },
-            );
-        }
-    }
-    pub fn on_gesture_pinch_update<I: InputBackend>(&mut self, event: I::GesturePinchUpdateEvent) {
-        if !self.gestures_enabled() {return;}
-        if !self.gestures.pinch_client {self.update_window_pinch(event.scale());}
-        if self.gestures.pinch_client {
-            self.seat.get_pointer().unwrap().gesture_pinch_update(
-                self,
-                &GesturePinchUpdateEvent {
-                    time: event.time_msec(),
-                    delta: event.delta(),
-                    scale: event.scale(),
-                    rotation: event.rotation(),
-                },
-            );
-        }
-    }
-    pub fn on_gesture_pinch_end<I: InputBackend>(&mut self, event: I::GesturePinchEndEvent) {
-        if !self.gestures.pinch_client {self.end_window_pinch(event.cancelled());}
-        if self.gestures.pinch_client {
-            self.gestures.pinch_client = false;
-            self.seat.get_pointer().unwrap().gesture_pinch_end(
-                self,
-                &GesturePinchEndEvent {
-                    serial: SERIAL_COUNTER.next_serial(),
-                    time: event.time_msec(),
-                    cancelled: event.cancelled(),
-                },
-            );
-        }
-    }
-    pub fn on_gesture_hold_begin<I: InputBackend>(&mut self, event: I::GestureHoldBeginEvent) {
-        if !self.gestures_enabled() {
-            return;
-        }
-        self.gestures.super_tap.cancel();
-        self.gestures.hold_client = self.client_gesture(event.fingers());
-        if self.gestures.hold_client {
-            self.seat.get_pointer().unwrap().gesture_hold_begin(
-                self,
-                &GestureHoldBeginEvent {
-                    serial: SERIAL_COUNTER.next_serial(),
-                    time: event.time_msec(),
-                    fingers: event.fingers(),
-                },
-            );
-        } else if event.fingers() == 3 {
-            if let Some(output) = self.active_output() {
-                let moving = self.workspaces.ensure(&output).position.is_active()
-                    || (self.overview.output.as_ref() == Some(&output)
-                        && self.overview.progress.is_active());
-                if moving {
-                    self.catch_desktop(&output);
-                    self.gestures.hold_output = Some(output);
+
+        self.guard(crate::module::Feature::Gestures, Default::default(), |gv| {
+            if gv.gestures.swipe_client {
+                gv.gestures.swipe_client = false;
+                gv.seat.get_pointer().unwrap().gesture_swipe_end(
+                    gv,
+                    &GestureSwipeEndEvent {
+                        serial: SERIAL_COUNTER.next_serial(),
+                        time: event.time_msec(),
+                        cancelled: event.cancelled(),
+                    },
+                );
+                return;
+            }
+            if gv.end_window_drag(event.time(),event.cancelled()) {return;}
+            let Some(mut s) = gv.gestures.swipe.take() else {
+                return;
+            };
+            // Include the stationary interval between the final update and release.
+            s.history.push(event.time(), s.last_value);
+            let velocity = if event.cancelled() {
+                Point::from((0.0, 0.0))
+            } else {
+                s.history.velocity(event.time())
+            };
+            let o = gv.workspaces.ensure(&s.output);
+            let now = gv.start_time.elapsed();
+            let workspace_target = o.position.target;
+            let overview_target = gv.overview.progress.target;
+            o.position.end_follow(0.0, now);
+            gv.features.call(crate::module::Feature::Overview, Default::default(), || gv.overview.progress.end_follow(0.0, now));
+            o.held = false;
+            gv.features.call(crate::module::Feature::Overview, (), || { gv.overview.held = false; });
+            match s.axis {
+                Some(Axis::Horizontal) => {
+                    let target = if event.cancelled() {
+                        s.workspace_origin
+                    } else {
+                        release_target(workspace_target, velocity.x, o.list.items.len() - 1)
+                    };
+                    gv.switch_workspace(&s.output, target);
+                    gv.workspaces.ensure(&s.output).position.velocity = velocity.x;
+                    gv.features.call(crate::module::Feature::Overview, Default::default(), || gv.overview
+                        .progress
+                        .set(if s.overview_origin { 1.0 } else { 0.0 }));
+                }
+                Some(Axis::Vertical) => {
+                    let v = velocity.y;
+                    let target = if event.cancelled() {
+                        usize::from(s.overview_origin)
+                    } else {
+                        release_target(overview_target, v, 1)
+                    };
+                    gv.features.call(crate::module::Feature::Overview, Default::default(), || gv.overview.progress.set(target as f64));
+                    gv.overview.progress.velocity = v;
+                    o.position.set(o.list.active as f64);
+                }
+                None => {
+                    o.position.set(o.list.active as f64);
+                    gv.features.call(crate::module::Feature::Overview, Default::default(), || gv.overview
+                        .progress
+                        .set(if s.overview_origin { 1.0 } else { 0.0 }));
                 }
             }
+            if gv.is_animating() {
+                gv.queue_redraw_all();
+            }
+        })
+    }
+    pub fn on_gesture_pinch_begin<I: InputBackend>(&mut self, event: I::GesturePinchBeginEvent) {
+        if !self.features.on(crate::module::Feature::Gestures) {
+            if self.greeter.is_none() && !self.protocols.locks.locked {
+                self.seat.get_pointer().unwrap().gesture_pinch_begin(self, &GesturePinchBeginEvent { serial: SERIAL_COUNTER.next_serial(), time: event.time_msec(), fingers: event.fingers() });
+            }
+            return;
         }
+
+        self.guard(crate::module::Feature::Gestures, Default::default(), |gv| {
+            if !gv.gestures_enabled() {
+                return;
+            }
+            gv.gestures.super_tap.cancel();
+            gv.gestures.pinch_client = gv.client_gesture(event.fingers()) || (event.fingers()==4 && (!gv.features.on(crate::module::Feature::WindowGestures) || gv.window_gesture_locked()));
+            if !gv.gestures.pinch_client && (event.fingers()==4 || event.fingers()==2) {
+                gv.begin_window_pinch(event.fingers()==2);
+            }
+            if gv.gestures.pinch_client {
+                gv.seat.get_pointer().unwrap().gesture_pinch_begin(
+                    gv,
+                    &GesturePinchBeginEvent {
+                        serial: SERIAL_COUNTER.next_serial(),
+                        time: event.time_msec(),
+                        fingers: event.fingers(),
+                    },
+                );
+            }
+        })
+    }
+    pub fn on_gesture_pinch_update<I: InputBackend>(&mut self, event: I::GesturePinchUpdateEvent) {
+        if !self.features.on(crate::module::Feature::Gestures) {
+            if self.greeter.is_none() && !self.protocols.locks.locked {
+                self.seat.get_pointer().unwrap().gesture_pinch_update(self, &GesturePinchUpdateEvent { time: event.time_msec(), delta: event.delta(), scale: event.scale(), rotation: event.rotation() });
+            }
+            return;
+        }
+
+        self.guard(crate::module::Feature::Gestures, Default::default(), |gv| {
+            if !gv.gestures_enabled() {return;}
+            if !gv.gestures.pinch_client {gv.update_window_pinch(event.scale());}
+            if gv.gestures.pinch_client {
+                gv.seat.get_pointer().unwrap().gesture_pinch_update(
+                    gv,
+                    &GesturePinchUpdateEvent {
+                        time: event.time_msec(),
+                        delta: event.delta(),
+                        scale: event.scale(),
+                        rotation: event.rotation(),
+                    },
+                );
+            }
+        })
+    }
+    pub fn on_gesture_pinch_end<I: InputBackend>(&mut self, event: I::GesturePinchEndEvent) {
+        if !self.features.on(crate::module::Feature::Gestures) {
+            if self.greeter.is_none() && !self.protocols.locks.locked {
+                self.seat.get_pointer().unwrap().gesture_pinch_end(self, &GesturePinchEndEvent { serial: SERIAL_COUNTER.next_serial(), time: event.time_msec(), cancelled: event.cancelled() });
+            }
+            return;
+        }
+
+        self.guard(crate::module::Feature::Gestures, Default::default(), |gv| {
+            if !gv.gestures.pinch_client {gv.end_window_pinch(event.cancelled());}
+            if gv.gestures.pinch_client {
+                gv.gestures.pinch_client = false;
+                gv.seat.get_pointer().unwrap().gesture_pinch_end(
+                    gv,
+                    &GesturePinchEndEvent {
+                        serial: SERIAL_COUNTER.next_serial(),
+                        time: event.time_msec(),
+                        cancelled: event.cancelled(),
+                    },
+                );
+            }
+        })
+    }
+    pub fn on_gesture_hold_begin<I: InputBackend>(&mut self, event: I::GestureHoldBeginEvent) {
+        if !self.features.on(crate::module::Feature::Gestures) {
+            if self.greeter.is_none() && !self.protocols.locks.locked {
+                self.seat.get_pointer().unwrap().gesture_hold_begin(self, &GestureHoldBeginEvent { serial: SERIAL_COUNTER.next_serial(), time: event.time_msec(), fingers: event.fingers() });
+            }
+            return;
+        }
+
+        self.guard(crate::module::Feature::Gestures, Default::default(), |gv| {
+            if !gv.gestures_enabled() {
+                return;
+            }
+            gv.gestures.super_tap.cancel();
+            gv.gestures.hold_client = gv.client_gesture(event.fingers());
+            if gv.gestures.hold_client {
+                gv.seat.get_pointer().unwrap().gesture_hold_begin(
+                    gv,
+                    &GestureHoldBeginEvent {
+                        serial: SERIAL_COUNTER.next_serial(),
+                        time: event.time_msec(),
+                        fingers: event.fingers(),
+                    },
+                );
+            } else if event.fingers() == 3 {
+                if let Some(output) = gv.active_output() {
+                    let moving = gv.workspaces.ensure(&output).position.is_active()
+                        || (gv.overview.output.as_ref() == Some(&output)
+                            && gv.overview.progress.is_active());
+                    if moving {
+                        gv.catch_desktop(&output);
+                        gv.gestures.hold_output = Some(output);
+                    }
+                }
+            }
+        })
     }
     pub fn on_gesture_hold_end<I: InputBackend>(&mut self, event: I::GestureHoldEndEvent) {
-        if self.gestures.hold_client {
-            self.gestures.hold_client = false;
-            self.seat.get_pointer().unwrap().gesture_hold_end(
-                self,
-                &GestureHoldEndEvent {
-                    serial: SERIAL_COUNTER.next_serial(),
-                    time: event.time_msec(),
-                    cancelled: event.cancelled(),
-                },
-            );
-        } else if let Some(output) = self.gestures.hold_output.take() {
-            let o = self.workspaces.ensure(&output);
-            let target = release_target(o.position.value, 0.0, o.list.items.len() - 1);
-            o.held = false;
-            self.switch_workspace(&output, target);
-            if self.overview.output.as_ref() == Some(&output) {
-                self.overview.held = false;
-                self.overview.progress.advance(self.start_time.elapsed());
-                self.overview
-                    .progress
-                    .set(release_target(self.overview.progress.value, 0.0, 1) as f64);
+        if !self.features.on(crate::module::Feature::Gestures) {
+            if self.greeter.is_none() && !self.protocols.locks.locked {
+                self.seat.get_pointer().unwrap().gesture_hold_end(self, &GestureHoldEndEvent { serial: SERIAL_COUNTER.next_serial(), time: event.time_msec(), cancelled: event.cancelled() });
             }
-            self.queue_redraw_all();
+            return;
         }
+
+        self.guard(crate::module::Feature::Gestures, Default::default(), |gv| {
+            if gv.gestures.hold_client {
+                gv.gestures.hold_client = false;
+                gv.seat.get_pointer().unwrap().gesture_hold_end(
+                    gv,
+                    &GestureHoldEndEvent {
+                        serial: SERIAL_COUNTER.next_serial(),
+                        time: event.time_msec(),
+                        cancelled: event.cancelled(),
+                    },
+                );
+            } else if let Some(output) = gv.gestures.hold_output.take() {
+                let o = gv.workspaces.ensure(&output);
+                let target = release_target(o.position.value, 0.0, o.list.items.len() - 1);
+                o.held = false;
+                gv.switch_workspace(&output, target);
+                if gv.overview.output.as_ref() == Some(&output) {
+                    gv.features.call(crate::module::Feature::Overview, (), || { gv.overview.held = false; });
+                    gv.features.call(crate::module::Feature::Overview, Default::default(), || gv.overview.progress.advance(gv.start_time.elapsed()));
+                    gv.features.call(crate::module::Feature::Overview, Default::default(), || gv.overview
+                        .progress
+                        .set(release_target(gv.overview.progress.value, 0.0, 1) as f64));
+                }
+                gv.queue_redraw_all();
+            }
+        })
     }
 }
 
@@ -596,5 +681,64 @@ mod tests {
         t.key(1, true, true, false);
         t.key(3, true, true, true);
         assert!(!t.key(1, true, false, false));
+    }
+}
+
+impl Gavno {
+    pub(crate) fn reset_gestures(&mut self) {
+        let streams = [self.gestures.swipe_client, self.gestures.pinch_client, self.gestures.hold_client];
+        self.loop_handle.insert_idle(move |gv| {
+            if let Some(pointer) = gv.seat.get_pointer() {
+                let serial = SERIAL_COUNTER.next_serial();
+                let time = gv.clock.now().as_millis() as u32;
+                if streams[0] { pointer.gesture_swipe_end(gv, &GestureSwipeEndEvent { serial, time, cancelled: true }); }
+                if streams[1] { pointer.gesture_pinch_end(gv, &GesturePinchEndEvent { serial, time, cancelled: true }); }
+                if streams[2] { pointer.gesture_hold_end(gv, &GestureHoldEndEvent { serial, time, cancelled: true }); }
+            }
+        });
+        for w in self.space.elements() {
+            crate::grabs::resize_grab::clear_anchor(w);
+            if let Some(t) = w.toplevel() {
+                t.with_pending_state(|s| s.states.unset(smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Resizing));
+                t.send_pending_configure();
+            }
+        }
+        self.gestures = Default::default();
+        self.window_gestures = Default::default();
+        self.features.call(crate::module::Feature::Overview, (), || { self.overview.drag = None; });
+        self.features.call(crate::module::Feature::Overview, (), || { self.overview.flick = None; });
+        self.workspaces.moving_tile = None;
+        for owner in &mut self.workspaces.outputs {
+            owner.held = false;
+            owner.position.jump(owner.list.active as f64);
+        }
+        self.overlay.reset_switcher();
+        self.cancel_feature_grab();
+    }
+
+    pub(crate) fn cancel_feature_grab(&mut self) {
+        let Some(pointer) = self.seat.get_pointer() else { return };
+        // Recovery may run inside a PointerInnerHandle callback. Defer seat
+        // access to idle there, since Smithay holds the pointer mutex.
+        self.loop_handle.insert_idle(|gv| {
+            if let Some(pointer) = gv.seat.get_pointer() {
+                pointer.unset_grab(gv, smithay::utils::SERIAL_COUNTER.next_serial(), gv.clock.now().as_millis() as u32);
+                for button in std::mem::take(&mut gv.pointer_buttons) {
+                    pointer.button(gv, &smithay::input::pointer::ButtonEvent {
+                        button, state: smithay::backend::input::ButtonState::Released,
+                        serial: smithay::utils::SERIAL_COUNTER.next_serial(), time: gv.clock.now().as_millis() as u32,
+                    });
+                }
+                pointer.frame(gv);
+            }
+        });
+        drop(pointer);
+        self.cursor_status = smithay::input::pointer::CursorImageStatus::default_named();
+    }
+}
+
+impl Gavno {
+    pub(crate) fn super_tap_key(&mut self, code: u32, is_super: bool, pressed: bool, other_down: bool) -> bool {
+        self.guard(crate::module::Feature::Gestures, false, |gv| gv.gestures.super_tap.key(code, is_super, pressed, other_down))
     }
 }

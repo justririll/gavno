@@ -29,7 +29,7 @@ use smithay::{
 #[cfg(not(test))]
 use smithay::wayland::socket::ListeningSocketSource;
 
-use crate::{backend::Backend, config::Config, module::Module};
+use crate::{backend::Backend, config::Config, module::{Feature, Features}};
 
 pub struct Gavno {
     pub protocols: crate::handlers::protocols::Protocols,
@@ -81,9 +81,10 @@ pub struct Gavno {
     pub desktop_keys: Vec<u32>,
     /// Buttons whose presses reached Smithay, including window manipulation grabs.
     pub(crate) pointer_buttons: Vec<u32>,
+    pub(crate) suppressed_buttons: Vec<u32>,
 
     pub backend: Backend,
-    pub modules: Vec<Box<dyn Module>>,
+    pub features: Features,
     /// `-c <command>`, run once the first output exists.
     pub startup_cmd: Option<String>,
     /// Set in `--greeter` mode: GAVNO is the login screen.
@@ -93,7 +94,8 @@ pub struct Gavno {
 
 impl Gavno {
     pub fn new(event_loop: &mut EventLoop<'static, Self>, display: Display<Self>, config: Config) -> Self {
-        let tiling_default = config.tiling.default;
+        let features = Features::new(&config);
+        let tiling_default = config.tiling.default && features.on(Feature::Tiling);
         let dh = display.handle();
         let clock = Clock::new();
 
@@ -171,8 +173,9 @@ impl Gavno {
             suppressed_keys: Vec::new(),
             desktop_keys: Vec::new(),
             pointer_buttons: Vec::new(),
+            suppressed_buttons: Vec::new(),
             backend: Backend::None,
-            modules: Vec::new(),
+            features,
             startup_cmd: None,
             greeter: None,
             lock: Default::default(),
@@ -216,6 +219,7 @@ impl Gavno {
 
     /// Runs once per event loop iteration, after all events were dispatched.
     pub fn on_loop_idle(&mut self) {
+        self.run_feature_resets();
         self.space.refresh();
         self.refresh_workspaces();
         self.refresh_desktop_pointer();
@@ -242,17 +246,16 @@ impl Gavno {
     }
 
     /// True while something animates and needs the next frame drawn.
-    pub fn is_animating(&self) -> bool {
-        if self.protocols.locks.locked {
-            return self.lock.is_animating();
-        }
-        match self.greeter.as_ref() {
-            Some(g) => g.is_animating(),
-            None => self.window_animations.is_animating() || self.overlay.is_animating()
-                || self.workspaces.active() || self.overview.progress.is_active()
-                || self.overview.flick.as_ref().is_some_and(|(_,x,y)|x.is_active() || y.is_active())
-                || self.dock.active() || self.topbar.active(),
-        }
+    pub fn is_animating(&mut self) -> bool {
+        if self.protocols.locks.locked { return self.lock.is_animating(); }
+        if let Some(g) = self.greeter.as_mut() { return g.safe_call(false, |g| g.is_animating()); }
+        let animations = self.guard(Feature::Animations, false, |gv| gv.window_animations.is_animating());
+        let overlay = self.guard(Feature::Switcher, false, |gv| gv.overlay.is_animating());
+        let overview = self.guard(Feature::Overview, false, |gv| gv.overview.progress.is_active()
+            || gv.overview.flick.as_ref().is_some_and(|(_, x, y)| x.is_active() || y.is_active()));
+        let dock = self.guard(Feature::Dock, false, |gv| gv.dock.active());
+        let bar = self.guard(Feature::Bar, false, |gv| gv.topbar.active());
+        animations || overlay || self.workspaces.active() || overview || dock || bar
     }
 
     pub fn pointer_location(&self) -> Point<f64, Logical> {
@@ -261,13 +264,14 @@ impl Gavno {
 
     pub fn surface_under(&self, pos: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
         if self.protocols.locks.locked { return self.lock_surface_under(pos); }
+        if self.greeter.is_some() { return None; }
         if self.greeter.is_none() && self.shell_contains(pos) { return None; }
         use smithay::wayland::shell::wlr_layer::Layer;
         if let Some(hit) = self.layer_hit(pos, &[Layer::Overlay, Layer::Top]) {
             return Some((hit.surface, hit.surface_loc));
         }
         if self.desktop_transform_at(pos) { return None; }
-        if self.splitter_at(pos).is_some() || self.resize_band_at(pos).is_some() || self.overlay.resize_mode.active() { return None; }
+        if self.splitter_at(pos).is_some() || self.resize_band_at(pos).is_some() || (self.features.on(crate::module::Feature::ResizeMode) && self.overlay.resize_mode.active()) { return None; }
         if let Some((_, _, surface, origin)) = self.window_input_at(pos) {
             return Some((surface, origin));
         }
@@ -309,7 +313,7 @@ impl Gavno {
     /// Raises `window`, gives it keyboard focus and marks it activated;
     /// `None` clears focus.
     pub fn focus_window(&mut self, window: Option<&Window>) {
-        if self.protocols.locks.locked { return; }
+        if self.protocols.locks.locked || self.greeter.is_some() { return; }
         let serial = SERIAL_COUNTER.next_serial();
         if let Some(window) = window {
             if let Some((output, index)) = self.workspaces.membership(window) {
@@ -334,7 +338,7 @@ impl Gavno {
         let keyboard = self.seat.get_keyboard().unwrap();
         let surface = window.and_then(|w| w.toplevel()).map(|t| t.wl_surface().clone());
         if surface.is_none() {
-            self.window_decor.focus(None);
+            self.guard(Feature::Decorations, (), |gv| gv.window_decor.focus(None));
             self.update_shortcut_inhibitors(None);
             self.refresh_constraints(None);
         }
@@ -382,12 +386,8 @@ impl Gavno {
             }
         }
         self.reflow_tiling(true);
-        self.window_animations.open(&window, self.start_time.elapsed());
+        self.features.call(crate::module::Feature::Animations, (), || self.window_animations.open(&window, self.start_time.elapsed()));
         if !urgent { self.focus_window(Some(&window)); }
-        self.dispatch_modules(|m, gv| {
-            m.window_mapped(gv, &window);
-            crate::module::Handled::No
-        });
     }
 
     /// Called by backends after a new output was mapped.

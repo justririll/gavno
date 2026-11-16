@@ -344,6 +344,10 @@ impl Overview {
 }
 impl Gavno {
     pub fn toggle_overview(&mut self) {
+        self.guard(crate::module::Feature::Overview, Default::default(), |gv| gv.toggle_overview_feature())
+    }
+
+    fn toggle_overview_feature(&mut self) {
         if self.greeter.is_some() || self.protocols.locks.locked {
             return;
         }
@@ -356,6 +360,10 @@ impl Gavno {
         }
     }
     pub fn close_overview(&mut self) {
+        self.guard(crate::module::Feature::Overview, Default::default(), |gv| gv.close_overview_feature())
+    }
+
+    fn close_overview_feature(&mut self) {
         if let Some(output) = self.overview.output.clone() {
             self.overview.set(output, false, self.start_time.elapsed());
             self.overview.drag = None;
@@ -377,6 +385,10 @@ impl Gavno {
         pointer.frame(self);
     }
     pub fn overview_button(&mut self, button: u32, pressed: bool) -> bool {
+        self.guard(crate::module::Feature::Overview, Default::default(), |gv| gv.overview_button_feature(button, pressed))
+    }
+
+    fn overview_button_feature(&mut self, button: u32, pressed: bool) -> bool {
         if !self.overview.visible() {
             return false;
         }
@@ -442,6 +454,10 @@ impl Gavno {
         true
     }
     pub fn overview_motion(&mut self, pos: Point<f64, Logical>) {
+        self.guard(crate::module::Feature::Overview, Default::default(), |gv| gv.overview_motion_feature(pos))
+    }
+
+    fn overview_motion_feature(&mut self, pos: Point<f64, Logical>) {
         if let Some(output) = &self.overview.output {
             if let Some(geo) = self.space.output_geometry(output) {
                 if let Some((_, _, current)) = &mut self.overview.drag {

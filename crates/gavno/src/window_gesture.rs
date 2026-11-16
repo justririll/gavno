@@ -187,13 +187,16 @@ pub struct WindowGestures {
     pinch: Option<Pinch>,
     scroll: Option<Scroll>,
     pub pressure: Pressure,
-    pub band_hover: bool,
-    pub swallowed_buttons: Vec<u32>,
+
 }
 
 impl Gavno {
     /// Mapping changes must discard streams without restoring their old geometry.
     pub(crate) fn cancel_window_gestures(&mut self) {
+        self.guard(crate::module::Feature::WindowGestures, Default::default(), |gv| gv.cancel_window_gestures_feature())
+    }
+
+    fn cancel_window_gestures_feature(&mut self) {
         let drag = self.window_gestures.drag.take().is_some();
         self.end_window_pinch(false);
         if let Some(s) = self.window_gestures.scroll.take() {
@@ -203,7 +206,7 @@ impl Gavno {
         }
         if drag {
             self.workspaces.moving_tile = None;
-            self.overlay.hide_preview(self.start_time.elapsed());
+            self.features.call(crate::module::Feature::Switcher, (), || self.overlay.hide_preview(self.start_time.elapsed()));
             self.queue_redraw_all();
         }
     }
@@ -234,6 +237,10 @@ impl Gavno {
             .or_else(|| self.space.element_under(pos).map(|(w, _)| w.clone()))
     }
     pub fn gesture_window(&self) -> Option<Window> {
+        self.features.read(crate::module::Feature::WindowGestures, Default::default(), || self.gesture_window_feature())
+    }
+
+    fn gesture_window_feature(&self) -> Option<Window> {
         let pos = self.pointer_location();
         if self.shell_contains(pos)
             || self.desktop_transform_at(pos)
@@ -253,6 +260,10 @@ impl Gavno {
             .or_else(|| self.focused_window())
     }
     pub fn window_gesture_locked(&self) -> bool {
+        self.features.read(crate::module::Feature::WindowGestures, Default::default(), || self.window_gesture_locked_feature())
+    }
+
+    fn window_gesture_locked_feature(&self) -> bool {
         use smithay::wayland::pointer_constraints::{with_pointer_constraint, PointerConstraint};
         let Some(pointer) = self.seat.get_pointer() else {
             return false;
@@ -286,10 +297,10 @@ impl Gavno {
             }
             self.space.map_element(w.clone(), rect.loc, false);
         }
-        self.window_animations.cancel(w);
+        self.features.call(crate::module::Feature::Animations, (), || self.window_animations.cancel(w));
         if mode_state(w).mode != WindowMode::Floating {
             self.set_window_mode(w, WindowMode::Floating, None);
-            self.window_animations.cancel(w);
+            self.features.call(crate::module::Feature::Animations, (), || self.window_animations.cancel(w));
             self.reflow_tiling(false);
         }
     }
@@ -305,7 +316,7 @@ impl Gavno {
                     t.send_pending_configure();
                 }
                 self.space.map_element(w.clone(), r.loc, false);
-                self.window_animations.geometry_immediate(w, r.to_f64());
+                self.features.call(crate::module::Feature::Animations, (), || self.window_animations.geometry_immediate(w, r.to_f64()));
             }
         }
     }
@@ -347,7 +358,7 @@ impl Gavno {
         t.send_pending_configure();
         self.space.map_element(w.clone(), rect.loc, false);
         self.save_workspace_location(w, rect.loc);
-        self.window_animations.geometry_immediate(w, rect.to_f64());
+        self.features.call(crate::module::Feature::Animations, (), || self.window_animations.geometry_immediate(w, rect.to_f64()));
         self.queue_redraw_all();
     }
     pub fn finish_interactive_resize(&mut self, w: &Window) {
@@ -374,6 +385,10 @@ impl Gavno {
         }
     }
     pub fn begin_window_drag(&mut self, time: u64) {
+        self.guard(crate::module::Feature::WindowGestures, Default::default(), |gv| gv.begin_window_drag_feature(time))
+    }
+
+    fn begin_window_drag_feature(&mut self, time: u64) {
         let Some(w) = self.gesture_window() else {
             return;
         };
@@ -404,12 +419,16 @@ impl Gavno {
         });
     }
     pub fn update_window_drag(&mut self, delta: Pos, time: u64) -> bool {
+        self.guard(crate::module::Feature::WindowGestures, Default::default(), |gv| gv.update_window_drag_feature(delta, time))
+    }
+
+    fn update_window_drag_feature(&mut self, delta: Pos, time: u64) -> bool {
         let Some(mut d) = self.window_gestures.drag.take() else {
             return false;
         };
         if !self.gesture_window_is_active(&d.window) {
             self.workspaces.moving_tile = None;
-            self.overlay.hide_preview(self.start_time.elapsed());
+            self.features.call(crate::module::Feature::Switcher, (), || self.overlay.hide_preview(self.start_time.elapsed()));
             self.queue_redraw_all();
             return true;
         }
@@ -434,7 +453,7 @@ impl Gavno {
             d.delta += delta;
             d.history.push(time, d.delta);
             let loc = d.initial.loc.to_f64() + d.delta;
-            self.window_animations.cancel(&d.window);
+            self.features.call(crate::module::Feature::Animations, (), || self.window_animations.cancel(&d.window));
             self.space
                 .map_element(d.window.clone(), loc.to_i32_round(), true);
             if self.tiled(&d.window) {
@@ -451,6 +470,10 @@ impl Gavno {
         true
     }
     pub fn end_window_drag(&mut self, time: u64, cancelled: bool) -> bool {
+        self.guard(crate::module::Feature::WindowGestures, Default::default(), |gv| gv.end_window_drag_feature(time, cancelled))
+    }
+
+    fn end_window_drag_feature(&mut self, time: u64, cancelled: bool) -> bool {
         let Some(mut d) = self.window_gestures.drag.take() else {
             return false;
         };
@@ -459,7 +482,7 @@ impl Gavno {
         }
         if !self.gesture_window_is_active(&d.window) {
             self.workspaces.moving_tile = None;
-            self.overlay.hide_preview(self.start_time.elapsed());
+            self.features.call(crate::module::Feature::Switcher, (), || self.overlay.hide_preview(self.start_time.elapsed()));
             self.queue_redraw_all();
             return true;
         }
@@ -470,7 +493,7 @@ impl Gavno {
             d.history.velocity(time)
         };
         self.workspaces.moving_tile = None;
-        self.overlay.hide_preview(self.start_time.elapsed());
+        self.features.call(crate::module::Feature::Switcher, (), || self.overlay.hide_preview(self.start_time.elapsed()));
         if self.tiled(&d.window) {
             if !cancelled && velocity.x.hypot(velocity.y) > 600.0 {
                 let dir = if velocity.x.abs() > velocity.y.abs() {
@@ -507,14 +530,16 @@ impl Gavno {
             }
         } else if let Some(output) = self.drag_destination(&d.window, d.pointer + d.delta) {
             let Some(geo) = self.space.output_geometry(&output) else { return true };
-            match landing(d.pointer + d.delta, velocity, geo) {
+            match self.landing_for_features(d.pointer + d.delta, velocity, geo) {
                 Some(Landing::Minimize) => {
                     self.minimize_window(&d.window);
                     self.seed_minimize_velocity(&d.window, velocity);
                 }
                 Some(Landing::Snap(z)) => {
-                    self.set_window_mode(&d.window, z.mode(), Some(output));
-                    self.seed_geometry_velocity(&d.window, velocity);
+                    self.guard(crate::module::Feature::Snap, (), |gv| {
+                        gv.set_window_mode(&d.window, z.mode(), Some(output));
+                        gv.seed_geometry_velocity(&d.window, velocity);
+                    });
                 }
                 None => {
                     if let Some(from) = self.interactive_rect(&d.window) {
@@ -547,63 +572,81 @@ impl Gavno {
         self.queue_redraw_all();
         true
     }
+    fn landing_for_features(&self, p: Pos, velocity: Pos, output: Rect) -> Option<Landing> {
+        landing(p, velocity, output).filter(|target| match target {
+            Landing::Snap(_) => self.features.on(crate::module::Feature::Snap),
+            Landing::Minimize => self.features.on(crate::module::Feature::Dock),
+        })
+    }
+
     fn preview_window_landing(&mut self, w: &Window, output: &Output, p: Pos) {
+        self.guard(crate::module::Feature::WindowGestures, Default::default(), |gv| gv.preview_window_landing_feature(w, output, p))
+    }
+
+    fn preview_window_landing_feature(&mut self, w: &Window, output: &Output, p: Pos) {
         let Some(geo) = self.space.output_geometry(output) else {
             return;
         };
-        match landing(p, (0.0, 0.0).into(), geo) {
+        match self.landing_for_features(p, (0.0, 0.0).into(), geo) {
             Some(Landing::Snap(z)) => {
                 let r = z.rect(self.work_area(output), self.config.gap);
-                self.overlay.preview(
+                self.guard(crate::module::Feature::Switcher, (), |gv| gv.overlay.preview(
                     output.clone(),
                     z,
-                    self.interactive_rect(w).unwrap_or(r),
+                    gv.interactive_rect(w).unwrap_or(r),
                     r,
-                    self.start_time.elapsed(),
-                );
+                    gv.start_time.elapsed(),
+                ));
             }
             Some(Landing::Minimize) => {
                 let r = Rectangle::new(
                     (geo.loc.x + geo.size.w / 2 - 24, geo.loc.y + geo.size.h - 64).into(),
                     (48, 48).into(),
                 );
-                self.overlay.preview(
+                self.guard(crate::module::Feature::Switcher, (), |gv| gv.overlay.preview(
                     output.clone(),
                     Zone::Maximized,
-                    self.interactive_rect(w).unwrap_or(r),
+                    gv.interactive_rect(w).unwrap_or(r),
                     r,
-                    self.start_time.elapsed(),
-                );
+                    gv.start_time.elapsed(),
+                ));
             }
-            None => self.overlay.hide_preview(self.start_time.elapsed()),
+            None => self.features.call(crate::module::Feature::Switcher, (), || self.overlay.hide_preview(self.start_time.elapsed())),
         }
     }
     pub fn tile_resize_edges(&self, w: &Window, preferred: Edge) -> Edge {
-        let Some((o, i)) = self.workspaces.membership(w) else {
-            return preferred;
-        };
-        let Some(owner) = self.workspaces.get(&o) else {
-            return preferred;
-        };
-        let tree = &owner.list.items[i].tree;
-        let area = self.work_area(&o);
-        let gap = self.config.gap;
-        let mut edges = Edge::empty();
-        for (edge, dir) in [
-            (Edge::LEFT, Direction::Left),
-            (Edge::RIGHT, Direction::Right),
-            (Edge::TOP, Direction::Up),
-            (Edge::BOTTOM, Direction::Down),
-        ] {
-            if preferred.contains(edge) {
-                if tree.side(w, dir, area, gap).is_some() {
-                    edges |= edge;
+        self.features.read(crate::module::Feature::Tiling, preferred, || {
+            let Some((o, i)) = self.workspaces.membership(w) else {
+                return preferred;
+            };
+            let Some(owner) = self.workspaces.get(&o) else {
+                return preferred;
+            };
+            let tree = &owner.list.items[i].tree;
+            let area = self.work_area(&o);
+            let gap = self.config.gap;
+            let mut edges = Edge::empty();
+            for (edge, dir) in [
+                (Edge::LEFT, Direction::Left),
+                (Edge::RIGHT, Direction::Right),
+                (Edge::TOP, Direction::Up),
+                (Edge::BOTTOM, Direction::Down),
+            ] {
+                if preferred.contains(edge) {
+                    if tree.side(w, dir, area, gap).is_some() {
+                        edges |= edge;
+                    }
                 }
             }
-        }
-        edges
+            edges
+
+        })
     }
     pub fn begin_window_pinch(&mut self, proportional: bool) {
+        self.guard(crate::module::Feature::WindowGestures, Default::default(), |gv| gv.begin_window_pinch_feature(proportional))
+    }
+
+    fn begin_window_pinch_feature(&mut self, proportional: bool) {
         if proportional
             && self
                 .interactive_window_at(self.pointer_location())
@@ -655,6 +698,10 @@ impl Gavno {
         });
     }
     pub fn update_window_pinch(&mut self, scale: f64) {
+        self.guard(crate::module::Feature::WindowGestures, Default::default(), |gv| gv.update_window_pinch_feature(scale))
+    }
+
+    fn update_window_pinch_feature(&mut self, scale: f64) {
         let Some(mut p) = self.window_gestures.pinch.take() else {
             return;
         };
@@ -703,6 +750,10 @@ impl Gavno {
         self.window_gestures.pinch = Some(p);
     }
     pub fn end_window_pinch(&mut self, cancelled: bool) {
+        self.guard(crate::module::Feature::WindowGestures, Default::default(), |gv| gv.end_window_pinch_feature(cancelled))
+    }
+
+    fn end_window_pinch_feature(&mut self, cancelled: bool) {
         if let Some(p) = self.window_gestures.pinch.take() {
             if cancelled && p.started && self.gesture_window_is_active(&p.window) {
                 if self.tiled(&p.window) {
@@ -717,7 +768,7 @@ impl Gavno {
                 } else {
                     let from = self.interactive_rect(&p.window);
                     self.apply_interactive_resize(&p.window, p.initial, p.anchor);
-                    self.window_animations.cancel(&p.window);
+                    self.features.call(crate::module::Feature::Animations, (), || self.window_animations.cancel(&p.window));
                     if let Some(from) = from {
                         crate::anim::animate_geometry(self, &p.window, from);
                     }
@@ -730,6 +781,10 @@ impl Gavno {
     }
     /// Finger-axis streams have no begin event; latch on their first non-stop frame.
     pub fn precision_scroll(&mut self, delta: Pos, present: [Option<f64>; 2]) -> bool {
+        self.guard(crate::module::Feature::WindowGestures, Default::default(), |gv| gv.precision_scroll_feature(delta, present))
+    }
+
+    fn precision_scroll_feature(&mut self, delta: Pos, present: [Option<f64>; 2]) -> bool {
         if self.window_gestures.scroll.is_none() {
             if delta == (0.0, 0.0).into() {
                 return false;
@@ -740,7 +795,7 @@ impl Gavno {
                 .is_some_and(|k| k.modifier_state().logo)
                 && !self.shell_contains(self.pointer_location());
             let window = if claimed
-                && !self.overview.visible()
+                && !self.features.read(crate::module::Feature::Overview, false, || self.overview.visible())
                 && !self.shell_contains(self.pointer_location())
             {
                 self.interactive_window_at(self.pointer_location())
@@ -860,84 +915,87 @@ impl Gavno {
         time: u64,
         present: [Option<f64>; 2],
     ) -> bool {
-        if !self.overview.visible() {
-            self.window_gestures.flick = None;
-            return false;
-        }
-        if self.window_gestures.flick.is_none() {
-            let w = self
-                .overview
-                .output
-                .as_ref()
-                .and_then(|o| self.space.output_geometry(o))
-                .and_then(|geo| {
-                    let pos = self.pointer_location() - geo.loc.to_f64();
-                    self.overview
-                        .hits
-                        .iter()
-                        .rev()
-                        .find(|v| v.rect.contains(pos))
-                        .map(|v| v.window.clone())
+        if !self.features.on(crate::module::Feature::WindowGestures) { return false; }
+        self.guard(crate::module::Feature::Overview, Default::default(), |gv| {
+            if !gv.features.read(crate::module::Feature::Overview, false, || gv.overview.visible()) {
+                gv.window_gestures.flick = None;
+                return false;
+            }
+            if gv.window_gestures.flick.is_none() {
+                let w = gv
+                    .overview
+                    .output
+                    .as_ref()
+                    .and_then(|o| gv.space.output_geometry(o))
+                    .and_then(|geo| {
+                        let pos = gv.pointer_location() - geo.loc.to_f64();
+                        gv.overview
+                            .hits
+                            .iter()
+                            .rev()
+                            .find(|v| v.rect.contains(pos))
+                            .map(|v| v.window.clone())
+                    });
+                if let Some(window) = &w {
+                    use crate::ui::spring::{Spring, SpringParams};
+                    gv.overview.flick = Some((
+                        window.clone(),
+                        Spring::new(0.0, SpringParams::SNAPPY),
+                        Spring::new(0.0, SpringParams::SNAPPY),
+                    ));
+                }
+                let mut history = MotionHistory::default();
+                history.push(time, (0.0, 0.0).into());
+                gv.window_gestures.flick = Some(Flick {
+                    window: w,
+                    delta: (0.0, 0.0).into(),
+                    history,
+                    active: [false; 2],
                 });
-            if let Some(window) = &w {
-                use crate::ui::spring::{Spring, SpringParams};
-                self.overview.flick = Some((
-                    window.clone(),
-                    Spring::new(0.0, SpringParams::SNAPPY),
-                    Spring::new(0.0, SpringParams::SNAPPY),
-                ));
             }
-            let mut history = MotionHistory::default();
-            history.push(time, (0.0, 0.0).into());
-            self.window_gestures.flick = Some(Flick {
-                window: w,
-                delta: (0.0, 0.0).into(),
-                history,
-                active: [false; 2],
-            });
-        }
-        let Some(mut f) = self.window_gestures.flick.take() else {
-            return true;
-        };
-        f.delta += delta;
-        f.history.push(time, f.delta);
-        if let Some((_, x, y)) = &mut self.overview.flick {
-            x.jump(f.delta.x);
-            y.jump(f.delta.y);
-            if delta != (0.0, 0.0).into() {
-                self.queue_redraw_all();
-            }
-        }
-        for (i, v) in present.into_iter().enumerate() {
-            if let Some(v) = v {
-                f.active[i] = v != 0.0;
-            }
-        }
-        if f.active.iter().any(|v| *v) {
-            self.window_gestures.flick = Some(f);
-        } else {
-            let v = f.history.velocity(time);
-            if let Some((_, x, y)) = &mut self.overview.flick {
-                let now = self.start_time.elapsed();
-                x.advance(now);
-                y.advance(now);
-                x.set(0.0);
-                y.set(0.0);
-                x.velocity = v.x;
-                y.velocity = v.y;
-                if x.is_active() || y.is_active() {
-                    self.queue_redraw_all();
+            let Some(mut f) = gv.window_gestures.flick.take() else {
+                return true;
+            };
+            f.delta += delta;
+            f.history.push(time, f.delta);
+            if let Some((_, x, y)) = &mut gv.overview.flick {
+                x.jump(f.delta.x);
+                y.jump(f.delta.y);
+                if delta != (0.0, 0.0).into() {
+                    gv.queue_redraw_all();
                 }
             }
-            if f.delta.y < -12.0 && v.y < -150.0 && f.delta.y.abs() > f.delta.x.abs() {
-                if let Some(w) = f.window.filter(|w| w.alive()) {
-                    if let Some(t) = w.toplevel() {
-                        t.send_close();
+            for (i, v) in present.into_iter().enumerate() {
+                if let Some(v) = v {
+                    f.active[i] = v != 0.0;
+                }
+            }
+            if f.active.iter().any(|v| *v) {
+                gv.window_gestures.flick = Some(f);
+            } else {
+                let v = f.history.velocity(time);
+                if let Some((_, x, y)) = &mut gv.overview.flick {
+                    let now = gv.start_time.elapsed();
+                    x.advance(now);
+                    y.advance(now);
+                    x.set(0.0);
+                    y.set(0.0);
+                    x.velocity = v.x;
+                    y.velocity = v.y;
+                    if x.is_active() || y.is_active() {
+                        gv.queue_redraw_all();
+                    }
+                }
+                if f.delta.y < -12.0 && v.y < -150.0 && f.delta.y.abs() > f.delta.x.abs() {
+                    if let Some(w) = f.window.filter(|w| w.alive()) {
+                        if let Some(t) = w.toplevel() {
+                            t.send_close();
+                        }
                     }
                 }
             }
-        }
-        true
+            true
+        })
     }
 }
 
@@ -1346,5 +1404,22 @@ mod tests {
         let loc = h.gv.space.element_location(&w).unwrap();
         let actual = w.geometry().size;
         assert_eq!((loc.x + actual.w, loc.y + actual.h), (900, 800));
+    }
+}
+
+#[cfg(test)]
+mod feature_tests {
+    use super::*;
+    #[test]
+    fn disabled_snap_and_dock_do_not_claim_window_throw_targets() {
+        let mut h = crate::state::tests::Harness::new();
+        let output = Rectangle::new((0, 0).into(), (1600, 900).into());
+        let p = (800.0, 450.0).into();
+        assert!(matches!(h.gv.landing_for_features(p, (5000.0, 0.0).into(), output), Some(Landing::Snap(_))));
+        h.gv.config.modules.snap = false;
+        h.gv.config.modules.dock = false;
+        h.gv.features = crate::module::Features::new(&h.gv.config);
+        assert_eq!(h.gv.landing_for_features(p, (5000.0, 0.0).into(), output), None);
+        assert_eq!(h.gv.landing_for_features(p, (0.0, 5000.0).into(), output), None);
     }
 }

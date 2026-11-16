@@ -125,6 +125,7 @@ fn render(gv: &mut Gavno) {
         &mut gv.dock,
         &mut gv.topbar,
         &gv.config,
+        &mut gv.features,
         );
         data.damage_tracker
             .render_output(renderer, &mut framebuffer, age, &elements, render::CLEAR_COLOR)

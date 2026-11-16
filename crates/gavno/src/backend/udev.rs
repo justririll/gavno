@@ -503,11 +503,6 @@ fn connector_connected(gv: &mut Gavno, connector: connector::Info, crtc: crtc::H
             white_nits,
         },
     );
-
-    gv.dispatch_modules(|m, gv| {
-        m.output_added(gv, &output);
-        crate::module::Handled::No
-    });
     gv.output_added_hook();
     queue_redraw(gv, crtc);
 }
@@ -743,6 +738,7 @@ fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
         &mut gv.dock,
         &mut gv.topbar,
         &gv.config,
+        &mut gv.features,
     );
     let mut result = draw_frame(surface, &mut gpu.renderer, &elements);
     if result.is_err() && surface.hdr.is_some() {
@@ -966,6 +962,7 @@ pub fn capture_output(gv: &mut Gavno, output: &Output, cursor: bool) -> Option<(
         &mut gv.dock,
         &mut gv.topbar,
         &gv.config,
+        &mut gv.features,
     );
     let size: Size<i32, BufferCoord> = (mode.size.w, mode.size.h).into();
     let mut texture: GlesTexture = gpu.renderer.create_buffer(Fourcc::Abgr8888, size).ok()?;

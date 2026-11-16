@@ -28,9 +28,14 @@ struct WindowId(u64);
 pub struct IpcState {
     last_id: u64,
     socket: Option<SocketPath>,
+    listener: Option<transport::Listener>,
 }
 
 impl IpcState {
+    pub(crate) fn close(&mut self, handle: &smithay::reexports::calloop::LoopHandle<'static, Gavno>) {
+        if let Some(listener) = self.listener.take() { handle.remove(listener.token); }
+        self.socket = None;
+    }
     pub fn assign_id(&mut self, window: &Window) {
         if window.user_data().get::<WindowId>().is_none() {
             self.last_id = self.last_id.checked_add(1).expect("window id exhausted");
@@ -118,13 +123,16 @@ pub fn init(gv: &mut Gavno) -> io::Result<()> {
         .ok_or_else(|| io::Error::other("XDG_RUNTIME_DIR is required for gavno IPC"))?;
     let path = PathBuf::from(runtime).join("gavno/ipc.sock");
     let (listener, socket) = bind(&path)?;
-    transport::listen(gv.loop_handle.clone(), listener, |line, gv| {
-        protocol::reply(line, |method, params| dispatch(gv, method, params))
-    })?;
+    let listener = transport::listen(gv.loop_handle.clone(), listener, |line, gv| request(gv, line))?;
+    gv.ipc.listener = Some(listener);
     gv.ipc.socket = Some(socket);
     std::env::set_var("GAVNO_SOCK", &path);
     tracing::info!(?path, "gavno IPC is listening");
     Ok(())
+}
+
+fn request(gv: &mut Gavno, line: &[u8]) -> Vec<u8> {
+    gv.guard(crate::module::Feature::Ipc, Vec::new(), |gv| protocol::reply(line, |method, params| dispatch(gv, method, params)))
 }
 
 fn screen(gv: &Gavno) -> Value {
@@ -400,4 +408,29 @@ mod tests {
         assert!(dispatch(&mut h.gv, "workspace", &json!({"workspace": -1})).is_err());
     }
 
+}
+
+#[cfg(test)]
+mod feature_tests {
+    use super::*;
+    use std::io::Read;
+    #[test]
+    fn ipc_crash_closes_listener_and_gives_connected_clients_eof() {
+        let mut h = crate::state::tests::Harness::new();
+        let root = std::env::temp_dir().join(format!("gavno-ipc-reset-{}-{}", std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+        let path = root.join("ipc.sock");
+        let (listener, socket) = bind(&path).unwrap();
+        h.gv.ipc.listener = Some(transport::listen(h.gv.loop_handle.clone(), listener, |line, gv| request(gv, line)).unwrap());
+        h.gv.ipc.socket = Some(socket);
+        let mut client = UnixStream::connect(&path).unwrap();
+        client.set_nonblocking(true).unwrap();
+        h.event_loop.dispatch(std::time::Duration::ZERO, &mut h.gv).unwrap();
+        h.gv.features.inject_panic(crate::module::Feature::Ipc);
+        client.write_all(b"{\"id\":1,\"method\":\"screen\"}\n").unwrap();
+        h.event_loop.dispatch(std::time::Duration::ZERO, &mut h.gv).unwrap();
+        assert_eq!(client.read(&mut [0; 16]).unwrap(), 0);
+        assert!(h.gv.ipc.listener.is_none());
+        assert!(!path.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
 }

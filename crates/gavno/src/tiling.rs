@@ -468,12 +468,20 @@ impl<K: Clone + PartialEq> Tree<K> {
 
 impl Gavno {
     pub fn tiling_workspace(&self, window: &Window) -> bool {
+        self.features.read(crate::module::Feature::Tiling, Default::default(), || self.tiling_workspace_feature(window))
+    }
+
+    fn tiling_workspace_feature(&self, window: &Window) -> bool {
         self.workspaces
             .membership(window)
             .and_then(|(o, i)| self.workspaces.get(&o).map(|o| o.list.items[i].tiling))
             .unwrap_or(false)
     }
     pub fn tiled(&self, window: &Window) -> bool {
+        self.features.read(crate::module::Feature::Tiling, Default::default(), || self.tiled_feature(window))
+    }
+
+    fn tiled_feature(&self, window: &Window) -> bool {
         let s = mode_state(window);
         self.tiling_workspace(window)
             && !s.tile_floating
@@ -492,6 +500,10 @@ impl Gavno {
         Some(Rectangle::new(loc, size))
     }
     pub fn toggle_workspace_tiling(&mut self, output: &Output) {
+        self.guard(crate::module::Feature::Tiling, Default::default(), |gv| gv.toggle_workspace_tiling_feature(output))
+    }
+
+    fn toggle_workspace_tiling_feature(&mut self, output: &Output) {
         self.end_window_grab();
         self.workspaces.snapshot(&self.space);
         let owner = self.workspaces.ensure(output);
@@ -527,6 +539,10 @@ impl Gavno {
         self.queue_redraw_all();
     }
     pub fn toggle_floating(&mut self, window: &Window) {
+        self.guard(crate::module::Feature::Tiling, Default::default(), |gv| gv.toggle_floating_feature(window))
+    }
+
+    fn toggle_floating_feature(&mut self, window: &Window) {
         if !self.tiling_workspace(window) {
             return;
         }
@@ -543,7 +559,7 @@ impl Gavno {
         self.raise_tile_overlays();
         self.queue_redraw_all();
     }
-    fn apply_tile_rect(&mut self, window: &Window, rect: Rect, animate: bool, tiled: bool) {
+    fn reset_tile_rect(&mut self, window: &Window, rect: Rect, animate: bool, tiled: bool) {
         crate::grabs::resize_grab::clear_anchor(window);
         let from = self.tile_rect(window);
         let mapped = self.space.element_location(window).is_some();
@@ -552,8 +568,58 @@ impl Gavno {
             t.with_pending_state(|s| s.states.contains(State::TiledLeft) == tiled)
         });
         if !animate && mapped {
-            self.window_animations
-                .geometry_immediate(window, rect.to_f64());
+            self.features.call(crate::module::Feature::Animations, (), || self.window_animations
+                .geometry_immediate(window, rect.to_f64()));
+        }
+        if from == Some(rect) && flags_match {
+            return;
+        }
+        if let Some(t) = window.toplevel() {
+            t.with_pending_state(|s| {
+                s.size = Some(rect.size);
+                use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State;
+                for flag in [
+                    State::TiledLeft,
+                    State::TiledRight,
+                    State::TiledTop,
+                    State::TiledBottom,
+                ] {
+                    if tiled {
+                        s.states.set(flag);
+                    } else {
+                        s.states.unset(flag);
+                    }
+                }
+            });
+            t.send_pending_configure();
+        }
+        self.save_workspace_location(window, rect.loc);
+        if mapped {
+            self.space.map_element(window.clone(), rect.loc, false);
+            if animate {
+                if let Some(from) = from {
+                    crate::anim::animate_geometry(self, window, from);
+                }
+            }
+        }
+        self.queue_redraw_all();
+
+        }
+    fn apply_tile_rect(&mut self, window: &Window, rect: Rect, animate: bool, tiled: bool) {
+        self.guard(crate::module::Feature::Tiling, Default::default(), |gv| gv.apply_tile_rect_feature(window, rect, animate, tiled))
+    }
+
+    fn apply_tile_rect_feature(&mut self, window: &Window, rect: Rect, animate: bool, tiled: bool) {
+        crate::grabs::resize_grab::clear_anchor(window);
+        let from = self.tile_rect(window);
+        let mapped = self.space.element_location(window).is_some();
+        let flags_match = window.toplevel().is_none_or(|t| {
+            use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State;
+            t.with_pending_state(|s| s.states.contains(State::TiledLeft) == tiled)
+        });
+        if !animate && mapped {
+            self.features.call(crate::module::Feature::Animations, (), || self.window_animations
+                .geometry_immediate(window, rect.to_f64()));
         }
         if from == Some(rect) && flags_match {
             return;
@@ -589,6 +655,10 @@ impl Gavno {
         self.queue_redraw_all();
     }
     pub fn reflow_tiling(&mut self, animate: bool) {
+        self.guard(crate::module::Feature::Tiling, Default::default(), |gv| gv.reflow_tiling_feature(animate))
+    }
+
+    fn reflow_tiling_feature(&mut self, animate: bool) {
         if self.greeter.is_some() {
             return;
         }
@@ -662,6 +732,10 @@ impl Gavno {
         self.raise_tile_overlays();
     }
     pub fn raise_tile_overlays(&mut self) {
+        self.guard(crate::module::Feature::Tiling, Default::default(), |gv| gv.raise_tile_overlays_feature())
+    }
+
+    fn raise_tile_overlays_feature(&mut self) {
         let windows: Vec<_> = self
             .space
             .elements()
@@ -673,6 +747,10 @@ impl Gavno {
         }
     }
     pub fn rotate_tile(&mut self) {
+        self.guard(crate::module::Feature::Tiling, Default::default(), |gv| gv.rotate_tile_feature())
+    }
+
+    fn rotate_tile_feature(&mut self) {
         let Some(w) = self.focused_window().filter(|w| self.tiled(w)) else {
             return;
         };
@@ -683,12 +761,20 @@ impl Gavno {
         self.reflow_tiling(true);
     }
     pub fn move_tile(&mut self, dir: Direction) {
+        self.guard(crate::module::Feature::Tiling, Default::default(), |gv| gv.move_tile_feature(dir))
+    }
+
+    fn move_tile_feature(&mut self, dir: Direction) {
         let Some(w) = self.focused_window().filter(|w| self.tiled(w)) else {
             return;
         };
         self.move_tile_window(&w,dir);
     }
     pub fn move_tile_window(&mut self,w:&Window,dir:Direction) {
+        self.guard(crate::module::Feature::Tiling, Default::default(), |gv| gv.move_tile_window_feature(w, dir))
+    }
+
+    fn move_tile_window_feature(&mut self,w:&Window,dir:Direction) {
         let Some((o,i))=self.workspaces.membership(w) else {return};
         let area=self.work_area(&o);let gap=self.config.gap;
         let tree=&mut self.workspaces.ensure(&o).list.items[i].tree;
@@ -698,6 +784,10 @@ impl Gavno {
         self.reflow_tiling(true);
     }
     pub fn resize_tile(&mut self, w: &Window, dir: Direction, delta: i32, animate: bool) {
+        self.guard(crate::module::Feature::Tiling, Default::default(), |gv| gv.resize_tile_feature(w, dir, delta, animate))
+    }
+
+    fn resize_tile_feature(&mut self, w: &Window, dir: Direction, delta: i32, animate: bool) {
         let Some((o, i)) = self.workspaces.membership(w) else {
             return;
         };
@@ -710,6 +800,10 @@ impl Gavno {
         self.reflow_tiling(animate);
     }
     pub fn drop_tile(&mut self, w: &Window, pos: Point<f64, Logical>) {
+        self.guard(crate::module::Feature::Tiling, Default::default(), |gv| gv.drop_tile_feature(w, pos))
+    }
+
+    fn drop_tile_feature(&mut self, w: &Window, pos: Point<f64, Logical>) {
         let Some((o, i)) = self.workspaces.membership(w) else {
             return;
         };
@@ -731,6 +825,10 @@ impl Gavno {
         self.reflow_tiling(true);
     }
     pub fn splitter_at(&self, pos: Point<f64, Logical>) -> Option<(Output, Splitter)> {
+        self.features.read(crate::module::Feature::Tiling, Default::default(), || self.splitter_at_feature(pos))
+    }
+
+    fn splitter_at_feature(&self, pos: Point<f64, Logical>) -> Option<(Output, Splitter)> {
         if self.greeter.is_some()
             || self.protocols.locks.locked
             || self.shell_contains(pos)
@@ -776,6 +874,10 @@ impl Gavno {
 
 impl Gavno {
     pub fn refresh_splitter_cursor(&mut self) {
+        self.guard(crate::module::Feature::Tiling, Default::default(), |gv| gv.refresh_splitter_cursor_feature())
+    }
+
+    fn refresh_splitter_cursor_feature(&mut self) {
         if self.greeter.is_some() || self.protocols.locks.locked {
             return;
         }
@@ -1261,6 +1363,10 @@ pub fn drop_edge(r:Rect,p:Point<f64,Logical>) -> Option<Direction> {
 }
 impl Gavno {
     pub fn resize_nearest_split(&mut self,w:&Window,dir:Direction,delta:i32) {
+        self.guard(crate::module::Feature::Tiling, Default::default(), |gv| gv.resize_nearest_split_feature(w, dir, delta))
+    }
+
+    fn resize_nearest_split_feature(&mut self,w:&Window,dir:Direction,delta:i32) {
         let Some((o,i))=self.workspaces.membership(w) else {return};
         let area=self.work_area(&o);let gap=self.config.gap;
         let tree=&mut self.workspaces.ensure(&o).list.items[i].tree;
@@ -1269,6 +1375,10 @@ impl Gavno {
         }
     }
     pub fn preview_tile_drop(&mut self,w:&Window,pos:Point<f64,Logical>) {
+        self.guard(crate::module::Feature::Tiling, Default::default(), |gv| gv.preview_tile_drop_feature(w, pos))
+    }
+
+    fn preview_tile_drop_feature(&mut self,w:&Window,pos:Point<f64,Logical>) {
         let Some((o,i))=self.workspaces.membership(w) else {return};
         let area=self.work_area(&o);let gap=self.config.gap;
         let tree=&self.workspaces.ensure(&o).list.items[i].tree;
@@ -1278,7 +1388,45 @@ impl Gavno {
             projected.drop_at(w,&n,drop_edge(r,pos));
             let preview=projected.layout(area,gap).0.into_iter().find(|(n,_)|n==w).map(|(_,r)|r).unwrap_or(r);
             let from=self.interactive_rect(w).unwrap_or(preview);
-            self.overlay.preview(o,Zone::Maximized,from,preview,self.start_time.elapsed());
-        } else {self.overlay.hide_preview(self.start_time.elapsed());}
+            self.features.call(crate::module::Feature::Switcher, (), || self.overlay.preview(o,Zone::Maximized,from,preview,self.start_time.elapsed()));
+        } else {self.features.call(crate::module::Feature::Switcher, (), || self.overlay.hide_preview(self.start_time.elapsed()));}
+    }
+}
+
+impl Gavno {
+    pub(crate) fn reset_tiling(&mut self) {
+        self.workspaces.default_tiling = false;
+        self.workspaces.moving_tile = None;
+        self.workspaces.splitter_hover = None;
+        let mut windows: Vec<_> = self.space.elements().cloned().collect();
+        for owner in &mut self.workspaces.outputs {
+            owner.list.default_tiling = false;
+            for ws in &mut owner.list.items {
+                ws.tiling = false;
+                ws.tree = Default::default();
+                for v in &ws.windows { if !windows.contains(&v.window) { windows.push(v.window.clone()); } }
+            }
+        }
+        for w in windows {
+            let s = mode_state(&w);
+            if s.tile_restore.is_none() { continue; }
+            let rect = self.window_animations.motion(&w).map(|m| m.rect(self.tile_rect(&w).unwrap_or_default().to_f64()).to_i32_round())
+                .or_else(|| self.tile_rect(&w));
+            with_mode_state(&w, |s| { s.tile_restore = None; s.tile_floating = true; });
+            if let Some(mut r) = rect {
+                // Recovery can run inside a pointer grab callback. Use ownership,
+                // never active_output(), which would reenter the pointer mutex.
+                let output = self.workspaces.membership(&w).map(|(o, _)| o)
+                    .or_else(|| self.space.outputs().next().cloned());
+                if let Some(area) = output.and_then(|o| self.space.output_geometry(&o)) {
+                    r.size.w = r.size.w.clamp(1, area.size.w.max(1));
+                    r.size.h = r.size.h.clamp(1, area.size.h.max(1));
+                    r.loc.x = r.loc.x.clamp(area.loc.x, area.loc.x + area.size.w - r.size.w);
+                    r.loc.y = r.loc.y.clamp(area.loc.y, area.loc.y + area.size.h - r.size.h);
+                }
+                self.reset_tile_rect(&w, r, false, false);
+            }
+        }
+        self.cancel_feature_grab();
     }
 }

@@ -29,9 +29,21 @@ pub struct Screencopy {
     pending: Vec<Pending>,
 }
 
+impl Screencopy {
+    pub(crate) fn fail_pending(&mut self) {
+        for p in self.pending.drain(..) { p.frame.failed(); }
+    }
+}
+
 struct Pending {
     frame: ZwlrScreencopyFrameV1,
     buffer: WlBuffer,
+}
+
+impl Drop for Pending {
+    fn drop(&mut self) {
+        if std::thread::panicking() && self.frame.is_alive() { self.frame.failed(); }
+    }
 }
 
 pub struct FrameData {
@@ -143,6 +155,7 @@ impl Dispatch<ZwlrScreencopyManagerV1, ()> for Gavno {
             zwlr_screencopy_manager_v1::Request::Destroy => return,
             _ => return,
         };
+        let (output, geometry) = state.guard(crate::module::Feature::Screencopy, (None, None), |state| {
         let output = Output::from_resource(&output).filter(|o| state.space.outputs().any(|s| s == o));
         let geometry = output.as_ref().and_then(|o| {
             let mode = o.current_mode()?;
@@ -153,6 +166,8 @@ impl Dispatch<ZwlrScreencopyManagerV1, ()> for Gavno {
                 Rectangle::from_size(geo.size)
             });
             physical_region(logical, scale, size)
+        });
+        (output, geometry)
         });
         let frame = data_init.init(
             frame,
@@ -195,7 +210,7 @@ impl Dispatch<ZwlrScreencopyFrameV1, FrameData> for Gavno {
             frame.post_error(zwlr_screencopy_frame_v1::Error::AlreadyUsed, "frame already used");
             return;
         }
-        if data.output.is_none() {
+        if !state.features.on(crate::module::Feature::Screencopy) || data.output.is_none() {
             frame.failed();
             return;
         }
@@ -216,34 +231,36 @@ impl Dispatch<ZwlrScreencopyFrameV1, FrameData> for Gavno {
             state.protocols.screencopy.pending.push(pending);
             state.queue_redraw_all();
         } else {
-            complete(state, pending);
+            state.guard(crate::module::Feature::Screencopy, (), |gv| complete(gv, pending));
         }
     }
 }
 
 /// Completes `copy_with_damage` requests for `output` after a new frame was drawn.
 pub fn frame_drawn(gv: &mut Gavno, output: &Output) {
-    if gv.protocols.screencopy.pending.is_empty() {
-        return;
-    }
-    let mut ready = Vec::new();
-    gv.protocols.screencopy.pending.retain(|p| {
-        if !p.frame.is_alive() {
-            return false;
+    gv.guard(crate::module::Feature::Screencopy, (), |gv| {
+        if gv.protocols.screencopy.pending.is_empty() {
+            return;
         }
-        let ours = p
-            .frame
-            .data::<FrameData>()
-            .and_then(|d| d.output.as_ref())
-            .is_some_and(|o| o == output);
-        if ours {
-            ready.push(Pending { frame: p.frame.clone(), buffer: p.buffer.clone() });
+        let mut ready = Vec::new();
+        gv.protocols.screencopy.pending.retain(|p| {
+            if !p.frame.is_alive() {
+                return false;
+            }
+            let ours = p
+                .frame
+                .data::<FrameData>()
+                .and_then(|d| d.output.as_ref())
+                .is_some_and(|o| o == output);
+            if ours {
+                ready.push(Pending { frame: p.frame.clone(), buffer: p.buffer.clone() });
+            }
+            !ours
+        });
+        for p in ready {
+            complete(gv, p);
         }
-        !ours
     });
-    for p in ready {
-        complete(gv, p);
-    }
 }
 
 fn complete(gv: &mut Gavno, p: Pending) {

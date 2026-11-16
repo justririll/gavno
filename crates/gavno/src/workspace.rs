@@ -23,7 +23,7 @@ pub struct WorkspaceList<T> {
     pub items: Vec<Workspace<T>>,
     pub active: usize,
     next_id: u64,
-    default_tiling: bool,
+    pub(crate) default_tiling: bool,
 }
 impl<T> Default for WorkspaceList<T> {
     fn default() -> Self {
@@ -220,8 +220,9 @@ impl Gavno {
                 .is_some_and(|r| r.to_f64().contains(pos))
                 && (o.held
                     || o.position.is_active()
-                    || (self.overview.output.as_ref() == Some(&o.output)
-                        && self.overview.visible()))
+                    || self.features.read(crate::module::Feature::Overview, false, || {
+                        self.overview.output.as_ref() == Some(&o.output) && self.overview.visible()
+                    }))
         })
     }
     pub fn refresh_workspaces(&mut self) {
@@ -236,18 +237,20 @@ impl Gavno {
             self.end_window_grab();
         }
         self.workspaces.snapshot(&self.space);
-        if self
-            .overview
-            .output
-            .as_ref()
-            .is_some_and(|o| !outputs.contains(o))
-        {
-            self.overview.output = None;
-            self.overview.progress.jump(0.0);
-            self.overview.held = false;
-            self.overview.drag = None;
-            self.overview.hits.clear();
-        }
+        self.guard(crate::module::Feature::Overview, (), |gv| {
+            if gv
+                .overview
+                .output
+                .as_ref()
+                .is_some_and(|o| !outputs.contains(o))
+            {
+                gv.features.call(crate::module::Feature::Overview, (), || { gv.overview.output = None; });
+                gv.features.call(crate::module::Feature::Overview, Default::default(), || gv.overview.progress.jump(0.0));
+                gv.features.call(crate::module::Feature::Overview, (), || { gv.overview.held = false; });
+                gv.features.call(crate::module::Feature::Overview, (), || { gv.overview.drag = None; });
+                gv.overview.hits.clear();
+            }
+        });
         if outputs.is_empty() {
             return;
         }
@@ -276,8 +279,8 @@ impl Gavno {
                     s.tile_restore = s.tile_restore.map(|r| migrate_rect(r, origin, area));
                 });
                 crate::grabs::resize_grab::clear_anchor(&w.window);
-                self.window_animations.cancel(&w.window);
-                self.dock.cancel_window_motion(&w.window);
+                self.features.call(crate::module::Feature::Animations, (), || self.window_animations.cancel(&w.window));
+                self.features.call(crate::module::Feature::Dock, (), || self.dock.cancel_window_motion(&w.window));
                 let owner = self.workspaces.ensure(output);
                 let active = owner.list.active;
                 if !crate::window_mode::mode_state(&w.window).minimized { self.space.map_element(w.window.clone(), w.location, false); }
@@ -345,11 +348,11 @@ impl Gavno {
     }
     pub fn workspace_forget(&mut self, window: &Window) {
         self.cancel_window_gestures();
-        self.overview.forget(window);
+        self.guard(crate::module::Feature::Overview, (), |gv| gv.overview.forget(window));
         for o in &mut self.workspaces.outputs {
             for ws in &mut o.list.items {
                 ws.windows.retain(|w| &w.window != window);
-                ws.tree.remove(window);
+                self.features.call(crate::module::Feature::Tiling, (), || ws.tree.remove(window));
             }
         }
         self.reflow_tiling(true);
@@ -799,4 +802,29 @@ mod tests {
         h.gv.switch_workspace(&o, 0);
         assert_eq!(h.gv.space.element_location(&w), Some((123, 234).into()));
     }
+}
+
+/// Core workspace strips remain available when Overview is disabled.
+pub(crate) fn workspace_scene(
+    workspaces: &mut Workspaces, space: &Space<Window>, output: &Output, now: Duration,
+) -> Option<Vec<crate::overview::SceneWindow>> {
+    workspaces.advance(now);
+    let owner = workspaces.get(output)?;
+    if !owner.held && !owner.position.is_active()
+        && (owner.position.value - owner.list.active as f64).abs() < 0.0005 { return None; }
+    let geo = space.output_geometry(output)?;
+    let mut scene = Vec::new();
+    for (index, ws) in owner.list.items.iter().enumerate() {
+        for v in &ws.windows {
+            if crate::window_mode::mode_state(&v.window).minimized { continue; }
+            let location = space.element_location(&v.window).unwrap_or(v.location);
+            let offset = Point::from(((index as f64 - owner.position.value) * geo.size.w as f64, 0.0));
+            scene.push(crate::overview::SceneWindow {
+                window: v.window.clone(), location,
+                rect: smithay::utils::Rectangle::new(location.to_f64() - geo.loc.to_f64() + offset,
+                    v.window.geometry().size.to_f64()),
+            });
+        }
+    }
+    Some(scene)
 }

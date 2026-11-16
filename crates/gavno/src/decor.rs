@@ -546,12 +546,13 @@ impl WindowDecor {
         space: &Space<Window>,
         output: &Output,
         animations: &mut WindowAnimations,
-        time: Duration,
+        _time: Duration,
         scene: Option<&[crate::overview::SceneWindow]>,
+        features: &crate::module::Features,
     ) -> Vec<GavnoRenderElement> {
-        animations.advance(time, space);
+
         self.caches.retain(|c| {
-            (animations.motion(&c.window).is_some() || space.element_location(&c.window).is_some())
+            (features.read(crate::module::Feature::Animations, None, || animations.motion(&c.window)).is_some() || space.element_location(&c.window).is_some())
                 && space.outputs().any(|o| o == &c.output)
         });
         if self.programs.is_none() && !self.failed {
@@ -607,7 +608,7 @@ impl WindowDecor {
         // windows using the last space order captured below.
         let mut windows: Vec<Window> = scene.map(|s| s.iter().map(|v| v.window.clone()).collect())
             .unwrap_or_else(|| space.elements().cloned().collect());
-        for a in &animations.entries {
+        for a in animations.entries.iter().filter(|_| features.on(crate::module::Feature::Animations)) {
             if scene.is_none() && a.motion.closing && !windows.contains(&a.window) {
                 let above = self
                     .stack
@@ -623,7 +624,7 @@ impl WindowDecor {
         }
         self.stack = windows.clone();
         for window in windows.iter().rev() {
-            let closing = animations.motion(window).is_some_and(|m| m.closing);
+            let closing = features.read(crate::module::Feature::Animations, None, || animations.motion(window)).is_some_and(|m| m.closing);
             let index = if let Some(i) = self
                 .caches
                 .iter()
@@ -642,7 +643,7 @@ impl WindowDecor {
                 self.caches.len() - 1
             };
             let cache = &mut self.caches[index].cache;
-            let motion = animations.motion(window);
+            let motion = features.read(crate::module::Feature::Animations, None, || animations.motion(window));
             if closing {
                 if cache.snapshot.is_none() {
                     match snapshot(renderer, cache, scale) {

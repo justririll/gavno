@@ -12,6 +12,7 @@ mod icons;
 mod topbar;
 mod backend;
 mod config;
+mod crash_log;
 mod color;
 mod hdr;
 mod cursor;
@@ -44,6 +45,7 @@ pub use state::Gavno;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_logging();
+    crash_log::install();
 
     let mut args = std::env::args().skip(1);
     let mut backend_choice = None;
@@ -86,8 +88,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The window IPC lets agents drive the desktop; never on the login screen.
     if !greeter_mode {
         lock::start(&mut state);
-        handlers::screencopy::init(&mut state);
-        if let Err(err) = ipc::init(&mut state) {
+        state.guard(module::Feature::Screencopy, (), handlers::screencopy::init);
+        if let Err(err) = state.guard(module::Feature::Ipc, Ok(()), ipc::init) {
             tracing::warn!(?err, "window IPC disabled");
         }
     }

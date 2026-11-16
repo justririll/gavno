@@ -37,7 +37,7 @@ impl XdgShellHandler for Gavno {
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
         // Mapped on the first buffer commit, see `CompositorHandler::commit`.
         let window = Window::new_wayland_window(surface);
-        self.ipc.assign_id(&window);
+        self.guard(crate::module::Feature::Ipc, (), |gv| gv.ipc.assign_id(&window));
         self.unmapped.push(window);
     }
 
@@ -46,13 +46,9 @@ impl XdgShellHandler for Gavno {
             .retain(|w| w.toplevel().is_some_and(|t| t.wl_surface() != surface.wl_surface()));
         if let Some(window) = self.window_for_surface(surface.wl_surface()) {
             let was_focused = self.focused_window().as_ref() == Some(&window);
-            if self.space.element_location(&window).is_some() { self.window_animations.close(&window, self.start_time.elapsed()); }
+            if self.space.element_location(&window).is_some() { self.features.call(crate::module::Feature::Animations, (), || self.window_animations.close(&window, self.start_time.elapsed())); }
             self.space.unmap_elem(&window);
             self.workspace_forget(&window);
-            self.dispatch_modules(|m, gv| {
-                m.window_unmapped(gv, &window);
-                crate::module::Handled::No
-            });
             if was_focused {
                 self.focus_topmost();
             }

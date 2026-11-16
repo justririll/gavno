@@ -48,7 +48,7 @@ impl PointerGrab<Gavno> for MoveSurfaceGrab {
         handle.motion(data, None, event);
 
         crate::grabs::resize_grab::clear_anchor(&self.window);
-        data.window_animations.cancel(&self.window);
+        data.features.call(crate::module::Feature::Animations, (), || data.window_animations.cancel(&self.window));
         let delta = event.location - self.start_data.location;
         if !self.window.alive() {
             return;
@@ -68,7 +68,7 @@ impl PointerGrab<Gavno> for MoveSurfaceGrab {
                     restored,
                 );
                 data.set_window_mode(&self.window, WindowMode::Floating, None);
-                data.window_animations.cancel(&self.window);
+                data.features.call(crate::module::Feature::Animations, (), || data.window_animations.cancel(&self.window));
             }
         }
         if data.tiled(&self.window) { data.workspaces.moving_tile = Some(self.window.clone()); data.preview_tile_drop(&self.window,event.location); }
@@ -199,7 +199,7 @@ impl PointerGrab<Gavno> for MoveSurfaceGrab {
     fn unset(&mut self, data: &mut Gavno) {
         data.workspaces.moving_tile = None;
         if data.tiled(&self.window) { data.drop_tile(&self.window,(-1e9,-1e9).into()); }
-        data.overlay.hide_preview(data.start_time.elapsed());
+        data.features.call(crate::module::Feature::Switcher, (), || data.overlay.hide_preview(data.start_time.elapsed()));
         data.queue_redraw_all();
     }
 }

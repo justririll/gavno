@@ -31,6 +31,10 @@ pub struct Lock {
     internal: bool,
     authenticated: bool,
     failed: bool,
+    ui_panics: u8,
+    recover_ui: bool,
+    #[cfg(test)]
+    pub(crate) panic_key: bool,
     ui: Option<Greeter>,
     backoff: Backoff,
     blocked_until: Option<Instant>,
@@ -70,7 +74,7 @@ impl Lock {
                 .blocked_until
                 .is_none_or(|until| Instant::now() >= until)
     }
-    /// A UI panic permanently poisons this lock instance. Its caller still sees locked=true.
+    /// Discard a failed UI before the event loop recreates it behind the closed gate.
     fn ui_call<T>(&mut self, f: impl FnOnce(&mut Greeter) -> T) -> Option<T> {
         if self.failed {
             return None;
@@ -78,17 +82,21 @@ impl Lock {
         let ui = self.ui.as_mut()?;
         match catch_unwind(AssertUnwindSafe(|| f(ui))) {
             Ok(value) => Some(value),
-            Err(_) => {
+            Err(payload) => {
+                self.ui_panics = self.ui_panics.saturating_add(1);
+                self.recover_ui = self.ui_panics == 1;
+                self.generation = self.generation.wrapping_add(1);
+                self.checking = false;
                 self.failed = true;
                 self.authenticated = false;
                 self.ui = None;
-                tracing::error!("lock UI failed; retaining solid-color lock");
+                tracing::error!(message = %crate::module::panic_message(payload.as_ref()), "lock UI failed; retaining solid-color lock");
                 None
             }
         }
     }
-    pub fn is_animating(&self) -> bool {
-        self.internal && !self.failed && self.ui.as_ref().is_some_and(Greeter::is_animating)
+    pub fn is_animating(&mut self) -> bool {
+        self.internal && self.ui_call(|ui| ui.is_animating()).unwrap_or(false)
     }
     pub fn elements(
         &mut self,
@@ -100,9 +108,11 @@ impl Lock {
         let elements = self
             .ui_call(|ui| ui.elements(renderer, size, scale, now))
             .unwrap_or_default();
-        if elements.is_empty() {
+        if elements.is_empty() && !self.failed {
             // Shader initialization failure is reported without a panic. Stop
             // requesting animation frames and retain the same closed gate.
+            self.ui_panics = self.ui_panics.saturating_add(1);
+            self.recover_ui = self.ui_panics == 1;
             self.failed = true;
             self.authenticated = false;
             self.ui = None;
@@ -111,7 +121,13 @@ impl Lock {
     }
     pub fn key(&mut self, sym: Keysym, ch: Option<char>, mods: &ModifiersState) {
         if self.accepts_input() {
-            self.ui_call(|ui| ui.key(sym, ch, mods));
+            #[cfg(test)]
+            let inject = std::mem::take(&mut self.panic_key);
+            self.ui_call(|ui| {
+                #[cfg(test)]
+                if inject { panic!("injected lock key panic"); }
+                ui.key(sym, ch, mods)
+            });
             self.checking = self.ui.as_ref().is_some_and(Greeter::lock_checking);
         }
     }
@@ -157,6 +173,8 @@ impl Gavno {
         self.lock.internal = true;
         self.lock.authenticated = false;
         self.lock.failed = false;
+        self.lock.ui_panics = 0;
+        self.lock.recover_ui = false;
         self.lock.backoff = Backoff::default();
         self.lock.blocked_until = None;
         self.lock.checking = false;
@@ -171,7 +189,7 @@ impl Gavno {
         self.overview.drag = None;
         self.overview.flick = None;
         self.topbar.menu = None;
-        self.dock.close_menu();
+        self.guard(crate::module::Feature::Dock, (), |gv| gv.dock.close_menu());
         self.create_lock_ui();
         self.update_lock_modifiers();
         self.schedule_lock_minute();
@@ -273,6 +291,11 @@ impl Gavno {
         self.queue_redraw_all();
     }
     pub(crate) fn refresh_internal_lock(&mut self) {
+        if self.lock.internal && std::mem::take(&mut self.lock.recover_ui) {
+            self.lock.failed = false;
+            self.restart_lock_ui();
+            if let Some(ui) = self.lock.ui.as_mut() { ui.settle_intro(); }
+        }
         let locked = self.protocols.locks.locked;
         if locked != self.lock.hinted {
             self.lock.hinted = locked;

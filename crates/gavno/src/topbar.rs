@@ -497,73 +497,87 @@ impl Gavno {
     /// Re-evaluate visibility after protocol/input events; no source wakes a hidden panel.
     pub fn refresh_shell(&mut self) {
         let outputs: Vec<_> = self.space.outputs().cloned().collect();
-        self.dock.refresh(
-            &self.config.dock,
-            &self.workspaces,
-            &self.space,
-            self.start_time.elapsed(),
-        );
-        let title = self
-            .focused_window()
-            .map(|w| {
-                let (title, app) = crate::overlay::window_labels(&w);
-                format!("{app}  {title}")
-            })
-            .unwrap_or_default();
-        let layouts = self.config.xkb_layout.clone();
-        let layout = self
-            .seat
-            .get_keyboard()
-            .map(|k| {
-                k.with_xkb_state(self, |ctx| {
-                    let xkb = ctx.xkb().lock().unwrap_or_else(|e| e.into_inner());
-                    let index = xkb.active_layout().0 as usize;
-                    layouts.split(',').nth(index).unwrap_or("us").to_uppercase()
+        self.guard(crate::module::Feature::Dock, (), |gv| {
+            gv.dock.refresh(
+                &gv.config.dock,
+                &gv.workspaces,
+                &gv.space,
+                gv.start_time.elapsed(),
+            );
+        });
+        self.refresh_bar(&outputs);
+    }
+    fn refresh_bar(&mut self, outputs: &[Output]) {
+        self.guard(crate::module::Feature::Bar, (), |gv| {
+            let title = gv
+                .focused_window()
+                .map(|w| {
+                    let (title, app) = crate::overlay::window_labels(&w);
+                    format!("{app}  {title}")
                 })
-            })
-            .unwrap_or_else(|| "US".into());
-        let changed = self.topbar.title != title || self.topbar.layout != layout;
-        self.topbar.title = title;
-        self.topbar.layout = layout;
-        self.topbar.enabled = self.config.bar.enabled;
-        self.topbar.icon_theme = self.config.dock.icon_theme.clone();
-        self.topbar.views.retain(|v| outputs.contains(&v.output));
-        let visible = outputs.iter().any(|o| self.shell_visible(o));
-        if !visible {
-            self.topbar.menu = None;
-            self.dock.close_menu();
-        }
-        if visible && self.config.bar.enabled {
-            if self.topbar.clock_timer.is_none() {
-                self.topbar.update_clock();
-                self.schedule_bar_clock();
+                .unwrap_or_default();
+            let layouts = gv.config.xkb_layout.clone();
+            let layout = gv
+                .seat
+                .get_keyboard()
+                .map(|k| {
+                    k.with_xkb_state(gv, |ctx| {
+                        let xkb = ctx.xkb().lock().unwrap_or_else(|e| e.into_inner());
+                        let index = xkb.active_layout().0 as usize;
+                        layouts.split(',').nth(index).unwrap_or("us").to_uppercase()
+                    })
+                })
+                .unwrap_or_else(|| "US".into());
+            let changed = gv.topbar.title != title || gv.topbar.layout != layout;
+            gv.topbar.title = title;
+            gv.topbar.layout = layout;
+            gv.topbar.enabled = gv.features.on(crate::module::Feature::Bar) && gv.config.bar.enabled;
+            gv.topbar.icon_theme = gv.config.dock.icon_theme.clone();
+            gv.topbar.views.retain(|v| outputs.contains(&v.output));
+            let visible = outputs.iter().any(|o| gv.shell_visible(o));
+            if !visible {
+                gv.topbar.menu = None;
+                gv.guard(crate::module::Feature::Dock, (), |gv| gv.dock.close_menu());
             }
-            if self.topbar.battery_timer.is_none() {
-                self.topbar.battery = read_battery(Path::new("/sys/class/power_supply"));
-                self.schedule_bar_battery();
+            if visible && (gv.features.on(crate::module::Feature::Bar) && gv.config.bar.enabled) {
+                if gv.topbar.clock_timer.is_none() {
+                    gv.topbar.update_clock();
+                    gv.schedule_bar_clock();
+                }
+                if gv.topbar.battery_timer.is_none() {
+                    gv.topbar.battery = read_battery(Path::new("/sys/class/power_supply"));
+                    gv.schedule_bar_battery();
+                }
+            } else {
+                if let Some(token) = gv.topbar.clock_timer.take() {
+                    gv.loop_handle.remove(token);
+                }
+                if let Some(token) = gv.topbar.battery_timer.take() {
+                    gv.loop_handle.remove(token);
+                }
             }
-        } else {
-            if let Some(token) = self.topbar.clock_timer.take() {
-                self.loop_handle.remove(token);
+            if changed && visible {
+                gv.queue_redraw_all();
             }
-            if let Some(token) = self.topbar.battery_timer.take() {
-                self.loop_handle.remove(token);
-            }
-        }
-        if changed && visible {
-            self.queue_redraw_all();
-        }
+        });
     }
     fn schedule_bar_clock(&mut self) {
+        self.guard(crate::module::Feature::Bar, Default::default(), |gv| gv.schedule_bar_clock_feature())
+    }
+
+    fn schedule_bar_clock_feature(&mut self) {
         match self.loop_handle.insert_source(
             Timer::from_duration(next_minute(wall_time())),
             |_, _, gv| {
-                gv.topbar.clock_timer = None;
-                gv.topbar.update_clock();
-                gv.queue_redraw_all();
-                if gv.space.outputs().any(|o| gv.shell_visible(o)) {
-                    gv.schedule_bar_clock();
-                }
+                gv.guard(crate::module::Feature::Bar, (), |gv| {
+                    gv.topbar.clock_timer = None;
+                    gv.topbar.update_clock();
+                    gv.queue_redraw_all();
+                    if gv.space.outputs().any(|o| gv.shell_visible(o)) {
+                        gv.schedule_bar_clock();
+                    }
+
+                });
                 TimeoutAction::Drop
             },
         ) {
@@ -572,18 +586,25 @@ impl Gavno {
         }
     }
     fn schedule_bar_battery(&mut self) {
+        self.guard(crate::module::Feature::Bar, Default::default(), |gv| gv.schedule_bar_battery_feature())
+    }
+
+    fn schedule_bar_battery_feature(&mut self) {
         match self.loop_handle.insert_source(
             Timer::from_duration(Duration::from_secs(30)),
             |_, _, gv| {
-                gv.topbar.battery_timer = None;
-                let battery = read_battery(Path::new("/sys/class/power_supply"));
-                if battery != gv.topbar.battery {
-                    gv.topbar.battery = battery;
-                    gv.queue_redraw_all();
-                }
-                if gv.space.outputs().any(|o| gv.shell_visible(o)) {
-                    gv.schedule_bar_battery();
-                }
+                gv.guard(crate::module::Feature::Bar, (), |gv| {
+                    gv.topbar.battery_timer = None;
+                    let battery = read_battery(Path::new("/sys/class/power_supply"));
+                    if battery != gv.topbar.battery {
+                        gv.topbar.battery = battery;
+                        gv.queue_redraw_all();
+                    }
+                    if gv.space.outputs().any(|o| gv.shell_visible(o)) {
+                        gv.schedule_bar_battery();
+                    }
+
+                });
                 TimeoutAction::Drop
             },
         ) {
@@ -592,6 +613,10 @@ impl Gavno {
         }
     }
     pub fn bar_action(&mut self, output: &Output, action: BarAction) {
+        self.guard(crate::module::Feature::Bar, Default::default(), |gv| gv.bar_action_feature(output, action))
+    }
+
+    fn bar_action_feature(&mut self, output: &Output, action: BarAction) {
         match action {
             BarAction::Tiling => self.toggle_workspace_tiling(output),
             BarAction::Workspace(i) => {
@@ -603,7 +628,7 @@ impl Gavno {
                 }
             }
             BarAction::PowerMenu => {
-                self.dock.close_menu();
+                self.guard(crate::module::Feature::Dock, (), |gv| gv.dock.close_menu());
                 self.topbar.menu = if self.topbar.menu.as_ref() == Some(output) {
                     None
                 } else {
@@ -687,5 +712,14 @@ mod tests {
         std::fs::write(b.join("present"), "0").unwrap();
         assert!(read_battery(&root).is_none());
         std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+impl Gavno {
+    pub(crate) fn reset_bar(&mut self) {
+        for token in [self.topbar.clock_timer.take(), self.topbar.battery_timer.take()].into_iter().flatten() {
+            self.loop_handle.remove(token);
+        }
+        self.topbar = Default::default();
     }
 }

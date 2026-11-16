@@ -30,6 +30,7 @@ pub struct Config {
     pub xkb_options: Option<String>,
     /// Gap between a new window and the work area edge, logical px.
     pub gap: i32,
+    pub modules: ModulesConfig,
     pub dock: DockConfig,
     pub bar: BarConfig,
     pub tiling: TilingConfig,
@@ -105,6 +106,7 @@ struct FileConfig {
     gap: Option<i64>,
     output: Output,
     keyboard: Keyboard,
+    modules: ModulesConfig,
     dock: DockConfig,
     bar: BarConfig,
     tiling: TilingConfig,
@@ -169,7 +171,7 @@ impl Config {
         // Capture unknown fields during deserialization, so this list cannot drift from the schema.
         let mut unknown = Vec::new();
         for (prefix, extra) in
-            [("", &file.unknown), ("output.", &file.output.unknown), ("keyboard.", &file.keyboard.unknown), ("dock.", &file.dock.unknown), ("bar.", &file.bar.unknown), ("tiling.", &file.tiling.unknown), ("lock.", &file.lock.unknown)]
+            [("", &file.unknown), ("output.", &file.output.unknown), ("keyboard.", &file.keyboard.unknown), ("dock.", &file.dock.unknown), ("bar.", &file.bar.unknown), ("tiling.", &file.tiling.unknown), ("lock.", &file.lock.unknown), ("modules.", &file.modules.unknown)]
         {
             unknown.extend(extra.keys().map(|key| format!("{prefix}{key}")));
         }
@@ -229,6 +231,7 @@ impl Config {
                     var("GAVNO_XKB_OPTIONS").or(file.keyboard.options).unwrap_or_else(|| "grp:alt_shift_toggle".into()),
                 ),
                 gap: gap.clamp(0, 64) as i32,
+                modules: file.modules,
                 dock: file.dock,
                 bar: file.bar,
                 tiling: file.tiling,
@@ -274,6 +277,7 @@ options = "caps:escape"
     #[test]
     fn defaults_and_example() {
         let expected = Config {
+            modules: Default::default(),
             mod_key: ModKey::Super,
             terminal: "foot".into(),
             launcher: None,
@@ -307,6 +311,7 @@ options = "caps:escape"
     #[test]
     fn full_and_partial_files() {
         let expected = Config {
+            modules: Default::default(),
             mod_key: ModKey::Alt,
             terminal: "kitty".into(),
             launcher: Some("rofi".into()),
@@ -479,5 +484,52 @@ options = "caps:escape"
         use std::os::unix::ffi::OsStringExt;
         let path = OsString::from_vec(b"/tmp/config-\xff.toml".to_vec());
         assert_eq!(config_path(|key| (key == "GAVNO_CONFIG").then(|| path.clone())), Some(PathBuf::from(path)));
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct ModulesConfig {
+    pub dock: bool,
+    pub bar: bool,
+    pub overview: bool,
+    pub tiling: bool,
+    pub snap: bool,
+    pub switcher: bool,
+    pub gestures: bool,
+    pub window_gestures: bool,
+    pub resize_mode: bool,
+    pub animations: bool,
+    pub decorations: bool,
+    pub ipc: bool,
+    pub screencopy: bool,
+    #[serde(flatten)]
+    unknown: toml::Table,
+}
+impl Default for ModulesConfig {
+    fn default() -> Self {
+        Self { dock: true, bar: true, overview: true, tiling: true, snap: true, switcher: true, gestures: true, window_gestures: true, resize_mode: true, animations: true, decorations: true, ipc: true, screencopy: true, unknown: Default::default() }
+    }
+}
+
+#[cfg(test)]
+mod module_tests {
+    use super::*;
+    use crate::module::{Feature, Features};
+    #[test]
+    fn modules_defaults_unknown_keys_and_legacy_switches() {
+        let (config, warnings) = Config::build(false, Some("[modules]\ndock = false\nanimations = false\nunknown_feature = true\n[bar]\nenabled = false"), |_| None);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("modules.unknown_feature"));
+        let features = Features::new(&config);
+        assert!(!features.on(Feature::Dock));
+        assert!(!features.on(Feature::Bar));
+        assert!(!features.on(Feature::Animations));
+        assert!(features.on(Feature::Tiling));
+        let (config, warnings) = Config::build(false, Some("[modules]\ndock = true\n[dock]\nenabled = false"), |_| None);
+        assert!(warnings.is_empty());
+        assert!(!Features::new(&config).on(Feature::Dock));
+        let config = Config::build(false, None, |_| None).0;
+        assert!(Feature::ALL.into_iter().all(|f| Features::new(&config).on(f)));
     }
 }

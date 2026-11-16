@@ -55,7 +55,7 @@ impl SeatHandler for Gavno {
 
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
         let window = focused.and_then(|surface| self.window_for_surface(surface));
-        self.window_decor.focus(window.as_ref());
+        self.guard(crate::module::Feature::Decorations, (), |gv| gv.window_decor.focus(window.as_ref()));
         self.queue_redraw_all();
         if let Some(serial) = seat.get_keyboard().and_then(|keyboard| keyboard.last_enter()) {
             self.record_activation_serial(focused.cloned(), serial);

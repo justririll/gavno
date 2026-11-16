@@ -219,6 +219,10 @@ impl Gavno {
         }
     }
     pub fn snap_direction(&mut self, dir: Direction) {
+        self.guard(crate::module::Feature::Snap, Default::default(), |gv| gv.snap_direction_feature(dir))
+    }
+
+    fn snap_direction_feature(&mut self, dir: Direction) {
         if self.focused_window().is_some_and(|w| self.tiling_workspace(&w)) { self.move_tile(dir); return; }
         let Some(w) = self.focused_window() else {
             return;
@@ -255,6 +259,10 @@ impl Gavno {
         }
     }
     pub fn resize_direction(&mut self, dir: Direction) {
+        self.guard(crate::module::Feature::Snap, Default::default(), |gv| gv.resize_direction_feature(dir))
+    }
+
+    fn resize_direction_feature(&mut self, dir: Direction) {
         if let Some(w) = self.focused_window().filter(|w| self.tiled(w)) {
             let delta = if matches!(dir, Direction::Left | Direction::Up) { -40 } else { 40 };
             self.resize_tile(&w,dir,delta,true); return;
@@ -277,12 +285,16 @@ impl Gavno {
         let size = t.with_pending_state(|s| s.size).unwrap_or(r.size);
         let target = resize_step(Rectangle::new(r.loc, size), dir, min, max);
         crate::grabs::resize_grab::clear_anchor(&w);
-        self.window_animations.cancel(&w);
+        self.features.call(crate::module::Feature::Animations, (), || self.window_animations.cancel(&w));
         t.with_pending_state(|s| s.size = Some(target.size));
         t.send_pending_configure();
         self.queue_redraw_all();
     }
     pub fn swap_direction(&mut self, dir: Direction) {
+        self.guard(crate::module::Feature::Tiling, Default::default(), |gv| gv.swap_direction_feature(dir))
+    }
+
+    fn swap_direction_feature(&mut self, dir: Direction) {
         if self.focused_window().is_some_and(|w| self.tiling_workspace(&w)) { self.move_tile(dir); return; }
         let Some(w) = self.focused_window() else {
             return;

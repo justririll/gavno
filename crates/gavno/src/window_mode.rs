@@ -187,7 +187,7 @@ impl Gavno {
         mode: WindowMode,
     ) {
         crate::grabs::resize_grab::clear_anchor(window);
-        self.window_animations.cancel(window);
+        self.features.call(crate::module::Feature::Animations, (), || self.window_animations.cancel(window));
         configure_mode(window, mode, Some(rect.size));
         self.space.map_element(window.clone(), rect.loc, false);
         if let Some(t) = window.toplevel() {

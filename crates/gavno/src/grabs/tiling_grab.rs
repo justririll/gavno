@@ -36,27 +36,29 @@ impl SplitterGrab {
         window: &Window,
         edges: ResizeEdge,
     ) -> Option<Self> {
-        use crate::snap::Direction;
-        let (output, i) = gv.workspaces.membership(window)?;
-        let tree = &gv.workspaces.get(&output)?.list.items[i].tree;
-        let area = gv.work_area(&output);
-        let mut splits = Vec::new();
-        for (edge, dir) in [
-            (ResizeEdge::LEFT, Direction::Left),
-            (ResizeEdge::RIGHT, Direction::Right),
-            (ResizeEdge::TOP, Direction::Up),
-            (ResizeEdge::BOTTOM, Direction::Down),
-        ] {
-            if edges.contains(edge) {
-                if let Some(s) = tree.side(window, dir, area, gv.config.gap) {
-                    splits.push(s);
+        gv.features.read(crate::module::Feature::Tiling, None, || {
+            use crate::snap::Direction;
+            let (output, i) = gv.workspaces.membership(window)?;
+            let tree = &gv.workspaces.get(&output)?.list.items[i].tree;
+            let area = gv.work_area(&output);
+            let mut splits = Vec::new();
+            for (edge, dir) in [
+                (ResizeEdge::LEFT, Direction::Left),
+                (ResizeEdge::RIGHT, Direction::Right),
+                (ResizeEdge::TOP, Direction::Up),
+                (ResizeEdge::BOTTOM, Direction::Down),
+            ] {
+                if edges.contains(edge) {
+                    if let Some(s) = tree.side(window, dir, area, gv.config.gap) {
+                        splits.push(s);
+                    }
                 }
             }
-        }
-        Some(Self {
-            start_data,
-            output,
-            splits,
+            Some(Self {
+                start_data,
+                output,
+                splits,
+            })
         })
     }
 }
@@ -68,47 +70,49 @@ impl PointerGrab<Gavno> for SplitterGrab {
         _focus: Option<(WlSurface, Point<f64, Logical>)>,
         event: &MotionEvent,
     ) {
-        handle.motion(data, None, event);
-        let delta = event.location - self.start_data.location;
-        let area = data.work_area(&self.output);
-        let gap = data.config.gap;
-        let owner = data.workspaces.ensure(&self.output);
-        let tree = &mut owner.list.items[owner.list.active].tree;
-        let mut changed = false;
-        for original in &self.splits {
-            let desired = original.cut.saturating_add(
-                match original.axis {
-                    Axis::X => delta.x,
-                    Axis::Y => delta.y,
-                }
-                .round() as i32,
-            );
-            if let Some(s) = tree
-                .layout(area, gap)
-                .1
-                .into_iter()
-                .find(|s| s.path == original.path)
-            {
-                changed |= tree.move_split(&s.path, desired.saturating_sub(s.cut), area, gap);
-            }
-        }
-        if changed {
-            let primary = self.splits.first().and_then(|original| {
-                tree.layout(area, gap)
+        data.guard(crate::module::Feature::Tiling, (), |data| {
+            handle.motion(data, None, event);
+            let delta = event.location - self.start_data.location;
+            let area = data.work_area(&self.output);
+            let gap = data.config.gap;
+            let owner = data.workspaces.ensure(&self.output);
+            let tree = &mut owner.list.items[owner.list.active].tree;
+            let mut changed = false;
+            for original in &self.splits {
+                let desired = original.cut.saturating_add(
+                    match original.axis {
+                        Axis::X => delta.x,
+                        Axis::Y => delta.y,
+                    }
+                    .round() as i32,
+                );
+                if let Some(s) = tree
+                    .layout(area, gap)
                     .1
                     .into_iter()
                     .find(|s| s.path == original.path)
-            });
-            if let Some(split) = primary {
-                use smithay::input::pointer::{CursorIcon, CursorImageStatus};
-                data.cursor_status = CursorImageStatus::Named(match split.axis {
-                    Axis::X => CursorIcon::ColResize,
-                    Axis::Y => CursorIcon::RowResize,
-                });
-                data.workspaces.splitter_hover = Some((self.output.clone(), split));
+                {
+                    changed |= tree.move_split(&s.path, desired.saturating_sub(s.cut), area, gap);
+                }
             }
-            data.reflow_tiling(false);
-        }
+            if changed {
+                let primary = self.splits.first().and_then(|original| {
+                    tree.layout(area, gap)
+                        .1
+                        .into_iter()
+                        .find(|s| s.path == original.path)
+                });
+                if let Some(split) = primary {
+                    use smithay::input::pointer::{CursorIcon, CursorImageStatus};
+                    data.cursor_status = CursorImageStatus::Named(match split.axis {
+                        Axis::X => CursorIcon::ColResize,
+                        Axis::Y => CursorIcon::RowResize,
+                    });
+                    data.workspaces.splitter_hover = Some((self.output.clone(), split));
+                }
+                data.reflow_tiling(false);
+            }
+        });
     }
     fn button(
         &mut self,

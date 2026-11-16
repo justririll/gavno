@@ -110,6 +110,7 @@ struct Session {
 }
 #[derive(Default)]
 pub struct ResizeMode {
+    pub(crate) band_hover: bool,
     session: Option<Session>,
     canvas: Canvas,
 }
@@ -160,6 +161,10 @@ impl ResizeMode {
 }
 impl Gavno {
     pub fn resize_band_at(&self, p: Pos) -> Option<(Window, Edge, Rect)> {
+        self.features.read(crate::module::Feature::ResizeMode, Default::default(), || self.resize_band_at_feature(p))
+    }
+
+    fn resize_band_at_feature(&self, p: Pos) -> Option<(Window, Edge, Rect)> {
         use smithay::wayland::shell::wlr_layer::Layer;
         if self.greeter.is_some()
             || self.protocols.locks.locked
@@ -186,6 +191,10 @@ impl Gavno {
         None
     }
     pub fn refresh_resize_cursor(&mut self) {
+        self.guard(crate::module::Feature::ResizeMode, Default::default(), |gv| gv.refresh_resize_cursor_feature())
+    }
+
+    fn refresh_resize_cursor_feature(&mut self) {
         if self.greeter.is_some() || self.protocols.locks.locked {
             return;
         }
@@ -207,9 +216,9 @@ impl Gavno {
             });
         if let Some(edge) = edge {
             self.cursor_status = CursorImageStatus::Named(cursor(edge));
-            self.window_gestures.band_hover = true;
-        } else if self.window_gestures.band_hover {
-            self.window_gestures.band_hover = false;
+            self.overlay.resize_mode.band_hover = true;
+        } else if self.overlay.resize_mode.band_hover {
+            self.overlay.resize_mode.band_hover = false;
             if self.workspaces.splitter_hover.is_none() {
                 self.cursor_status = CursorImageStatus::default_named();
                 self.queue_redraw_all();
@@ -217,6 +226,15 @@ impl Gavno {
         }
     }
     pub fn start_band_resize(
+        &mut self,
+        button: u32,
+        serial: smithay::utils::Serial,
+        time: u32,
+    ) -> bool {
+        self.guard(crate::module::Feature::ResizeMode, Default::default(), |gv| gv.start_band_resize_feature(button, serial, time))
+    }
+
+    fn start_band_resize_feature(
         &mut self,
         button: u32,
         serial: smithay::utils::Serial,
@@ -254,6 +272,10 @@ impl Gavno {
         true
     }
     pub fn enter_resize_mode(&mut self) {
+        self.guard(crate::module::Feature::ResizeMode, Default::default(), |gv| gv.enter_resize_mode_feature())
+    }
+
+    fn enter_resize_mode_feature(&mut self) {
         self.exit_resize_mode();
         let Some(w) = self.focused_window() else {
             return;
@@ -285,6 +307,10 @@ impl Gavno {
         self.queue_redraw_all();
     }
     pub fn exit_resize_mode(&mut self) -> bool {
+        self.guard(crate::module::Feature::ResizeMode, Default::default(), |gv| gv.exit_resize_mode_feature())
+    }
+
+    fn exit_resize_mode_feature(&mut self) -> bool {
         let Some(s) = self.overlay.resize_mode.session.take() else {
             return false;
         };
@@ -294,7 +320,11 @@ impl Gavno {
         true
     }
     pub fn resize_mode_key(&mut self, sym: u32, shift: bool) -> bool {
-        if !self.overlay.resize_mode.active() {
+        self.guard(crate::module::Feature::ResizeMode, Default::default(), |gv| gv.resize_mode_key_feature(sym, shift))
+    }
+
+    fn resize_mode_key_feature(&mut self, sym: u32, shift: bool) -> bool {
+        if !(self.features.on(crate::module::Feature::ResizeMode) && self.overlay.resize_mode.active()) {
             return false;
         }
         if matches!(
@@ -320,6 +350,10 @@ impl Gavno {
         true
     }
     pub fn resize_mode_motion(&mut self, pos: Pos) -> bool {
+        self.guard(crate::module::Feature::ResizeMode, Default::default(), |gv| gv.resize_mode_motion_feature(pos))
+    }
+
+    fn resize_mode_motion_feature(&mut self, pos: Pos) -> bool {
         let Some(mut s) = self.overlay.resize_mode.session.take() else {
             return false;
         };
@@ -361,17 +395,25 @@ impl Gavno {
         true
     }
     pub fn validate_resize_mode(&mut self) {
+        self.guard(crate::module::Feature::ResizeMode, Default::default(), |gv| gv.validate_resize_mode_feature())
+    }
+
+    fn validate_resize_mode_feature(&mut self) {
         if self.overlay.resize_mode.session.as_ref().is_some_and(|s| {
             !s.window.alive()
                 || self.space.element_location(&s.window).is_none()
                 || self.focused_window().as_ref() != Some(&s.window)
                 || self.protocols.locks.locked
-                || self.overview.visible()
+                || (self.features.on(crate::module::Feature::Overview) && self.features.read(crate::module::Feature::Overview, false, || self.overview.visible()))
         }) {
             self.exit_resize_mode();
         }
     }
     pub fn pressure_motion(&mut self, current: Pos, proposed: Pos, clamped: Pos) {
+        self.guard(crate::module::Feature::WindowGestures, Default::default(), |gv| gv.pressure_motion_feature(current, proposed, clamped))
+    }
+
+    fn pressure_motion_feature(&mut self, current: Pos, proposed: Pos, clamped: Pos) {
         if self.greeter.is_some() || self.protocols.locks.locked || self.window_gesture_locked() {
             return;
         }
@@ -400,7 +442,7 @@ impl Gavno {
                 .window_gestures
                 .pressure
                 .push(current, pressure_pos, geo)
-                && !self.overview.open()
+                && !self.features.read(crate::module::Feature::Overview, false, || self.overview.open())
             {
                 self.toggle_overview();
             }
@@ -458,5 +500,15 @@ mod tests {
         );
         assert_eq!(cursor(Edge::BOTTOM_RIGHT), CursorIcon::NwseResize);
         assert_eq!(cursor(Edge::RIGHT), CursorIcon::EwResize);
+    }
+}
+
+impl Gavno {
+    pub(crate) fn reset_resize_mode(&mut self) {
+        if let Some(session) = self.overlay.resize_mode.session.take() {
+            self.finish_interactive_resize(&session.window);
+        }
+        self.overlay.resize_mode = Default::default();
+        self.cursor_status = smithay::input::pointer::CursorImageStatus::default_named();
     }
 }

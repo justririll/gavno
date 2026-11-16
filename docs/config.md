@@ -109,6 +109,36 @@ names such as `"us,ru"`; `variant` takes one variant per layout and is empty by
 default. Set `options = ""` in the file to disable XKB options; an empty
 `GAVNO_XKB_OPTIONS` counts as unset, so the file is the way to turn them off.
 
+
+## Optional modules
+
+Every feature can be switched off independently at startup. All flags default to
+`true`; unknown keys warn. There is no live reload.
+
+```toml
+[modules]
+dock = true
+bar = true
+overview = true
+tiling = true
+snap = true
+switcher = true
+gestures = true
+window_gestures = true
+resize_mode = true
+animations = true
+decorations = true
+ipc = true
+screencopy = true
+```
+
+`dock.enabled` and `bar.enabled` still work: a feature is off if either its legacy
+flag or its `[modules]` flag is false. Disabled feature bindings reach clients;
+its UI, reserve and animation work disappear. IPC and Screencopy start only when
+enabled. A feature panic disables that feature until restart and recovers its
+state; Lock and Greeter remain core and fail closed. See [modules.md](modules.md)
+for boundaries, recovery and crash logs.
+
 ## Validation and clamping
 
 - `gap` is clamped to `0..=64`. Out-of-range values are logged with the original

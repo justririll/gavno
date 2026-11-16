@@ -98,8 +98,8 @@ impl Gavno {
         let geo = self.space.output_geometry(output).unwrap_or_default();
         let zone = layer_map_for_output(output).non_exclusive_zone();
         crate::dock::reserve(Rectangle::new(zone.loc + geo.loc, zone.size),
-            self.greeter.is_none() && self.config.bar.enabled,
-            self.greeter.is_none() && self.config.dock.enabled, self.config.dock.autohide)
+            self.greeter.is_none() && (self.features.on(crate::module::Feature::Bar) && self.config.bar.enabled),
+            self.greeter.is_none() && (self.features.on(crate::module::Feature::Dock) && self.config.dock.enabled), self.config.dock.autohide)
     }
 
     /// Re-arranges the layers of every output (outputs changed).

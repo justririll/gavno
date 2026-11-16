@@ -17,6 +17,16 @@ impl Device for TestDevice {
 }
 struct Button(u32, ButtonState);
 struct Scroll;
+struct Key(u32, KeyState);
+impl Event<TestBackend> for Key {
+    fn time(&self) -> u64 { 1000 }
+    fn device(&self) -> TestDevice { TestDevice }
+}
+impl KeyboardKeyEvent<TestBackend> for Key {
+    fn key_code(&self) -> smithay::input::keyboard::Keycode { self.0.into() }
+    fn state(&self) -> KeyState { self.1 }
+    fn count(&self) -> u32 { u32::from(self.1 == KeyState::Pressed) }
+}
 impl Event<TestBackend> for Button {
     fn time(&self) -> u64 { 1000 }
     fn device(&self) -> TestDevice { TestDevice }
@@ -39,7 +49,7 @@ impl InputBackend for TestBackend {
     type Device = TestDevice;
     type PointerButtonEvent = Button;
     type PointerAxisEvent = Scroll;
-    type KeyboardKeyEvent = UnusedEvent;
+    type KeyboardKeyEvent = Key;
     type PointerMotionEvent = UnusedEvent;
     type PointerMotionAbsoluteEvent = UnusedEvent;
     type GestureSwipeBeginEvent = UnusedEvent;
@@ -151,4 +161,101 @@ fn scrolling_cancels_super_tap_in_clients_shell_and_overview() {
         h.gv.on_pointer_axis::<TestBackend>(Scroll);
         assert!(!h.gv.gestures.super_tap.key(125, true, false, false));
     }
+}
+
+#[test]
+fn lock_key_panic_keeps_input_intercepted_and_gate_closed() {
+    let (mut h, _) = setup();
+    let w = h.window(); h.gv.map_new_window(w.clone());
+    h.gv.focus_window(Some(&w));
+    assert!(h.gv.lock_session());
+    assert!(h.keyboard_keys().is_empty());
+    h.gv.lock.panic_key = true;
+    h.gv.on_keyboard::<TestBackend>(Key(38, KeyState::Pressed));
+    assert!(h.gv.protocols.locks.locked);
+    assert!(h.gv.lock.internal());
+    assert!(h.gv.suppressed_keys.contains(&38));
+    assert!(h.gv.seat.get_keyboard().unwrap().current_focus().is_none());
+    h.gv.on_keyboard::<TestBackend>(Key(38, KeyState::Released));
+    h.gv.refresh_internal_lock();
+    assert!(h.gv.protocols.locks.locked);
+    assert!(h.gv.lock.internal());
+    assert!(h.gv.seat.get_keyboard().unwrap().current_focus().is_none());
+    assert!(h.keyboard_keys().is_empty(), "lock input reached the client");
+}
+
+#[test]
+fn overview_crash_allows_a_real_client_click() {
+    let (mut h, _) = setup(); let w = h.window(); h.gv.map_new_window(w.clone()); h.commit_size(&w, 400, 300);
+    h.gv.window_animations.entries.clear();
+    h.gv.toggle_overview(); h.gv.overview.progress.jump(1.0);
+    h.gv.features.inject_panic(Feature::Overview);
+    h.gv.overview_motion((500.0, 400.0).into());
+    assert!(!h.gv.overview.visible());
+    let p = h.gv.space.element_location(&w).unwrap().to_f64() + Point::from((20.0, 20.0));
+    let under = h.gv.surface_under(p);
+    motion(&mut h.gv, under, p);
+    button(&mut h.gv, BTN_LEFT, ButtonState::Pressed);
+    button(&mut h.gv, BTN_LEFT, ButtonState::Released);
+    assert_eq!(h.pointer_buttons(), vec![BTN_LEFT, BTN_LEFT]);
+}
+
+#[test]
+fn disabled_feature_bindings_reach_the_real_client() {
+    use crate::module::Features;
+    for id in Feature::ALL {
+        let (mut h, _) = setup(); let w = h.window(); h.gv.map_new_window(w.clone()); h.commit_size(&w, 400, 300);
+        let m = &mut h.gv.config.modules;
+        match id {
+            Feature::Dock => m.dock = false, Feature::Bar => m.bar = false,
+            Feature::Overview => m.overview = false, Feature::Tiling => m.tiling = false,
+            Feature::Snap => m.snap = false, Feature::Switcher => m.switcher = false,
+            Feature::Gestures => m.gestures = false, Feature::WindowGestures => m.window_gestures = false,
+            Feature::ResizeMode => m.resize_mode = false, Feature::Animations => m.animations = false,
+            Feature::Decorations => m.decorations = false, Feature::Ipc => m.ipc = false,
+            Feature::Screencopy => m.screencopy = false,
+        }
+        h.gv.features = Features::new(&h.gv.config);
+        h.gv.focus_window(Some(&w));
+        let (key, modifier, ctrl) = match id {
+            Feature::Dock => (58, Some(64), false),
+            Feature::Overview => (38, Some(64), false),
+            Feature::Tiling => (28, Some(64), false),
+            Feature::Snap => (113, Some(64), true),
+            Feature::Switcher => { h.gv.config.mod_key = crate::config::ModKey::Super; (23, Some(64), false) }
+            Feature::ResizeMode => (27, Some(64), false),
+            Feature::Gestures => (133, None, false),
+            _ => (38, None, false),
+        };
+        if let Some(modifier) = modifier { h.gv.on_keyboard::<TestBackend>(Key(modifier, KeyState::Pressed)); }
+        if ctrl { h.gv.on_keyboard::<TestBackend>(Key(37, KeyState::Pressed)); }
+        h.keyboard_keys();
+        h.gv.on_keyboard::<TestBackend>(Key(key, KeyState::Pressed));
+        h.gv.on_keyboard::<TestBackend>(Key(key, KeyState::Released));
+        assert_eq!(h.keyboard_keys(), vec![key - 8, key - 8], "{id:?} swallowed a disabled binding");
+        if ctrl { h.gv.on_keyboard::<TestBackend>(Key(37, KeyState::Released)); }
+        if let Some(modifier) = modifier { h.gv.on_keyboard::<TestBackend>(Key(modifier, KeyState::Released)); }
+    }
+}
+
+#[test]
+fn tiling_panic_inside_pointer_grab_recovers_without_reentering_the_seat() {
+    use smithay::input::pointer::Focus;
+    let (mut h, output) = setup();
+    let a = h.window(); let b = h.window();
+    h.gv.map_new_window(a.clone()); h.gv.map_new_window(b.clone());
+    h.gv.toggle_workspace_tiling(&output);
+    h.gv.window_animations.entries.clear();
+    let owner = h.gv.workspaces.get(&output).unwrap();
+    let split = owner.list.items[owner.list.active].tree.layout(h.gv.work_area(&output), h.gv.config.gap).1.remove(0);
+    let pointer = h.gv.seat.get_pointer().unwrap();
+    let start = GrabStartData { focus: None, button: BTN_LEFT, location: (800.0, 400.0).into() };
+    pointer.set_grab(&mut h.gv, crate::grabs::tiling_grab::SplitterGrab::new(start, output, split), SERIAL_COUNTER.next_serial(), Focus::Clear);
+    h.gv.features.inject_panic(Feature::Tiling);
+    motion(&mut h.gv, None, (820.0, 400.0).into());
+    h.event_loop.dispatch(std::time::Duration::ZERO, &mut h.gv).unwrap();
+    assert!(!h.gv.features.on(Feature::Tiling));
+    assert!(!pointer.is_grabbed());
+    assert!(h.gv.pointer_buttons.is_empty());
+    for w in [a, b] { assert!(h.gv.space.element_location(&w).is_some()); assert!(!h.gv.tiled(&w)); }
 }

@@ -86,7 +86,6 @@ impl PointerGrab<Gavno> for ResizeSurfaceGrab {
         let requested=crate::window_gesture::resized(self.initial_rect,self.edges,delta);
         data.apply_interactive_resize(&self.window,requested,crate::window_gesture::anchor_for(self.edges));
         self.last_window_size=data.interactive_rect(&self.window).map(|r|r.size).unwrap_or(self.initial_rect.size);
-
     }
 
     fn relative_motion(
@@ -106,7 +105,6 @@ impl PointerGrab<Gavno> for ResizeSurfaceGrab {
         event: &ButtonEvent,
     ) {
         handle.button(data, event);
-
 
         if handle.current_pressed().is_empty() {
             // No more buttons are pressed, release the grab.
@@ -390,10 +388,10 @@ fn accepted_rect(rect: Rectangle<i32, Logical>, actual: Size<i32, Logical>, anch
 pub fn settle_directed(gv: &mut Gavno, window: &Window) {
     if !directed_finished(window) { return; }
     let Some(rect) = directed_rect(window) else { return };
-    gv.window_animations.cancel(window);
+    gv.features.call(crate::module::Feature::Animations, (), || gv.window_animations.cancel(window));
     clear_anchor(window);
     if window.geometry().size != rect.size {
-        gv.window_animations.geometry_immediate(window, rect.to_f64());
+        gv.features.call(crate::module::Feature::Animations, (), || gv.window_animations.geometry_immediate(window, rect.to_f64()));
     }
     if gv.space.element_location(window).is_some() {
         gv.space.map_element(window.clone(), rect.loc, false);

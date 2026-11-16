@@ -183,43 +183,47 @@ impl WindowAnimations {
 /// A null-buffer commit often precedes destruction. Start closing while the
 /// last rendered elements are still cached; a later buffer can remap the surface.
 pub fn surface_commit(gv: &mut Gavno, window: &Window, has_buffer: bool) {
-    if crate::window_mode::mode_state(window).minimized { return; }
-    let now = gv.start_time.elapsed();
-    if !has_buffer {
-        gv.window_animations.close(window, now);
-    } else if gv
-        .window_animations
-        .motion(window)
-        .is_none_or(|m| m.closing)
-    {
-        gv.window_animations.open(window, now);
-    }
+    gv.guard(crate::module::Feature::Animations, (), |gv| {
+        if crate::window_mode::mode_state(window).minimized { return; }
+        let now = gv.start_time.elapsed();
+        if !has_buffer {
+            gv.features.call(crate::module::Feature::Animations, (), || gv.window_animations.close(window, now));
+        } else if gv
+            .window_animations
+            .motion(window)
+            .is_none_or(|m| m.closing)
+        {
+            gv.features.call(crate::module::Feature::Animations, (), || gv.window_animations.open(window, now));
+        }
+    });
 }
 
 /// Call after mapping/configuring a compositor-directed geometry change. Pending
 /// configure size is used until the client commits; live content scales to fit.
 pub fn animate_geometry(gv: &mut Gavno, window: &Window, from_rect: Rectangle<i32, Logical>) {
-    let Some(loc) = gv.space.element_location(window) else {
-        return;
-    };
-    let size = window
-        .toplevel()
-        .and_then(|t| t.with_pending_state(|s| s.size))
-        .unwrap_or(window.geometry().size);
-    let target = Rectangle::new(loc, size).to_f64();
-    let now = gv.start_time.elapsed();
-    if gv.window_animations.motion(window).is_none() {
-        gv.window_animations.open(window, now);
-    }
-    if let Some(a) = gv
-        .window_animations
-        .entries
-        .iter_mut()
-        .find(|a| &a.window == window)
-    {
-        a.motion.retarget(from_rect.to_f64(), target, now);
-    }
-    gv.queue_redraw_all();
+    gv.guard(crate::module::Feature::Animations, (), |gv| {
+        let Some(loc) = gv.space.element_location(window) else {
+            return;
+        };
+        let size = window
+            .toplevel()
+            .and_then(|t| t.with_pending_state(|s| s.size))
+            .unwrap_or(window.geometry().size);
+        let target = Rectangle::new(loc, size).to_f64();
+        let now = gv.start_time.elapsed();
+        if gv.window_animations.motion(window).is_none() {
+            gv.features.call(crate::module::Feature::Animations, (), || gv.window_animations.open(window, now));
+        }
+        if let Some(a) = gv
+            .window_animations
+            .entries
+            .iter_mut()
+            .find(|a| &a.window == window)
+        {
+            a.motion.retarget(from_rect.to_f64(), target, now);
+        }
+        gv.queue_redraw_all();
+    });
 }
 
 #[cfg(test)]
@@ -380,6 +384,30 @@ mod tests {
 
 impl Gavno {
     pub fn seed_geometry_velocity(&mut self, w: &Window, velocity: smithay::utils::Point<f64, Logical>) {
+        self.guard(crate::module::Feature::Animations, Default::default(), |gv| gv.seed_geometry_velocity_feature(w, velocity))
+    }
+
+    fn seed_geometry_velocity_feature(&mut self, w: &Window, velocity: smithay::utils::Point<f64, Logical>) {
         if let Some(a)=self.window_animations.entries.iter_mut().find(|a| &a.window==w) {a.motion.seed_velocity(velocity);}
+    }
+}
+
+impl Gavno {
+    pub(crate) fn reset_animations(&mut self) {
+        for entry in &self.window_animations.entries {
+            if entry.motion.closing { continue; }
+            if let Some((_, target, _)) = &entry.motion.geometry {
+                if self.space.element_location(&entry.window).is_some() {
+                    self.space.map_element(entry.window.clone(), target.loc.to_i32_round(), false);
+                }
+                if let Some(t) = entry.window.toplevel() {
+                    t.with_pending_state(|s| s.size = Some(target.size.to_i32_round()));
+                    t.send_pending_configure();
+                }
+            }
+        }
+        self.window_animations = Default::default();
+        // Cached closing surfaces belong to decorations, not the live space.
+        self.window_decor = Default::default();
     }
 }

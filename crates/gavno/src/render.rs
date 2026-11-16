@@ -12,7 +12,8 @@ use smithay::{
                 surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
                 default_primary_scanout_output_compare,
                 utils::select_dmabuf_feedback,
-                Kind, RenderElementStates,
+                utils::{Relocate, RelocateRenderElement, RescaleRenderElement},
+                AsRenderElements, Kind, RenderElementStates,
             },
             gles::GlesRenderer,
         },
@@ -38,7 +39,7 @@ use smithay::{
 };
 use xcursor::parser::Image;
 
-use crate::{cursor::Cursor, Gavno};
+use crate::{cursor::Cursor, module::{Feature, Features}, Gavno};
 
 /// Background behind all windows until the wallpaper module exists.
 pub const CLEAR_COLOR: [f32; 4] = [0.055, 0.063, 0.086, 1.0];
@@ -51,6 +52,7 @@ render_elements! {
     Window = crate::decor::WindowElement,
     Shader = smithay::backend::renderer::gles::element::PixelShaderElement,
     Thumbnail = crate::overview::ThumbnailElement,
+    Plain = RelocateRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>,
 }
 
 /// Dmabuf feedback for one output: what to prefer for composition and what
@@ -115,6 +117,7 @@ pub fn output_elements(
     dock: &mut crate::dock::Dock,
     topbar: &mut crate::topbar::TopBar,
     config: &crate::config::Config,
+    features: &mut Features,
 ) -> Vec<GavnoRenderElement> {
     let mut elements: Vec<GavnoRenderElement> = Vec::new();
     let Some(output_geo) = space.output_geometry(output) else {
@@ -195,32 +198,92 @@ pub fn output_elements(
 
     if let Some(greeter) = greeter {
         let size = output_geo.size;
-        elements.extend(greeter.elements(renderer, size, scale.x, time));
+        elements.extend(greeter.safe_call(Vec::new(), |g| g.elements(renderer, size, scale.x, time)));
         return elements;
     }
 
-    elements.extend(crate::overlay::overlay_elements(overlay, renderer, output, output_geo, scale.x, time));
+    elements.extend(features.call(Feature::ResizeMode, Vec::new(), || overlay.resize_mode.elements(renderer, output, output_geo, scale.x)));
+    elements.extend(features.call(Feature::Switcher, Vec::new(), || crate::overlay::overlay_elements(overlay, renderer, output, output_geo, scale.x, time)));
     let shell_visible = !space.elements().any(|w| crate::window_mode::mode_state(w).mode == crate::window_mode::WindowMode::Fullscreen
         && space.element_location(w).is_some_and(|p| output_geo.contains(p)));
     let zone = layer_map_for_output(output).non_exclusive_zone();
-    let work_area = crate::dock::reserve(smithay::utils::Rectangle::new(zone.loc + output_geo.loc, zone.size), config.bar.enabled, config.dock.enabled, config.dock.autohide);
-    elements.extend(topbar.elements(renderer, output, output_geo.size.w, workspaces.get(output), time, shell_visible));
-    elements.extend(dock.elements(renderer, output, output_geo.size, pointer_pos - output_geo.loc.to_f64(), time, shell_visible));
-    overview.work_area = Some(work_area);
-    let mut scene = overview.scene(workspaces, space, output, time);
-    dock.minimize_scene(space, output, time, &mut scene);
-    elements.extend(overview.chrome(renderer, workspaces, space, output));
-    if let Some((hover_output, split)) = &workspaces.splitter_hover {
-        if hover_output == output && !overview.visible() {
-            let mut rect = split.line();
-            rect.loc -= output_geo.loc;
-            workspaces.splitter_canvas.begin(renderer, scale.x);
-            workspaces.splitter_canvas.rect(rect, 1.0, topbar.accent(), 0.0, [0.0; 4]);
-            elements.extend(workspaces.splitter_canvas.finish());
+    let work_area = crate::dock::reserve(smithay::utils::Rectangle::new(zone.loc + output_geo.loc, zone.size),
+        features.on(Feature::Bar) && config.bar.enabled, features.on(Feature::Dock) && config.dock.enabled, config.dock.autohide);
+    elements.extend(features.call(Feature::Bar, Vec::new(), || topbar.elements(renderer, output, output_geo.size.w, workspaces.get(output), time, shell_visible)));
+    elements.extend(features.call(Feature::Dock, Vec::new(), || dock.elements(renderer, output, output_geo.size, pointer_pos - output_geo.loc.to_f64(), time, shell_visible)));
+    // Workspace ownership and transitions are core; overview only adds its zoom.
+    let mut scene = if features.on(Feature::Overview) {
+        features.call(Feature::Overview, None, || {
+            overview.work_area = Some(work_area);
+            overview.scene(workspaces, space, output, time)
+        })
+    } else {
+        crate::workspace::workspace_scene(workspaces, space, output, time)
+    };
+    features.call(Feature::Dock, (), || dock.minimize_scene(space, output, time, &mut scene));
+    elements.extend(features.call(Feature::Overview, Vec::new(), || overview.chrome(renderer, workspaces, space, output)));
+    let accent = features.call(Feature::Bar, [0.95, 0.64, 0.42, 1.0], || topbar.accent());
+    let overview_visible = features.on(Feature::Overview) && overview.visible();
+    elements.extend(features.call(Feature::Tiling, Vec::new(), || {
+        let mut line = Vec::new();
+        if let Some((hover_output, split)) = &workspaces.splitter_hover {
+            if hover_output == output && !overview_visible {
+                let mut rect = split.line();
+                rect.loc -= output_geo.loc;
+                workspaces.splitter_canvas.begin(renderer, scale.x);
+                workspaces.splitter_canvas.rect(rect, 1.0, accent, 0.0, [0.0; 4]);
+                line.extend(workspaces.splitter_canvas.finish());
+            }
+        }
+        line
+    }));
+    features.call(Feature::Animations, (), || animations.advance(time, space));
+    let mut static_animations = crate::anim::WindowAnimations::default();
+    let animations = if features.on(Feature::Animations) { animations } else { &mut static_animations };
+    let decorated = features.read(Feature::Decorations, None, || Some(window_decor.elements(renderer, space, output, animations, time, scene.as_deref(), features)));
+    elements.extend(decorated.unwrap_or_else(|| {
+        plain_elements(renderer, space, output, scene.as_deref())
+    }));
+    elements
+}
+
+/// Core surface rendering survives decoration failure, including workspace,
+/// overview and dock scene transforms. It needs no decoration shaders or caches.
+fn plain_elements(
+    renderer: &mut GlesRenderer, space: &Space<Window>, output: &Output,
+    scene: Option<&[crate::overview::SceneWindow]>,
+) -> Vec<GavnoRenderElement> {
+    let Some(scene) = scene else {
+        return smithay::desktop::space::space_render_elements(renderer, [space], output, 1.0)
+            .unwrap_or_default().into_iter().map(GavnoRenderElement::Space).collect();
+    };
+    let scale = Scale::from(output.current_scale().fractional_scale());
+    let layers = layer_map_for_output(output);
+    let mut result = Vec::new();
+    for upper in [true, false] {
+        if !upper {
+            for v in scene.iter().rev() {
+                let geometry = v.window.geometry();
+                let ratio = Scale::from((v.rect.size.w / geometry.size.w.max(1) as f64,
+                    v.rect.size.h / geometry.size.h.max(1) as f64));
+                let origin = Point::<f64, Logical>::from((-geometry.loc.x as f64, -geometry.loc.y as f64)).to_physical(scale).to_i32_round();
+                for element in v.window.render_elements::<WaylandSurfaceRenderElement<_>>(renderer, origin, scale, 1.0) {
+                    let element = RescaleRenderElement::from_element(element, (0, 0).into(), ratio);
+                    let element = RelocateRenderElement::from_element(element,
+                        v.rect.loc.to_physical(scale).to_i32_round(), Relocate::Relative);
+                    result.push(GavnoRenderElement::Plain(element));
+                }
+            }
+        }
+        for layer in layers.layers().rev().filter(|l| matches!(l.layer(), smithay::wayland::shell::wlr_layer::Layer::Top | smithay::wayland::shell::wlr_layer::Layer::Overlay) == upper) {
+            if let Some(geometry) = layers.layer_geometry(layer) {
+                result.extend(layer.render_elements::<WaylandSurfaceRenderElement<_>>(
+                    renderer, geometry.loc.to_physical_precise_round(scale), scale, 1.0,
+                ).into_iter().map(GavnoRenderElement::Surface));
+            }
         }
     }
-    elements.extend(window_decor.elements(renderer, space, output, animations, time, scene.as_deref()));
-    elements
+    result
 }
 
 /// After a frame was drawn (or found to be empty): pick each surface's

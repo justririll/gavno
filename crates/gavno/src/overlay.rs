@@ -137,6 +137,8 @@ impl Overlay {
             p.opacity.set(1.0);
         }
     }
+    pub(crate) fn clear_preview(&mut self) { self.preview = None; }
+
     pub fn hide_preview(&mut self, now: Duration) {
         if let Some(p) = &mut self.preview {
             p.opacity.advance(now);
@@ -162,6 +164,10 @@ impl Overlay {
 
 impl Gavno {
     pub fn switcher_cycle(&mut self, backwards: bool) {
+        self.guard(crate::module::Feature::Switcher, Default::default(), |gv| gv.switcher_cycle_feature(backwards))
+    }
+
+    fn switcher_cycle_feature(&mut self, backwards: bool) {
         let now = self.start_time.elapsed();
         self.prune_navigation();
         if !self.overlay.switcher_open() {
@@ -198,6 +204,10 @@ impl Gavno {
         self.queue_redraw_all();
     }
     pub fn switcher_finish(&mut self, commit: bool) {
+        self.guard(crate::module::Feature::Switcher, Default::default(), |gv| gv.switcher_finish_feature(commit))
+    }
+
+    fn switcher_finish_feature(&mut self, commit: bool) {
         let selected = self.overlay.switcher.as_mut().and_then(|s| {
             s.open = false;
             s.opacity.advance(self.start_time.elapsed());
@@ -215,34 +225,42 @@ impl Gavno {
         for v in self.workspaces.all() { if v.window.alive() && !mapped.contains(&v.window) { mapped.push(v.window.clone()); } }
         for w in &mapped { if !self.mru.contains(w) { self.mru.push(w.clone()); } }
         self.mru.retain(|w| w.alive() && mapped.contains(w));
-        self.overlay.prune(&mapped, self.start_time.elapsed());
+        self.guard(crate::module::Feature::Switcher, (), |gv| gv.overlay.prune(&mapped, gv.start_time.elapsed()));
     }
     pub fn update_snap_preview(&mut self, window: &Window, pos: Point<f64, Logical>) {
+        self.guard(crate::module::Feature::Switcher, Default::default(), |gv| gv.update_snap_preview_feature(window, pos))
+    }
+
+    fn update_snap_preview_feature(&mut self, window: &Window, pos: Point<f64, Logical>) {
         if self.tiling_workspace(window) { return; }
-        let target = self.space.outputs().find_map(|o| {
-            let geo = self.space.output_geometry(o)?;
+        let target = self.guard(crate::module::Feature::Snap, None, |gv| gv.space.outputs().find_map(|o| {
+            let geo = gv.space.output_geometry(o)?;
             let zone = crate::snap::zone_at(pos, geo)?;
             Some((
                 o.clone(),
                 zone,
-                zone.rect(self.work_area(o), self.config.gap),
+                zone.rect(gv.work_area(o), gv.config.gap),
             ))
-        });
+        }));
         let now = self.start_time.elapsed();
         if let Some((output, zone, rect)) = target {
             let from = self.window_rect(window).unwrap_or(rect);
-            self.overlay.preview(output, zone, from, rect, now);
+            self.features.call(crate::module::Feature::Switcher, (), || self.overlay.preview(output, zone, from, rect, now));
         } else {
-            self.overlay.hide_preview(now);
+            self.features.call(crate::module::Feature::Switcher, (), || self.overlay.hide_preview(now));
         }
         self.queue_redraw_all();
     }
     pub fn apply_drag_snap(&mut self, window: &Window, pos: Point<f64, Logical>) {
+        self.guard(crate::module::Feature::Snap, Default::default(), |gv| gv.apply_drag_snap_feature(window, pos))
+    }
+
+    fn apply_drag_snap_feature(&mut self, window: &Window, pos: Point<f64, Logical>) {
         if self.tiling_workspace(window) { return; }
         let target = self.space.outputs().find_map(|o| {
             crate::snap::zone_at(pos, self.space.output_geometry(o)?).map(|z| (o.clone(), z))
         });
-        self.overlay.hide_preview(self.start_time.elapsed());
+        self.features.call(crate::module::Feature::Switcher, (), || self.overlay.hide_preview(self.start_time.elapsed()));
         if let Some((o, z)) = target {
             self.set_window_mode(window, z.mode(), Some(o));
         }
@@ -260,7 +278,7 @@ pub fn overlay_elements(
     scale: f64,
     now: Duration,
 ) -> Vec<GavnoRenderElement> {
-    let mut out = gv.resize_mode.elements(renderer,output,geometry,scale);
+    let mut out = Vec::new();
     let preview = gv.preview.as_mut().map(|p| {
         let r = p.rect.advance(now);
         let a = p.opacity.advance(now).clamp(0.0, 1.0) as f32;
@@ -522,5 +540,13 @@ mod tests {
             }
         }
         assert!(!overlay.is_animating());
+    }
+}
+
+impl Overlay {
+    pub(crate) fn reset_switcher(&mut self) {
+        self.switcher = None;
+        self.preview = None;
+        self.caches.clear();
     }
 }

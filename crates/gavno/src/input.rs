@@ -16,7 +16,7 @@ use smithay::{
 
 use crate::{
     grabs::{resize_grab::ResizeEdge, MoveSurfaceGrab, ResizeSurfaceGrab},
-    module::Handled,
+    module::Feature,
     snap::Direction,
     state::spawn_shell,
     window_mode::{mode_state, WindowMode},
@@ -101,27 +101,27 @@ impl Gavno {
             time,
             |gv, mods, handle| {
                 if gv.greeter.is_none() && !gv.protocols.locks.locked
-                    && gv.overlay.switcher_open()
+                    && (gv.features.on(crate::module::Feature::Switcher) && gv.overlay.switcher_open())
                     && key_state == KeyState::Released
                     && !mods.alt
                 {
                     gv.switcher_finish(true);
                 }
                 let sym = handle.modified_sym().raw();
-                if gv.greeter.is_none() && !gv.protocols.locks.locked && !gv.seat.keyboard_shortcuts_inhibited() {
+                if gv.greeter.is_none() && !gv.protocols.locks.locked && !gv.seat.keyboard_shortcuts_inhibited() && gv.features.on(Feature::Gestures) && gv.features.on(Feature::Overview) {
                     let is_super = matches!(sym, keysyms::KEY_Super_L | keysyms::KEY_Super_R);
                     let other_down = gv.desktop_keys.iter().any(|k| *k != raw_code);
-                    let toggle = gv.gestures.super_tap.key(raw_code, is_super, key_state == KeyState::Pressed, other_down);
+                    let toggle = gv.super_tap_key(raw_code, is_super, key_state == KeyState::Pressed, other_down);
                     if toggle { return FilterResult::Intercept(Some(Action::ToggleOverview)); }
                     if is_super { return FilterResult::Intercept(None); }
-                } else { gv.gestures.super_tap.cancel(); }
+                } else { gv.guard(Feature::Gestures, (), |gv| gv.gestures.super_tap.cancel()); }
                 if key_state == KeyState::Released {
                     // Swallow the release of a key whose press was a bind.
                     if let Some(i) = gv.suppressed_keys.iter().position(|k| *k == raw_code) {
                         gv.suppressed_keys.swap_remove(i);
                         return FilterResult::Intercept(None);
                     }
-                    return if gv.lock.internal() { FilterResult::Intercept(None) } else { FilterResult::Forward };
+                    return if gv.lock.internal() || gv.greeter.is_some() { FilterResult::Intercept(None) } else { FilterResult::Forward };
                 }
 
                 // VT switch keysyms come from the XKB keymap (Ctrl+Alt+F<N>).
@@ -145,7 +145,7 @@ impl Gavno {
                     let mods = *mods;
                     gv.suppressed_keys.push(raw_code);
                     if let Some(g) = gv.greeter.as_mut() {
-                        g.key(sym, sym.key_char(), &mods);
+                        g.safe_call((), |g| g.key(sym, sym.key_char(), &mods));
                     }
                     return FilterResult::Intercept(None);
                 }
@@ -171,7 +171,7 @@ impl Gavno {
                     gv.suppressed_keys.push(raw_code);
                     return FilterResult::Intercept(None);
                 }
-                if gv.overlay.switcher_open() {
+                if gv.features.on(crate::module::Feature::Switcher) && gv.overlay.switcher_open() {
                     let sym = handle.modified_sym().raw();
                     let action = match sym {
                         keysyms::KEY_Tab | keysyms::KEY_ISO_Left_Tab => Some(Action::SwitcherCycle(mods.shift)),
@@ -189,16 +189,13 @@ impl Gavno {
                     return FilterResult::Forward;
                 };
                 let mods = *mods;
-                if gv.dispatch_modules(|m, gv| m.key_pressed(gv, sym.raw(), &mods)) == Handled::Yes {
-                    gv.suppressed_keys.push(raw_code);
-                    return FilterResult::Intercept(None);
-                }
+
                 match gv.bind_for(sym, &mods) {
                     Some(action) => {
                         gv.suppressed_keys.push(raw_code);
                         FilterResult::Intercept(Some(action))
                     }
-                    None if gv.overview.visible() => {
+                    None if (gv.features.on(crate::module::Feature::Overview) && gv.overview.visible()) => {
                         gv.suppressed_keys.push(raw_code);
                         FilterResult::Intercept(None)
                     }
@@ -224,7 +221,7 @@ impl Gavno {
                 xkb.layout_name(xkb.active_layout()).to_owned()
             });
             if let Some(g) = self.greeter.as_mut() {
-                g.set_modifiers(caps, &layout);
+                g.safe_call((), |g| g.set_modifiers(caps, &layout));
             }
             if self.lock.internal() { self.lock.modifiers(caps, &layout); }
             self.queue_redraw_all();
@@ -240,16 +237,31 @@ impl Gavno {
         let local = pos - origin.to_f64();
         if let Some(g) = self.greeter.as_mut() {
             if click {
-                g.click(local);
+                g.safe_call((), |g| g.click(local));
             } else {
-                g.pointer_motion(local);
+                g.safe_call(false, |g| g.pointer_motion(local));
             }
         }
         self.queue_redraw_all();
     }
 
     /// The core binds (KooL Hyprland-Dots subset). Modules see keys first.
-    fn bind_for(&self, sym: Keysym, mods: &ModifiersState) -> Option<Action> {
+    pub(crate) fn bind_for(&self, sym: Keysym, mods: &ModifiersState) -> Option<Action> {
+        self.bind_for_enabled(sym, mods).filter(|action| self.action_enabled(action))
+    }
+    fn action_enabled(&self, action: &Action) -> bool {
+        let feature = match action {
+            Action::Minimize => Feature::Dock,
+            Action::ToggleTiling | Action::ToggleFloating | Action::RotateSplit | Action::Swap(_) => Feature::Tiling,
+            Action::Snap(_) | Action::Resize(_) => Feature::Snap,
+            Action::ResizeMode => Feature::ResizeMode,
+            Action::SwitcherCycle(_) | Action::SwitcherFinish(_) => Feature::Switcher,
+            Action::ToggleOverview | Action::CloseOverview => Feature::Overview,
+            _ => return true,
+        };
+        self.features.on(feature)
+    }
+    fn bind_for_enabled(&self, sym: Keysym, mods: &ModifiersState) -> Option<Action> {
         let main = self.config.mod_key.is_held(mods);
         let sym = Keysym::from(sym.raw()).raw();
 
@@ -270,7 +282,7 @@ impl Gavno {
         {
             return Some(Action::SwitcherCycle(mods.shift));
         }
-        if self.overview.visible() && sym == keysyms::KEY_Escape { return Some(Action::CloseOverview); }
+        if (self.features.on(crate::module::Feature::Overview) && self.overview.visible()) && sym == keysyms::KEY_Escape { return Some(Action::CloseOverview); }
         if mods.logo && mods.shift && sym == keysyms::KEY_F23 { return Some(Action::ToggleOverview); }
         if !main {
             return None;
@@ -322,6 +334,7 @@ impl Gavno {
     }
 
     pub fn run_action(&mut self, action: Action) {
+        if !self.action_enabled(&action) { return; }
         if self.protocols.locks.locked && !matches!(action, Action::SwitchVt(_)) { return; }
         match action {
             Action::Lock => { self.lock_session(); },
@@ -458,20 +471,21 @@ impl Gavno {
             return;
         }
 
-        self.gestures.super_tap.cancel();
+        self.guard(Feature::Gestures, (), |gv| gv.gestures.super_tap.cancel());
         // Balance presses already delivered to Smithay before desktop UI can
         // consume their releases. Shell-only presses never enter this list.
         if button_state == ButtonState::Released && self.pointer_buttons.contains(&button) {
             self.pointer_buttons.retain(|b| *b != button);
+            self.suppressed_buttons.retain(|b| *b != button);
             pointer.button(self, &ButtonEvent { button, state: button_state, serial, time: event.time_msec() });
             pointer.frame(self);
             return;
         }
-        if button_state==ButtonState::Released && self.window_gestures.swallowed_buttons.contains(&button) {
-            self.window_gestures.swallowed_buttons.retain(|b|*b!=button);return;
+        if button_state==ButtonState::Released && self.suppressed_buttons.contains(&button) {
+            self.suppressed_buttons.retain(|b|*b!=button);return;
         }
         if button_state==ButtonState::Pressed && self.exit_resize_mode() {
-            self.window_gestures.swallowed_buttons.push(button);return;
+            self.suppressed_buttons.push(button);return;
         }
         if self.shell_button(button, button_state == ButtonState::Pressed) { return; }
         if self.overview_button(button, button_state == ButtonState::Pressed) { return; }
@@ -598,7 +612,7 @@ impl Gavno {
     }
 
     fn on_pointer_axis<I: InputBackend>(&mut self, event: I::PointerAxisEvent) {
-        self.gestures.super_tap.cancel();
+        self.guard(Feature::Gestures, (), |gv| gv.gestures.super_tap.cancel());
         let source = event.source();
         let horizontal = event
             .amount(Axis::Horizontal)
@@ -612,7 +626,7 @@ impl Gavno {
         }
         if self.greeter.is_none() && !self.protocols.locks.locked && self.shell_axis(horizontal, vertical) { return; }
         if self.greeter.is_none() && !self.protocols.locks.locked && source==AxisSource::Finger && self.overview_flick_axis((-horizontal,-vertical).into(),event.time(),[event.amount(Axis::Horizontal),event.amount(Axis::Vertical)]) {return;}
-        if self.overview.visible() { return; }
+        if self.features.on(crate::module::Feature::Overview) && self.overview.visible() { return; }
         let mut frame = AxisFrame::new(event.time_msec()).source(source);
         if horizontal != 0.0 {
             frame = frame.value(Axis::Horizontal, horizontal);

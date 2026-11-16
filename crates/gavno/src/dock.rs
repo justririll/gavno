@@ -156,7 +156,6 @@ pub struct Dock {
     launches: Vec<Launch>,
     minimized: Vec<MinimizeMotion>,
     now: Duration,
-    buttons: Vec<u32>,
     /// Pinned ids already reported as unresolved, so each logs only once.
     skipped: HashSet<String>,
     pub changed: bool,
@@ -179,7 +178,6 @@ impl Default for Dock {
             launches: Vec::new(),
             minimized: Vec::new(),
             now: Duration::ZERO,
-            buttons: Vec::new(),
             skipped: HashSet::new(),
             changed: false,
             cycle_scroll: 0.0,
@@ -673,8 +671,8 @@ impl Gavno {
                 return false;
             }
             let p = pos - geo.loc.to_f64();
-            (self.config.bar.enabled && (p.y < PANEL as f64 || self.topbar.action(o, p).is_some()))
-                || (self.config.dock.enabled
+            (self.features.read(crate::module::Feature::Bar, false, || self.config.bar.enabled && (p.y < PANEL as f64 || self.topbar.action(o, p).is_some())))
+                || ((self.features.on(crate::module::Feature::Dock) && self.config.dock.enabled)
                     && self
                         .dock
                         .views
@@ -685,23 +683,16 @@ impl Gavno {
                                 || v.hits.iter().any(|(_, r)| r.contains(p))
                                 || v.menu_rect.is_some_and(|r| r.contains(p))
                         }))
-                || self.topbar.menu.is_some()
-                || self.dock.menu.is_some()
+                || self.features.read(crate::module::Feature::Bar, false, || self.topbar.menu.is_some())
+                || self.features.read(crate::module::Feature::Dock, false, || self.dock.menu.is_some())
         })
     }
     pub fn shell_button(&mut self, button: u32, pressed: bool) -> bool {
-        if !pressed {
-            if let Some(i) = self.dock.buttons.iter().position(|b| *b == button) {
-                self.dock.buttons.remove(i);
-                return true;
-            }
-            return false;
-        }
+        if !pressed { return false; }
         let pointer = self.seat.get_pointer().unwrap();
         if pointer.is_grabbed() || !self.shell_contains(pointer.current_location()) {
             return false;
         }
-        self.dock.buttons.push(button);
         let Some(output) = self.active_output() else {
             return true;
         };
@@ -710,96 +701,109 @@ impl Gavno {
         };
         let p = pointer.current_location() - geo.loc.to_f64();
         if button == 0x110 {
-            if let Some(action) = self.topbar.action(&output, p) {
+            if let Some(action) = self.guard(crate::module::Feature::Bar, None, |gv| gv.topbar.action(&output, p)) {
+                self.suppressed_buttons.push(button);
                 self.bar_action(&output, action);
                 return true;
             }
         }
-        let menu_hit = self
-            .dock
-            .views
-            .iter()
-            .find(|v| v.output == output)
-            .and_then(|v| v.menu_rect)
-            .filter(|r| r.contains(p));
-        if let (Some(rect), Some(menu)) = (menu_hit, self.dock.menu.clone()) {
-            if button == 0x110 {
-                match ((p.y - rect.loc.y - 5.0) / 28.0).floor() as i32 {
-                    0 => self.launch_dock_app(&menu.id),
-                    1 => {
-                        if let Some(app) = self.dock.apps.iter().find(|a| a.id == menu.id) {
-                            for w in &app.windows {
-                                if let Some(t) = w.toplevel() {
-                                    t.send_close();
-                                }
-                            }
-                        }
-                    }
-                    2 => {
-                        if let Some(i) = self.dock.pinned.iter().position(|id| id == &menu.id) {
-                            self.dock.pinned.remove(i);
-                        } else {
-                            self.dock.pinned.push(menu.id.clone());
-                        }
-                        tracing::info!(app=%menu.id,"dock pin changed in memory; config writing is not implemented");
-                    }
-                    _ => {}
-                }
-            }
-            self.dock.close_menu();
+        let bar_hit = self.features.read(crate::module::Feature::Bar, false, || p.y < PANEL as f64 || self.topbar.menu.is_some());
+        if bar_hit {
+            self.guard(crate::module::Feature::Dock, (), |gv| gv.dock.close_menu());
+            self.guard(crate::module::Feature::Bar, (), |gv| gv.topbar.menu = None);
+            self.suppressed_buttons.push(button);
             self.queue_redraw_all();
             return true;
         }
-        let hit = self
-            .dock
-            .views
-            .iter()
-            .find(|v| v.output == output)
-            .and_then(|v| {
-                v.hits
-                    .iter()
-                    .find(|(_, r)| r.contains(p))
-                    .map(|(id, _)| id.clone())
-            });
-        let had_menu = self.dock.menu.is_some() || self.topbar.menu.is_some();
-        self.dock.close_menu();
-        self.topbar.menu = None;
-        if !had_menu {
-            if let Some(id) = hit {
-                match button {
-                    0x111 => self.dock.menu = Some(DockMenu { id, output }),
-                    0x112 => self.launch_dock_app(&id),
-                    0x110 => {
-                        let windows = self
-                            .dock
-                            .apps
-                            .iter()
-                            .find(|a| a.id == id)
-                            .map(|a| a.windows.clone())
-                            .unwrap_or_default();
-                        if windows.is_empty() {
-                            self.launch_dock_app(&id);
-                        } else if let Some(window) = self
-                            .mru
-                            .iter()
-                            .find(|w| windows.contains(w))
-                            .cloned()
-                            .or_else(|| windows.last().cloned())
-                        {
-                            if self.focused_window().as_ref() == Some(&window) {
-                                self.minimize_window(&window);
-                            } else {
-                                self.focus_window(Some(&window));
-                                self.close_overview();
+        let handled = self.guard(crate::module::Feature::Dock, false, |gv| {
+            let menu_hit = gv
+                .dock
+                .views
+                .iter()
+                .find(|v| v.output == output)
+                .and_then(|v| v.menu_rect)
+                .filter(|r| r.contains(p));
+            if let (Some(rect), Some(menu)) = (menu_hit, gv.dock.menu.clone()) {
+                if button == 0x110 {
+                    match ((p.y - rect.loc.y - 5.0) / 28.0).floor() as i32 {
+                        0 => gv.launch_dock_app(&menu.id),
+                        1 => {
+                            if let Some(app) = gv.dock.apps.iter().find(|a| a.id == menu.id) {
+                                for w in &app.windows {
+                                    if let Some(t) = w.toplevel() {
+                                        t.send_close();
+                                    }
+                                }
                             }
                         }
+                        2 => {
+                            if let Some(i) = gv.dock.pinned.iter().position(|id| id == &menu.id) {
+                                gv.dock.pinned.remove(i);
+                            } else {
+                                gv.dock.pinned.push(menu.id.clone());
+                            }
+                            tracing::info!(app=%menu.id,"dock pin changed in memory; config writing is not implemented");
+                        }
+                        _ => {}
                     }
-                    _ => {}
+                }
+                gv.dock.close_menu();
+                gv.queue_redraw_all();
+                return true;
+            }
+            let hit = gv
+                .dock
+                .views
+                .iter()
+                .find(|v| v.output == output)
+                .and_then(|v| {
+                    v.hits
+                        .iter()
+                        .find(|(_, r)| r.contains(p))
+                        .map(|(id, _)| id.clone())
+                });
+            let had_menu = gv.dock.menu.is_some() || (gv.features.on(crate::module::Feature::Bar) && gv.topbar.menu.is_some());
+            gv.dock.close_menu();
+            gv.guard(crate::module::Feature::Bar, (), |gv| gv.topbar.menu = None);
+            if !had_menu {
+                if let Some(id) = hit {
+                    match button {
+                        0x111 => gv.dock.menu = Some(DockMenu { id, output }),
+                        0x112 => gv.launch_dock_app(&id),
+                        0x110 => {
+                            let windows = gv
+                                .dock
+                                .apps
+                                .iter()
+                                .find(|a| a.id == id)
+                                .map(|a| a.windows.clone())
+                                .unwrap_or_default();
+                            if windows.is_empty() {
+                                gv.launch_dock_app(&id);
+                            } else if let Some(window) = gv
+                                .mru
+                                .iter()
+                                .find(|w| windows.contains(w))
+                                .cloned()
+                                .or_else(|| windows.last().cloned())
+                            {
+                                if gv.focused_window().as_ref() == Some(&window) {
+                                    gv.minimize_window(&window);
+                                } else {
+                                    gv.focus_window(Some(&window));
+                                    gv.close_overview();
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
                 }
             }
-        }
-        self.queue_redraw_all();
-        true
+            gv.queue_redraw_all();
+            true
+        });
+        if handled { self.suppressed_buttons.push(button); }
+        handled
     }
     pub fn shell_axis(&mut self, horizontal: f64, vertical: f64) -> bool {
         let pos = self.pointer_location();
@@ -812,59 +816,67 @@ impl Gavno {
         let Some(geo) = self.space.output_geometry(&output) else {
             return false;
         };
-        if self.config.bar.enabled && pos.y - (geo.loc.y as f64) < PANEL as f64 {
-            let delta = if horizontal.abs() > vertical.abs() {
+        if (self.features.on(crate::module::Feature::Bar) && self.config.bar.enabled) && pos.y - (geo.loc.y as f64) < PANEL as f64 {
+            return self.guard(crate::module::Feature::Bar, false, |gv| {            let delta = if horizontal.abs() > vertical.abs() {
                 horizontal
             } else {
                 vertical
             };
             if delta == 0.0 {
-                self.topbar.scroll = 0.0;
+                gv.topbar.scroll = 0.0;
                 return true;
             }
-            if delta.signum() != self.topbar.scroll.signum() {
-                self.topbar.scroll = 0.0;
+            if delta.signum() != gv.topbar.scroll.signum() {
+                gv.topbar.scroll = 0.0;
             }
-            self.topbar.scroll += delta;
-            if self.topbar.scroll.abs() >= 30.0 {
-                let o = self.workspaces.ensure(&output);
-                let next = if self.topbar.scroll < 0.0 {
+            gv.topbar.scroll += delta;
+            if gv.topbar.scroll.abs() >= 30.0 {
+                let o = gv.workspaces.ensure(&output);
+                let next = if gv.topbar.scroll < 0.0 {
                     o.list.active.saturating_sub(1)
                 } else {
                     (o.list.active + 1).min(o.list.items.len() - 1)
                 };
-                self.topbar.scroll = 0.0;
-                self.switch_workspace(&output, next);
+                gv.topbar.scroll = 0.0;
+                gv.switch_workspace(&output, next);
             }
             return true;
+
+            });
         }
-        let p=pos-geo.loc.to_f64();
-        let id=self.dock.views.iter().find(|v|v.output==output).and_then(|v|v.hits.iter().find(|(_,r)|r.contains(p)).map(|(id,_)|id.clone()));
-        if let Some(id)=id {
-            let delta=if horizontal.abs()>vertical.abs() {horizontal} else {vertical};
-            if self.dock.cycle_app.as_ref()!=Some(&id) || delta==0.0 || delta.signum()!=self.dock.cycle_scroll.signum() {self.dock.cycle_scroll=0.0;}
-            if self.dock.cycle_app.as_ref()!=Some(&id) {
-                self.dock.cycle_windows=self.dock.apps.iter().find(|a|a.id==id).map(|a|a.windows.clone()).unwrap_or_default();
-            }
-            self.dock.cycle_app=Some(id.clone());
-            self.dock.cycle_scroll+=delta;
-            if self.dock.cycle_scroll.abs()>=30.0 {
-                self.dock.cycle_windows.retain(|w|w.alive());
-                let windows=self.dock.cycle_windows.clone();
-                if !windows.is_empty() {
-                    let selected=self.focused_window().and_then(|w|windows.iter().position(|v|v==&w));
-                    let index=match selected {Some(i)=>(i+if delta<0.0 {windows.len()-1} else {1})%windows.len(),None=>if delta<0.0 {windows.len()-1} else {0}};
-                    self.focus_window(Some(&windows[index]));
+        self.guard(crate::module::Feature::Dock, false, |gv| {
+            let p=pos-geo.loc.to_f64();
+            let id=gv.dock.views.iter().find(|v|v.output==output).and_then(|v|v.hits.iter().find(|(_,r)|r.contains(p)).map(|(id,_)|id.clone()));
+            if let Some(id)=id {
+                let delta=if horizontal.abs()>vertical.abs() {horizontal} else {vertical};
+                if gv.dock.cycle_app.as_ref()!=Some(&id) || delta==0.0 || delta.signum()!=gv.dock.cycle_scroll.signum() {gv.dock.cycle_scroll=0.0;}
+                if gv.dock.cycle_app.as_ref()!=Some(&id) {
+                    gv.dock.cycle_windows=gv.dock.apps.iter().find(|a|a.id==id).map(|a|a.windows.clone()).unwrap_or_default();
                 }
-                self.dock.cycle_scroll=0.0;
+                gv.dock.cycle_app=Some(id.clone());
+                gv.dock.cycle_scroll+=delta;
+                if gv.dock.cycle_scroll.abs()>=30.0 {
+                    gv.dock.cycle_windows.retain(|w|w.alive());
+                    let windows=gv.dock.cycle_windows.clone();
+                    if !windows.is_empty() {
+                        let selected=gv.focused_window().and_then(|w|windows.iter().position(|v|v==&w));
+                        let index=match selected {Some(i)=>(i+if delta<0.0 {windows.len()-1} else {1})%windows.len(),None=>if delta<0.0 {windows.len()-1} else {0}};
+                        gv.focus_window(Some(&windows[index]));
+                    }
+                    gv.dock.cycle_scroll=0.0;
+                }
+                if delta==0.0 {gv.dock.cycle_app=None;gv.dock.cycle_windows.clear();}
+                return true;
             }
-            if delta==0.0 {self.dock.cycle_app=None;self.dock.cycle_windows.clear();}
-            return true;
-        }
-        self.dock.cycle_scroll=0.0;self.dock.cycle_app=None;self.dock.cycle_windows.clear();
-        self.shell_contains(pos)
+            gv.dock.cycle_scroll=0.0;gv.dock.cycle_app=None;gv.dock.cycle_windows.clear();
+            gv.shell_contains(pos)
+        })
     }
     pub fn finish_dock_launches(&mut self) {
+        self.guard(crate::module::Feature::Dock, Default::default(), |gv| gv.finish_dock_launches_feature())
+    }
+
+    fn finish_dock_launches_feature(&mut self) {
         let mut i = 0;
         while i < self.dock.launches.len() {
             let launch = &self.dock.launches[i];
@@ -890,6 +902,10 @@ impl Gavno {
         }
     }
     fn launch_dock_app(&mut self, id: &str) {
+        self.guard(crate::module::Feature::Dock, Default::default(), |gv| gv.launch_dock_app_feature(id))
+    }
+
+    fn launch_dock_app_feature(&mut self, id: &str) {
         let Some(app) = self.dock.apps.iter().find(|a| a.id == id) else {
             return;
         };
@@ -931,6 +947,10 @@ impl Gavno {
         self.queue_redraw_all();
     }
     pub fn minimize_window(&mut self, window: &Window) {
+        self.guard(crate::module::Feature::Dock, Default::default(), |gv| gv.minimize_window_feature(window))
+    }
+
+    fn minimize_window_feature(&mut self, window: &Window) {
         if mode_state(window).minimized || self.greeter.is_some() || self.protocols.locks.locked {
             return;
         }
@@ -972,7 +992,7 @@ impl Gavno {
             progress,
         });
         with_mode_state(window, |s| s.minimized = true);
-        self.window_animations.cancel(window);
+        self.features.call(crate::module::Feature::Animations, (), || self.window_animations.cancel(window));
         self.space.unmap_elem(window);
         self.reflow_tiling(true);
         self.focus_topmost();
@@ -981,6 +1001,10 @@ impl Gavno {
     }
     /// Focus calls this after selecting the owning workspace, including Alt+Tab/overview.
     pub fn restore_minimized(&mut self, window: &Window) {
+        self.guard(crate::module::Feature::Dock, Default::default(), |gv| gv.restore_minimized_feature(window))
+    }
+
+    fn restore_minimized_feature(&mut self, window: &Window) {
         if !mode_state(window).minimized {
             return;
         }
@@ -1019,7 +1043,7 @@ impl Gavno {
         });
         with_mode_state(window, |s| s.minimized = false);
         self.space.map_element(window.clone(), location, false);
-        self.window_animations.cancel(window);
+        self.features.call(crate::module::Feature::Animations, (), || self.window_animations.cancel(window));
         self.reflow_tiling(true);
         self.queue_redraw_all();
     }
@@ -1234,6 +1258,10 @@ mod tests {
 
 impl Gavno {
     pub fn push_dock_edge(&mut self,output:&Output) {
+        self.guard(crate::module::Feature::Dock, Default::default(), |gv| gv.push_dock_edge_feature(output))
+    }
+
+    fn push_dock_edge_feature(&mut self,output:&Output) {
         if !self.config.dock.autohide {return;}
         if let Some(v)=self.dock.views.iter_mut().find(|v|&v.output==output) {
             if !v.pushed {v.pushed=true;self.queue_redraw_all();}
@@ -1243,10 +1271,40 @@ impl Gavno {
 
 impl Gavno {
     pub fn seed_minimize_velocity(&mut self,w:&Window,velocity:Point<f64,Logical>) {
+        self.guard(crate::module::Feature::Dock, Default::default(), |gv| gv.seed_minimize_velocity_feature(w, velocity))
+    }
+
+    fn seed_minimize_velocity_feature(&mut self,w:&Window,velocity:Point<f64,Logical>) {
         if let Some(m)=self.dock.minimized.iter_mut().find(|m|&m.window==w) {
             let delta=m.to.loc-m.from.loc;
             let length=delta.x*delta.x+delta.y*delta.y;
             if length>1.0 {m.progress.velocity=(velocity.x*delta.x+velocity.y*delta.y)/length;}
         }
+    }
+}
+
+impl Gavno {
+    pub(crate) fn reset_dock(&mut self) {
+        for owner in &self.workspaces.outputs {
+            for (index, ws) in owner.list.items.iter().enumerate() {
+                for v in &ws.windows {
+                    if mode_state(&v.window).minimized {
+                        with_mode_state(&v.window, |s| s.minimized = false);
+                        if index == owner.list.active {
+                            self.space.map_element(v.window.clone(), v.location, false);
+                        }
+                    }
+                }
+            }
+        }
+        // Include windows interrupted between minimization and workspace insertion.
+        for m in &self.dock.minimized {
+            with_mode_state(&m.window, |s| s.minimized = false);
+            if self.workspaces.membership(&m.window).is_none() {
+                self.space.map_element(m.window.clone(), m.location, false);
+            }
+        }
+        self.dock = Default::default();
+        self.reflow_tiling(false);
     }
 }

@@ -7,7 +7,7 @@
 use std::{
     io::{Read, Write},
     os::unix::net::UnixStream,
-    sync::mpsc,
+    sync::{mpsc, Arc, atomic::{AtomicU64, Ordering}},
     time::Duration,
 };
 
@@ -75,7 +75,8 @@ pub enum Reply {
 }
 
 pub struct Ipc {
-    tx: mpsc::Sender<Request>,
+    tx: mpsc::Sender<(u64, Request)>,
+    epoch: Arc<AtomicU64>,
     pub demo: bool,
 }
 
@@ -83,13 +84,16 @@ impl Ipc {
     pub fn spawn(loop_handle: &LoopHandle<'static, Gavno>) -> Ipc {
         let sock = std::env::var("GREETD_SOCK").ok();
         let demo = sock.is_none();
-        let (tx, rx) = mpsc::channel::<Request>();
-        let (reply_tx, reply_rx) = channel::channel::<Reply>();
+        let (tx, rx) = mpsc::channel::<(u64, Request)>();
+        let epoch = Arc::new(AtomicU64::new(0));
+        let replies = epoch.clone();
+        let (reply_tx, reply_rx) = channel::channel::<(u64, Reply)>();
         loop_handle
-            .insert_source(reply_rx, |event, _, gv| {
-                if let channel::Event::Msg(reply) = event {
+            .insert_source(reply_rx, move |event, _, gv| {
+                if let channel::Event::Msg((generation, reply)) = event {
+                    if generation != replies.load(Ordering::Relaxed) { return; }
                     if let Some(greeter) = gv.greeter.as_mut() {
-                        greeter.on_reply(reply);
+                        greeter.safe_call((), |g| g.on_reply(reply));
                         if greeter.quit_requested {
                             gv.quit();
                         }
@@ -109,22 +113,24 @@ impl Ipc {
                         None
                     }
                 });
-                for req in rx {
+                for (generation, req) in rx {
                     let reply = match conn.as_mut() {
                         Some(c) => handle(c, req),
                         None => demo_handle(req),
                     };
-                    if reply_tx.send(reply).is_err() {
+                    if reply_tx.send((generation, reply)).is_err() {
                         break;
                     }
                 }
             })
             .expect("greeter ipc thread");
-        Ipc { tx, demo }
+        Ipc { tx, demo, epoch }
     }
 
+    pub(crate) fn invalidate(&self) { self.epoch.fetch_add(1, Ordering::Relaxed); }
+
     pub fn send(&self, req: Request) {
-        let _ = self.tx.send(req);
+        let _ = self.tx.send((self.epoch.load(Ordering::Relaxed), req));
     }
 }
 

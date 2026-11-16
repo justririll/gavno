@@ -57,10 +57,10 @@ impl CompositorHandler for Gavno {
         xdg_shell::handle_commit(self, surface);
         layer_shell::handle_commit(self, surface);
         resize_grab::handle_commit(&mut self.space, surface);
-        if let Some(w)=self.window_for_surface(surface).filter(|w| resize_grab::directed_finished(w) && !self.window_animations.motion(w).is_some_and(|m|m.closing)) {
+        if let Some(w)=self.window_for_surface(surface).filter(|w| resize_grab::directed_finished(w) && !self.features.read(crate::module::Feature::Animations, false, || self.window_animations.motion(w).is_some_and(|m|m.closing))) {
             resize_grab::settle_directed(self, &w);
         }
-        if !hidden_commit || self.overview.visible() { self.queue_redraw_all(); }
+        if !hidden_commit || (self.features.on(crate::module::Feature::Overview) && self.overview.visible()) { self.queue_redraw_all(); }
     }
 }
 
