@@ -20,6 +20,8 @@ pub struct Config {
     pub terminal: String,
     /// Launcher started by Mod+D, if any.
     pub launcher: Option<String>,
+    /// File manager started by Mod+E.
+    pub file_manager: String,
     /// Output scale for built-in panels (eDP). External outputs use 1.0.
     pub internal_scale: f64,
     pub output_mode: Option<crate::hdr::mode::ModeRequest>,
@@ -105,6 +107,7 @@ struct FileConfig {
     mod_key: Option<ModKey>,
     terminal: Option<String>,
     launcher: Option<String>,
+    file_manager: Option<String>,
     gap: Option<i64>,
     output: Output,
     keyboard: Keyboard,
@@ -225,6 +228,10 @@ impl Config {
                     .or(file.terminal.filter(|s| !s.trim().is_empty()))
                     .unwrap_or_else(|| "foot".into()),
                 launcher: var("GAVNO_LAUNCHER").or(file.launcher.filter(|s| !s.is_empty())),
+                file_manager: file
+                    .file_manager
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or_else(|| "gavno-files".into()),
                 internal_scale: scale_clamped,
                 output_mode,
                 output_hdr,
@@ -296,6 +303,7 @@ options = "caps:escape"
             mod_key: ModKey::Super,
             terminal: "foot".into(),
             launcher: None,
+            file_manager: "gavno-files".into(),
             internal_scale: 1.75,
             output_mode: None,
             output_hdr: false,
@@ -332,6 +340,7 @@ options = "caps:escape"
             mod_key: ModKey::Alt,
             terminal: "kitty".into(),
             launcher: Some("rofi".into()),
+            file_manager: "gavno-files".into(),
             internal_scale: 2.0,
             output_mode: None,
             output_hdr: false,

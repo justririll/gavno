@@ -345,6 +345,7 @@ impl Gavno {
             keysyms::KEY_F3 if mods.shift && !mods.ctrl => Some(Action::SdrWhite(10)),
             keysyms::KEY_Return | keysyms::KEY_KP_Enter => Some(Action::Spawn(self.config.terminal.clone())),
             keysyms::KEY_q if !mods.shift => Some(Action::CloseWindow),
+            keysyms::KEY_e | keysyms::KEY_E if !mods.shift && !mods.ctrl => Some(Action::Spawn(self.config.file_manager.clone())),
             keysyms::KEY_m | keysyms::KEY_M if !mods.shift => Some(Action::Minimize),
             // The built-in launcher unless the config names an external one.
             keysyms::KEY_d => Some(self.config.launcher.clone().map(Action::Spawn).unwrap_or(Action::ToggleLauncher)),
