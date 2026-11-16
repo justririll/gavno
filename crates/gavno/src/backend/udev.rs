@@ -829,11 +829,13 @@ fn change_hdr(surface: &mut Surface, renderer: &mut GlesRenderer,
 fn draw_frame(surface: &mut Surface, renderer: &mut GlesRenderer,
     elements: &[GavnoRenderElement]) -> Result<(bool, RenderElementStates), String> {
     use smithay::backend::drm::compositor::PrimaryPlaneElement;
+    use crate::render_sanitize::SanitizedElement;
+    let scale = surface.output.current_scale().fractional_scale().into();
     if let Some(hdr) = &mut surface.hdr {
         let (element, states) = hdr.render(renderer, &surface.output, elements, render::CLEAR_COLOR)?;
         // All pixels, including the cursor, must pass through PQ encoding.
-        let elements = [element];
-        let result = surface.drm_output.render_frame(renderer, &elements, [0.0, 0.0, 0.0, 1.0], FrameFlags::empty())
+        let element = SanitizedElement::new(element, scale);
+        let result = surface.drm_output.render_frame(renderer, element.as_slice(), [0.0, 0.0, 0.0, 1.0], FrameFlags::empty())
             .map_err(|e| format!("HDR scanout render: {e:?}"))?;
         if result.needs_sync() {
             if let PrimaryPlaneElement::Swapchain(element) = &result.primary_element {
@@ -842,7 +844,10 @@ fn draw_frame(surface: &mut Surface, renderer: &mut GlesRenderer,
         }
         Ok((result.is_empty, states))
     } else {
-        let result = surface.drm_output.render_frame(renderer, elements, render::CLEAR_COLOR, SCANOUT_FLAGS)
+        // Borrow the rebuilt scene; only this list allocates, not each wrapper.
+        let mut sanitized = Vec::with_capacity(elements.len());
+        sanitized.extend(elements.iter().filter_map(|e| SanitizedElement::new(e, scale)));
+        let result = surface.drm_output.render_frame(renderer, &sanitized, render::CLEAR_COLOR, SCANOUT_FLAGS)
             .map_err(|e| format!("SDR render: {e:?}"))?;
         // Legacy KMS cannot take an in-fence: wait before queueing the frame.
         if result.needs_sync() {

@@ -37,6 +37,7 @@ mod module;
 mod overlay;
 mod snap;
 mod render;
+mod render_sanitize;
 mod state;
 mod ui;
 mod window_mode;
