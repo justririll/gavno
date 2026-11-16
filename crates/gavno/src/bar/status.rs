@@ -188,6 +188,14 @@ fn read_volume(source: bool) -> Option<Volume> {
         .then(|| parse_wpctl(&String::from_utf8_lossy(&output.stdout)))
         .flatten()
 }
+/// Raising the volume unmutes, as in other desktops. The laptop's speaker
+/// sink also reports muted once its hardware level reaches zero, and stayed
+/// silent until mute was toggled by hand.
+fn unmute_sink(volume: Option<Volume>) {
+    if volume.is_some_and(|v| v.muted) {
+        run_wpctl(&["set-mute", "@DEFAULT_AUDIO_SINK@", "0"]);
+    }
+}
 fn run_wpctl(args: &[&str]) -> bool {
     match Process::new("wpctl").args(args).output() {
         Ok(o) if o.status.success() => true,
@@ -314,6 +322,9 @@ pub fn spawn(handle: &LoopHandle<'static, Gavno>, hardware: bool) -> Option<Send
                         "@DEFAULT_AUDIO_SINK@",
                         &format!("{:.0}%", value * 100.0),
                     ]);
+                    if value > 0.0 {
+                        unmute_sink(snapshot.volume);
+                    }
                     snapshot.volume = read_volume(false);
                     // Failed writes reconcile an optimistic slider value. This
                     // response is driven by input, never by an idle refresh.
@@ -397,6 +408,9 @@ pub fn spawn(handle: &LoopHandle<'static, Gavno>, hardware: bool) -> Option<Send
                                     "5%-"
                                 },
                             ]);
+                            if action == Media::VolumeUp {
+                                unmute_sink(snapshot.volume);
+                            }
                             snapshot.volume = read_volume(false);
                         }
                         Media::Mute => {
