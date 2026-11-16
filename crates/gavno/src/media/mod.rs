@@ -3,6 +3,8 @@ pub(crate) mod mpris;
 pub(crate) mod music;
 pub(crate) mod ui;
 
+pub const MUSIC_PLAYER: &str = "org.mpris.MediaPlayer2.gavno_music";
+
 use crate::{module::Feature, Gavno};
 use smithay::{
     backend::renderer::element::memory::MemoryRenderBuffer, reexports::calloop::channel,
@@ -94,6 +96,8 @@ pub struct Snapshot {
     pub player: Option<Player>,
     pub image: Option<MemoryRenderBuffer>,
     pub music_available: bool,
+    pub music_player: Option<Player>,
+    pub music_image: Option<MemoryRenderBuffer>,
 }
 #[derive(Default)]
 pub struct Media {
@@ -141,6 +145,7 @@ impl Gavno {
         self.guard(Feature::Media, (), |gv| {
             gv.classic.desktop.widgets.update_player(snapshot.player.as_ref());
             gv.now_playing.borrow_mut().snapshot = snapshot;
+            gv.refresh_classic_music();
             gv.queue_redraw_all();
         });
     }
@@ -159,9 +164,37 @@ impl Gavno {
             }
         });
     }
+    pub fn music_command(&mut self, command: Command) {
+        self.guard(Feature::Media, (), |gv| {
+            let media = gv.now_playing.borrow();
+            if let Some(session) = media.music.session.as_ref().filter(|s| s.has_state) {
+                if session.state.item.is_none() {
+                    return;
+                }
+                session.send(music::worker::Command::Control(
+                    match command {
+                        Command::Previous => "previous",
+                        Command::PlayPause => "toggle",
+                        Command::Next => "next",
+                    }
+                    .into(),
+                ));
+            } else if media
+                .snapshot
+                .music_player
+                .as_ref()
+                .is_some_and(|p| p.allows(command))
+            {
+                if let Some(worker) = &media.worker {
+                    let _ = worker.send(mpris::Request::MusicCommand(command));
+                }
+            }
+        });
+    }
     pub(crate) fn reset_media(&mut self) {
         self.close_music();
         self.now_playing.borrow_mut().snapshot = Snapshot::default();
+        self.refresh_classic_music();
         self.topbar.clear_media_hits();
         self.lock.clear_media();
     }

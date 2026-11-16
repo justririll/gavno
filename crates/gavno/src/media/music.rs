@@ -102,6 +102,9 @@ pub struct Panel {
 pub struct Session {
     pub output: Output,
     pub state: State,
+    pub has_state: bool,
+    /// Output-local widget rectangle; None retains the top bar placement.
+    pub anchor: Option<Rect>,
     pub page: Page,
     tabs: [Option<Page>; 3],
     pub tab: usize,
@@ -284,6 +287,9 @@ impl Gavno {
         self.features.on(Feature::Media) && self.now_playing.borrow().music.session.is_some()
     }
     pub fn toggle_music(&mut self, output: &Output) {
+        self.toggle_music_at(output, None);
+    }
+    pub fn toggle_music_at(&mut self, output: &Output, anchor: Option<Rect>) {
         if self.music_open() {
             self.close_music();
             return;
@@ -306,6 +312,8 @@ impl Gavno {
             media.music.session = Some(Session {
                 output: output.clone(),
                 state: State::default(),
+                has_state: false,
+                anchor,
                 page: Page::default(),
                 tabs: Default::default(),
                 tab: 0,
@@ -377,6 +385,7 @@ impl Gavno {
             }
             drop(session);
             crate::release_free_heap();
+            self.refresh_classic_music();
             self.queue_redraw_all();
         }
     }
@@ -395,6 +404,33 @@ impl Gavno {
             || !self.config.media.music_panel
         {
             self.close_music();
+            return;
+        }
+        // Follow the widget after dragging, config reloads, or output resizing.
+        let d = &self.classic.desktop;
+        let mut media = self.now_playing.borrow_mut();
+        let mut moved = false;
+        if let Some(s) = media
+            .music
+            .session
+            .as_mut()
+            .filter(|s| s.anchor.is_some() && Some(&s.output) == d.output.as_ref())
+        {
+            if let Some((_, anchor)) = d
+                .widgets
+                .layouts(&d.positions.widgets, d.size)
+                .find(|(name, _)| *name == "music")
+            {
+                if s.anchor != Some(anchor) {
+                    s.anchor = Some(anchor);
+                    s.dirty = true;
+                    moved = true;
+                }
+            }
+        }
+        drop(media);
+        if moved {
+            self.queue_redraw_all();
         }
     }
     fn music_event(&mut self, generation: u64, event: worker::Event) {
@@ -424,6 +460,7 @@ impl Gavno {
                     s.clear_account(&self.loop_handle);
                 }
                 s.state = state;
+                s.has_state = true;
                 if logged_in && s.tabs[s.tab].is_none() && !s.loading {
                     s.browse(["home", "library", "playlists"][s.tab], String::new());
                 }
@@ -451,6 +488,7 @@ impl Gavno {
             worker::Event::Unavailable => {
                 s.clear_account(&self.loop_handle);
                 s.state = State::default();
+                s.has_state = false;
                 s.error = "Music daemon unavailable".into();
             }
             worker::Event::Cover(url, path, image) => {
@@ -476,6 +514,7 @@ impl Gavno {
         if needs_tick {
             self.music_tick();
         }
+        self.refresh_classic_music();
         self.queue_redraw_all();
     }
     fn music_tick(&mut self) {
@@ -623,6 +662,9 @@ impl Gavno {
         if !self.music_open() {
             return false;
         }
+        if self.classic_music_at(point) {
+            return false;
+        }
         self.guard(Feature::Media, true, |gv| {
             if !pressed {
                 gv.music_release();
@@ -677,7 +719,7 @@ impl Gavno {
         }
     }
     pub fn music_motion(&mut self, point: Point<f64, Logical>) -> bool {
-        if !self.music_open() {
+        if !self.music_open() || self.classic.desktop.drag.is_some() {
             return false;
         }
         self.guard(Feature::Media, true, |gv| {

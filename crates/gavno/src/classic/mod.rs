@@ -5,6 +5,8 @@ pub mod decor;
 pub mod desktop;
 mod desktop_input;
 mod desktop_io;
+#[cfg(test)]
+pub(crate) use desktop_io::tests as desktop_tests;
 pub mod start;
 pub mod taskbar;
 pub mod widgets;
@@ -85,7 +87,12 @@ impl Default for ClassicConfig {
             task_manager: "foot -e btop".into(),
             desktop_home: true,
             desktop_trash: true,
-            widgets: vec!["clock".into(), "system".into(), "media".into()],
+            widgets: vec![
+                "clock".into(),
+                "system".into(),
+                "media".into(),
+                "music".into(),
+            ],
             unknown: Default::default(),
         }
     }

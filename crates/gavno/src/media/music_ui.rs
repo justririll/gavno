@@ -36,7 +36,24 @@ impl View {
             .copied()
     }
 }
-pub fn panel_rect(size: Size<i32, Logical>) -> Rect {
+pub fn panel_rect(size: Size<i32, Logical>, anchor: Option<Rect>) -> Rect {
+    if let Some(anchor) = anchor {
+        let available_h = (size.h - crate::classic::TASKBAR_HEIGHT).max(1);
+        let width = 420.min(size.w.max(1));
+        let height = 600.min(available_h);
+        let left = anchor.loc.x - width - 12;
+        let x = if left >= 0 {
+            left
+        } else {
+            anchor.loc.x + anchor.size.w + 12
+        };
+        return rect(
+            x.clamp(0, (size.w - width).max(0)),
+            anchor.loc.y.clamp(0, (available_h - height).max(0)),
+            width,
+            height,
+        );
+    }
     let width = 420.min((size.w - 16).max(1));
     let height = 600.min((size.h - 48).max(1));
     let x = (size.w / 2 + 64).min(size.w - width - 8).max(0);
@@ -119,7 +136,7 @@ impl Session {
         view.geometry = Some((size, scale));
         view.canvas.begin(renderer, scale);
         view.hits.clear();
-        let panel = panel_rect(size);
+        let panel = panel_rect(size, self.anchor);
         let x = panel.loc.x + 16;
         let y = panel.loc.y + 16;
         let w = (panel.size.w - 32).max(1);

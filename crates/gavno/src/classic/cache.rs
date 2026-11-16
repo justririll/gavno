@@ -181,6 +181,17 @@ impl Layer {
             ));
         }
     }
+    /// Reuse a 96px cover decoded by the MPRIS or music worker.
+    pub fn decoded_image(&mut self, buffer: &MemoryRenderBuffer, r: Rect) {
+        self.primitives.push(Primitive::Image(
+            r,
+            Image {
+                buffer: buffer.clone(),
+                physical: (96, 96),
+                logical: (r.size.w, r.size.h),
+            },
+        ));
+    }
     pub fn label(&mut self, value: &str, r: Rect, size: f32, lines: usize, center: bool) {
         let key = (value.to_owned(), (size * 1000.0) as u32, r.size.w, lines);
         if !self.labels.contains_key(&key) {

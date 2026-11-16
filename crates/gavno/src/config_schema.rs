@@ -405,8 +405,8 @@ pub const SCHEMA: &[Key] = &[
     Key {
         path: "classic.widgets",
         kind: Kind::StringList,
-        default: Default::Strings(&["clock", "system", "media"]),
-        description: "Desktop widgets from top to bottom: clock, system, media.",
+        default: Default::Strings(&["clock", "system", "media", "music"]),
+        description: "Up to four desktop widgets from top to bottom: clock, system, media, music.",
         section: "Classic",
         live: true,
     },

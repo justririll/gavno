@@ -733,7 +733,9 @@ fn missing_daemon_config_gate_lock_and_feature_recovery() {
 fn panel_geometry_is_clamped_and_position_is_bounded() {
     for size in [(1280, 800), (640, 480), (320, 240), (100, 80)] {
         let size: smithay::utils::Size<i32, Logical> = size.into();
-        assert!(smithay::utils::Rectangle::from_size(size).contains_rect(ui::panel_rect(size)));
+        assert!(
+            smithay::utils::Rectangle::from_size(size).contains_rect(ui::panel_rect(size, None))
+        );
     }
     let state = State {
         playing: true,
@@ -1155,5 +1157,211 @@ fn dj_row_plays_the_dj_without_a_context() {
     assert_eq!(
         fake.calls("Play"),
         [("spotify:playlist:37i9dQZF1EYkqdzj48dyYq".into(), String::new())]
+    );
+}
+
+fn widget_motion(gv: &mut Gavno, point: Point<f64, Logical>) {
+    gv.seat.get_pointer().unwrap().motion(
+        gv,
+        None,
+        &smithay::input::pointer::MotionEvent {
+            location: point,
+            serial: smithay::utils::SERIAL_COUNTER.next_serial(),
+            time: 1,
+        },
+    );
+}
+fn widget_click(gv: &mut Gavno, point: Point<f64, Logical>) {
+    widget_motion(gv, point);
+    // Match the compositor's modal panel -> desktop routing on press/release.
+    if !gv.music_button(point, true) {
+        assert!(gv.classic_desktop_button(0x110, true));
+    }
+    if gv.classic.desktop.drag.is_some() {
+        assert!(gv.classic_desktop_button(0x110, false));
+    } else {
+        gv.music_release();
+    }
+}
+#[test]
+fn classic_widget_opens_anchored_controls_drag_and_gates() {
+    let Some((_bus, address)) = bus() else { return };
+    let (fake, connection) = fake(&address, true);
+    let (mut h, root) = crate::classic::desktop_tests::setup();
+    h.gv.now_playing.borrow_mut().music.bus_address = Some(address);
+    h.gv.classic.desktop.widgets.configure(&["music".into()]);
+    h.gv.media_update(crate::media::Snapshot {
+        music_available: true,
+        ..Default::default()
+    });
+    let output = h.gv.classic.desktop.output.clone().unwrap();
+    let size = h.gv.space.output_geometry(&output).unwrap().size;
+    let widget =
+        h.gv.classic
+            .desktop
+            .widgets
+            .layouts(&h.gv.classic.desktop.positions.widgets, size)
+            .next()
+            .unwrap()
+            .1;
+    let body = Point::from((widget.loc.x as f64 + 100.0, widget.loc.y as f64 + 30.0));
+    assert!(!h.gv.music_open());
+    assert!(fake.calls("State").is_empty());
+    h.gv.reconcile_classic_widgets();
+    assert!(h.gv.classic.desktop.widgets.clock_timer.is_none());
+    assert!(h.gv.classic.desktop.widgets.system_timer.is_none());
+    assert!(fake.calls("State").is_empty());
+    let revision = h.gv.classic.desktop.widgets.revision;
+    assert_eq!(
+        crate::classic::cache::performance::count(|| {
+            for _ in 0..100 {
+                h.gv.reconcile_classic_widgets();
+                h.gv.refresh_music_gate();
+            }
+        }),
+        0,
+        "a music-only idle desktop must not allocate"
+    );
+    assert_eq!(h.gv.classic.desktop.widgets.revision, revision);
+    // Missing daemon and feature-off gates apply to the body, not now-playing.
+    h.gv.media_update(crate::media::Snapshot::default());
+    widget_click(&mut h.gv, body);
+    assert!(!h.gv.music_open());
+    h.gv.media_update(crate::media::Snapshot {
+        music_available: true,
+        ..Default::default()
+    });
+    h.gv.config.media.music_panel = false;
+    widget_click(&mut h.gv, body);
+    assert!(!h.gv.music_open());
+    h.gv.config.media.music_panel = true;
+    widget_click(&mut h.gv, body);
+    assert!(h.gv.music_open());
+    assert_eq!(session(&h.gv).anchor, Some(widget));
+    let panel = ui::panel_rect(size, session(&h.gv).anchor);
+    assert!(panel.loc.x + panel.size.w < widget.loc.x);
+    assert_eq!(panel.loc.y, widget.loc.y);
+    assert!(smithay::utils::Rectangle::from_size(
+        (size.w, size.h - crate::classic::TASKBAR_HEIGHT).into()
+    )
+    .contains_rect(panel));
+    ready(&mut h);
+    let mut renderer = renderer();
+    {
+        let mut media = h.gv.now_playing.borrow_mut();
+        let session = media.music.session.as_mut().unwrap();
+        assert!(!session
+            .elements(&mut renderer, &output, size, 1.0)
+            .is_empty());
+        assert_eq!(
+            session
+                .view
+                .hits
+                .iter()
+                .find(|(_, h)| *h == Hit::Panel)
+                .unwrap()
+                .0,
+            panel
+        );
+    }
+    h.gv.classic
+        .desktop
+        .positions
+        .widgets
+        .insert("music".into(), [widget.loc.x - 20, widget.loc.y + 20]);
+    h.gv.refresh_music_gate();
+    assert_eq!(
+        session(&h.gv).anchor.unwrap().loc,
+        (widget.loc.x - 20, widget.loc.y + 20).into()
+    );
+    h.gv.classic.desktop.positions.widgets.remove("music");
+    h.gv.refresh_music_gate();
+    assert_eq!(session(&h.gv).anchor, Some(widget));
+    let revision = h.gv.classic.desktop.widgets.revision;
+    h.gv.media_update(crate::media::Snapshot {
+        music_available: true,
+        music_player: Some(crate::media::Player {
+            name: crate::media::MUSIC_PLAYER.into(),
+            metadata: crate::media::Metadata {
+                title: "MPRIS fallback".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+    assert_eq!(
+        h.gv.classic.desktop.widgets.revision, revision,
+        "daemon state wins over MPRIS"
+    );
+    let mut state = fake.0.lock().unwrap().state.clone();
+    state.position_ms += 1000;
+    emit_state(&fake, &connection, state);
+    settle(&mut h);
+    assert_eq!(
+        h.gv.classic.desktop.widgets.revision, revision,
+        "position ticks do not invalidate the widget"
+    );
+    // Widget buttons control the existing daemon session without toggling it.
+    for (index, name) in ["previous", "toggle", "next"].into_iter().enumerate() {
+        let p = Point::from((
+            widget.loc.x as f64 + 20.0 + index as f64 * 52.0,
+            widget.loc.y as f64 + 90.0,
+        ));
+        widget_click(&mut h.gv, p);
+        pump(&mut h, |_| {
+            fake.calls("Control").iter().any(|(c, _)| c == name)
+        });
+        assert!(h.gv.music_open());
+    }
+    widget_click(&mut h.gv, body);
+    assert!(!h.gv.music_open(), "a second body click closes the panel");
+    // A drag persists the widget without opening a new worker/session.
+    let calls = fake.calls("State").len();
+    widget_motion(&mut h.gv, body);
+    assert!(h.gv.classic_desktop_button(0x110, true));
+    let target = body + Point::from((-100.0, 80.0));
+    widget_motion(&mut h.gv, target);
+    h.gv.classic_desktop_motion(target);
+    assert!(h.gv.classic_desktop_button(0x110, false));
+    assert!(!h.gv.music_open());
+    assert_eq!(fake.calls("State").len(), calls);
+    assert_eq!(
+        h.gv.classic.desktop.positions.widgets["music"],
+        [widget.loc.x - 100, widget.loc.y + 80]
+    );
+    // Reopen at the new location, then verify Escape, outside and lock dismissal.
+    widget_click(&mut h.gv, target);
+    assert!(h.gv.music_open());
+    key(&mut h.gv, keysyms::KEY_Escape);
+    assert!(!h.gv.music_open());
+    widget_click(&mut h.gv, target);
+    assert!(h.gv.music_button((1.0, 1.0).into(), true));
+    assert!(!h.gv.music_open());
+    widget_click(&mut h.gv, target);
+    h.gv.protocols.locks.locked = true;
+    h.gv.refresh_music_gate();
+    assert!(!h.gv.music_open());
+    h.gv.stop_classic_desktop();
+    std::thread::sleep(Duration::from_millis(30));
+    let _ = std::fs::remove_dir_all(root);
+}
+#[test]
+fn widget_anchor_prefers_left_then_right_and_clamps_above_taskbar() {
+    for size in [(1646, 926), (800, 600), (320, 240), (100, 80)] {
+        let size: smithay::utils::Size<i32, Logical> = size.into();
+        for point in [(0, 0), (size.w - 280, 50), (size.w - 280, size.h - 128)] {
+            let anchor = crate::topbar::geometry::rect(point.0, point.1, 280, 128);
+            let panel = ui::panel_rect(size, Some(anchor));
+            assert!(smithay::utils::Rectangle::from_size(
+                (size.w, size.h - crate::classic::TASKBAR_HEIGHT).into()
+            )
+            .contains_rect(panel));
+        }
+    }
+    let anchor = crate::topbar::geometry::rect(0, 50, 280, 128);
+    assert_eq!(
+        ui::panel_rect((1646, 926).into(), Some(anchor)).loc,
+        (292, 50).into()
     );
 }

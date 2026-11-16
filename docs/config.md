@@ -357,7 +357,7 @@ align = "left"                   # default; "center" centers app items only
 # Start and its menu always stay at the left edge.
 desktop_home = true
 desktop_trash = true
-widgets = ["clock", "system", "media"]
+widgets = ["clock", "system", "media", "music"]
 ```
 
 Desktop icons and widgets use the primary output (the compositor's first
@@ -374,10 +374,15 @@ Renaming refuses existing destinations and names containing `/`; it renames the
 file, including the filename of a `.desktop` shortcut. Trash operations use
 `gio trash`, never permanent deletion.
 
-Clock and system panels follow the order in `widgets`; duplicates and unknown
+Up to four panels follow the order in `widgets`; duplicates and unknown
 names are skipped. `media` shows the active MPRIS player (title, artist and
 previous / play-pause / next buttons) from the Media module, or "Nothing
-playing". The clock refreshes at minute boundaries, and
+playing". `music` shows Spotify from the music panel daemon or its dedicated
+MPRIS player, with cover art and playback buttons. Click its body to browse Spotify
+in a panel beside the widget; drag its body to move it. Browsing requires the
+`org.gavno.Music` daemon and `[media] music_panel = true`. The widget does not
+start the music worker: it uses existing state and decoded covers, with no polling.
+The clock refreshes at minute boundaries, and
 system CPU/memory data every two seconds. Both stop refreshing when Classic is
 not settled, the primary desktop is covered by a maximized/fullscreen window,
 or the session is locked. Network and battery data reuse the bar's status.

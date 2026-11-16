@@ -87,7 +87,7 @@ impl Positions {
             self.icons.pop_last();
         }
         self.widgets
-            .retain(|name, _| matches!(name.as_str(), "clock" | "system" | "media"));
+            .retain(|name, _| matches!(name.as_str(), "clock" | "system" | "media" | "music"));
     }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

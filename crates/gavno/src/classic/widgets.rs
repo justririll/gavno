@@ -111,6 +111,9 @@ pub struct Widgets {
     pub revision: u64,
     pub refreshing: bool,
     player: Option<crate::media::Player>,
+    music: Option<crate::media::Player>,
+    music_image: Option<smithay::backend::renderer::element::memory::MemoryRenderBuffer>,
+    music_available: bool,
 }
 const MEDIA_COMMANDS: [crate::media::Command; 3] = [
     crate::media::Command::Previous,
@@ -132,14 +135,14 @@ impl Widgets {
     pub fn configure(&mut self, names: &[String]) {
         self.enabled = names
             .iter()
-            .filter(|name| matches!(name.as_str(), "clock" | "system" | "media"))
-            .take(3)
+            .filter(|name| matches!(name.as_str(), "clock" | "system" | "media" | "music"))
             .fold(Vec::new(), |mut out, name| {
                 if !out.contains(name) {
                     out.push(name.clone());
                 }
                 out
             });
+        self.enabled.truncate(4);
         self.update_clock();
     }
     pub fn update_clock(&mut self) {
@@ -166,6 +169,58 @@ impl Widgets {
             self.revision = self.revision.wrapping_add(1);
         }
     }
+    fn update_music(&mut self, media: &crate::media::Media) {
+        let session = media.music.session.as_ref().filter(|s| s.has_state);
+        let (player, image) = if let Some(session) = session {
+            let player = session
+                .state
+                .item
+                .as_ref()
+                .map(|item| crate::media::Player {
+                    name: crate::media::MUSIC_PLAYER.into(),
+                    identity: "Spotify".into(),
+                    metadata: crate::media::Metadata {
+                        title: item.title.clone(),
+                        artists: vec![item.subtitle.clone()],
+                        art_url: item.cover_path.clone().unwrap_or_default(),
+                        ..Default::default()
+                    },
+                    playback: if session.state.playing {
+                        crate::media::Playback::Playing
+                    } else {
+                        crate::media::Playback::Paused
+                    },
+                    can_previous: true,
+                    can_play: true,
+                    can_pause: true,
+                    can_next: true,
+                    ..Default::default()
+                });
+            let image = session
+                .state
+                .item
+                .as_ref()
+                .and_then(|i| i.cover_path.as_ref())
+                .and_then(|path| session.view.covers.get(path))
+                .cloned();
+            (player, image)
+        } else {
+            (
+                media.snapshot.music_player.clone(),
+                media.snapshot.music_image.clone(),
+            )
+        };
+        let available = media.snapshot.music_available || session.is_some();
+        if self.music != player
+            || self.music_image.is_some() != image.is_some()
+            || self.music_available != available
+        {
+            self.music = player;
+            self.music_image = image;
+            self.music_available = available;
+            self.revision = self.revision.wrapping_add(1);
+        }
+    }
     pub fn receive(&mut self, s: Sample) {
         self.sampling = false;
         let cpu = self
@@ -188,7 +243,7 @@ impl Widgets {
     ) -> impl Iterator<Item = (&'a str, Rect)> + 'a {
         let mut y = 16;
         self.enabled.iter().map(move |name| {
-            let height = match name.as_str() { "clock" => 132, "media" => 128, _ => 170 };
+            let height = widget_height(name);
             let p = positions.get(name).copied().unwrap_or([size.w - 296, y]);
             let r = rect(
                 p[0].clamp(0, (size.w - 280).max(0)),
@@ -225,6 +280,62 @@ impl Widgets {
                     1,
                     false,
                 );
+            } else if name == "music" {
+                let (title, artist) = self.music.as_ref().map_or_else(
+                    || {
+                        (
+                            "Spotify",
+                            if self.music_available {
+                                "Click to browse".into()
+                            } else {
+                                "Music daemon not installed".into()
+                            },
+                        )
+                    },
+                    |player| (player.title(), player.artist()),
+                );
+                let text_x = if let Some(image) = &self.music_image {
+                    layer.decoded_image(image, rect(r.loc.x + 16, r.loc.y + 12, 52, 52));
+                    r.loc.x + 80
+                } else {
+                    r.loc.x + 16
+                };
+                let width = r.loc.x + r.size.w - 16 - text_x;
+                layer.label(title, rect(text_x, r.loc.y + 12, width, 24), 15.0, 1, false);
+                layer.label(
+                    &artist,
+                    rect(text_x, r.loc.y + 44, width, 20),
+                    12.0,
+                    1,
+                    false,
+                );
+                for (command, b) in media_buttons(r) {
+                    let enabled = self.music.as_ref().is_some_and(|p| p.allows(command));
+                    layer.panel(
+                        b,
+                        9.0,
+                        [1.0, 1.0, 1.0, if enabled { 0.16 } else { 0.05 }],
+                        0.0,
+                    );
+                    let icon = match command {
+                        crate::media::Command::Previous => "media-skip-backward-symbolic",
+                        crate::media::Command::Next => "media-skip-forward-symbolic",
+                        _ if self
+                            .music
+                            .as_ref()
+                            .is_some_and(|p| p.playback == crate::media::Playback::Playing) =>
+                        {
+                            "media-playback-pause-symbolic"
+                        }
+                        _ => "media-playback-start-symbolic",
+                    };
+                    layer.tinted_icon(
+                        icon,
+                        theme,
+                        rect(b.loc.x + 14, b.loc.y + 7, 16, 16),
+                        crate::media::ui::ICON_COLOR,
+                    );
+                }
             } else if name == "media" {
                 let Some(player) = self.player.as_ref() else {
                     layer.label("Nothing playing", rect(r.loc.x + 16, r.loc.y + 12, 248, 22), 14.0, 1, false);
@@ -303,7 +414,48 @@ impl Widgets {
         }
     }
 }
+pub fn widget_height(name: &str) -> i32 {
+    match name {
+        "clock" => 132,
+        "media" | "music" => 128,
+        _ => 170,
+    }
+}
 impl Gavno {
+    pub(crate) fn refresh_classic_music(&mut self) {
+        self.classic
+            .desktop
+            .widgets
+            .update_music(&self.now_playing.borrow());
+    }
+    /// Only a visible desktop widget can pass through the open panel's input grab.
+    pub(crate) fn classic_music_at(&self, point: smithay::utils::Point<f64, Logical>) -> bool {
+        self.classic_desktop_available(point)
+            && self.classic_desktop_local(point).is_some_and(|p| {
+                self.classic
+                    .desktop
+                    .widgets
+                    .layouts(
+                        &self.classic.desktop.positions.widgets,
+                        self.classic.desktop.size,
+                    )
+                    .any(|(name, r)| name == "music" && r.to_f64().contains(p))
+            })
+    }
+    pub(crate) fn toggle_classic_music(&mut self) {
+        let d = &self.classic.desktop;
+        let Some(output) = d.output.clone() else {
+            return;
+        };
+        let anchor = d
+            .widgets
+            .layouts(&d.positions.widgets, d.size)
+            .find(|(name, _)| *name == "music")
+            .map(|(_, r)| r);
+        if d.widgets.music_available && anchor.is_some() {
+            self.toggle_music_at(&output, anchor);
+        }
+    }
     pub fn classic_widget_gate(&self) -> Gate {
         let d = &self.classic.desktop;
         let covered = d.output.as_ref().is_some_and(|o| {
@@ -342,6 +494,7 @@ impl Gavno {
         let player = self.now_playing.borrow().snapshot.player.clone();
         w.update_player(player.as_ref());
         if !w.refreshing {
+            w.update_music(&self.now_playing.borrow());
             w.update_clock();
             w.refreshing = true;
         }
@@ -402,6 +555,72 @@ impl Gavno {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn configuration_accepts_four_unique_widgets_and_persists_music() {
+        let config: super::super::ClassicConfig = toml::from_str(
+            r#"widgets = ["clock", "clock", "unknown", "system", "media", "music", "music"]"#,
+        )
+        .unwrap();
+        let mut w = Widgets::default();
+        w.configure(&config.widgets);
+        assert_eq!(w.enabled, ["clock", "system", "media", "music"]);
+        assert_eq!(super::super::ClassicConfig::default().widgets, w.enabled);
+        let mut positions = super::super::desktop::Positions::default();
+        positions.widgets.insert("music".into(), [80, 90]);
+        positions.validate();
+        let restored: super::super::desktop::Positions =
+            serde_json::from_str(&serde_json::to_string(&positions).unwrap()).unwrap();
+        assert_eq!(restored.widgets["music"], [80, 90]);
+        w.configure(&["music".into()]);
+        assert_eq!(
+            w.layouts(&restored.widgets, (1280, 800).into())
+                .next()
+                .unwrap()
+                .1,
+            rect(80, 90, 280, 128)
+        );
+    }
+    #[test]
+    fn music_content_uses_dedicated_player_and_reuses_decoded_cover() {
+        let mut w = Widgets::default();
+        let mut media = crate::media::Media::default();
+        media.snapshot.player = Some(crate::media::Player {
+            identity: "Other player".into(),
+            ..Default::default()
+        });
+        media.snapshot.music_player = Some(crate::media::Player {
+            name: crate::media::MUSIC_PLAYER.into(),
+            identity: "Spotify".into(),
+            metadata: crate::media::Metadata {
+                title: "Song".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        w.update_music(&media);
+        assert_eq!(w.music.as_ref().unwrap().title(), "Song");
+        assert!(
+            media.music.session.is_none(),
+            "the widget must not start a music worker"
+        );
+        let revision = w.revision;
+        w.update_music(&media);
+        assert_eq!(w.revision, revision);
+        media.snapshot.music_image = Some(Default::default());
+        w.update_music(&media);
+        assert!(w.music_image.is_some());
+        assert_eq!(w.revision, revision + 1);
+        media.snapshot.music_available = true;
+        w.update_music(&media);
+        assert!(w.music_available);
+        let revision = w.revision;
+        media.snapshot.player = None;
+        w.update_music(&media);
+        assert_eq!(
+            w.revision, revision,
+            "other MPRIS players cannot invalidate music"
+        );
+    }
     #[test]
     fn media_widget_tracks_the_player_and_maps_buttons() {
         let mut w = Widgets::default();

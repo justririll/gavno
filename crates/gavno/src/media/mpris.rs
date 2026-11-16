@@ -14,6 +14,7 @@ type Properties = HashMap<String, OwnedValue>;
 
 pub enum Request {
     Command(Command),
+    MusicCommand(Command),
     Signal(zbus::Message),
     Disconnected,
 }
@@ -192,7 +193,7 @@ fn relevant(message: &zbus::Message) -> bool {
     keys.iter()
         .any(|k| changed.contains_key(*k) || invalidated.iter().any(|v| v == k))
 }
-/// Called once, lazily when MPRIS has no active player. This never activates a name.
+/// Called once by the MPRIS worker. This never activates a name.
 pub(super) fn discover_music(bus: &zbus::blocking::fdo::DBusProxy<'_>) -> bool {
     bus.list_activatable_names().map(|names| names.iter().any(|n| n.as_str() == "org.gavno.Music")).unwrap_or(false)
         || bus.list_names().map(|names| names.iter().any(|n| n.as_str() == "org.gavno.Music")).unwrap_or(false)
@@ -221,6 +222,7 @@ fn run(
         }
     }
     let mut previous = None;
+    let mut previous_music = None;
     let mut music_available = None;
     let mut previous_available = false;
     let mut icons = crate::icons::Icons::default();
@@ -228,6 +230,8 @@ fn run(
     // Image keys are cached independently of changing playback/capabilities.
     let mut image_key = (String::new(), String::new());
     let mut image = None;
+    let mut music_image_key = (String::new(), String::new());
+    let mut music_image = None;
     loop {
         let mut selected = active_player(&registry.players).cloned();
         // Selection history stays on this thread. Repeated identical property
@@ -236,11 +240,21 @@ fn run(
             player.started = 0;
             player.updated = 0;
         }
-        if selected.is_none() && music_available.is_none() {
+        let mut music_player = registry
+            .players
+            .iter()
+            .find(|p| p.name == super::MUSIC_PLAYER)
+            .cloned();
+        if let Some(player) = &mut music_player {
+            player.started = 0;
+            player.updated = 0;
+        }
+        if music_available.is_none() {
             music_available = Some(discover_music(&bus));
         }
         let available = music_available.unwrap_or(false);
-        if selected != previous || available != previous_available {
+        if selected != previous || music_player != previous_music || available != previous_available
+        {
             let key = selected
                 .as_ref()
                 .map(|p| (p.metadata.art_url.clone(), p.desktop.clone()))
@@ -256,23 +270,48 @@ fn run(
                     .or_else(|| icons.get(&key.1, 96, theme));
                 image_key = key;
             }
+            let key = music_player
+                .as_ref()
+                .map(|p| (p.metadata.art_url.clone(), p.desktop.clone()))
+                .unwrap_or_default();
+            if key != music_image_key {
+                music_image = if key == image_key {
+                    image.clone()
+                } else {
+                    file_url(&key.0).and_then(|p| p.to_str().and_then(|p| icons.get(p, 96, theme)))
+                };
+                music_image_key = key;
+            }
             if events
                 .send(Snapshot {
                     player: selected.clone(),
                     image: image.clone(),
                     music_available: available,
+                    music_player: music_player.clone(),
+                    music_image: music_image.clone(),
                 })
                 .is_err()
             {
                 break;
             }
             previous = selected;
+            previous_music = music_player;
             previous_available = available;
         }
         match rx.recv() {
-            Ok(Request::Command(command)) => {
-                if let Some(player) = active_player(&registry.players).filter(|p| p.allows(command))
-                {
+            Ok(request @ (Request::Command(_) | Request::MusicCommand(_))) => {
+                let (command, player) = match request {
+                    Request::Command(command) => (command, active_player(&registry.players)),
+                    Request::MusicCommand(command) => (
+                        command,
+                        registry
+                            .players
+                            .iter()
+                            .find(|p| p.name == super::MUSIC_PLAYER),
+                    ),
+                    _ => unreachable!(),
+                };
+                if let Some(player) = player.filter(|p| p.allows(command)) {
                     if let Some(owner) = registry.owners.get(&player.name) {
                         let method = match command {
                             Command::PlayPause => "PlayPause",
@@ -656,6 +695,78 @@ mod tests {
             s.player
                 .as_ref()
                 .is_some_and(|p| p.playback == Playback::Playing)
+        });
+        // Spotify remains visible and independently controllable while another
+        // player owns the active capsule. Its cover reuses the worker's cache.
+        let (music_tx, music_commands) = mpsc::channel();
+        let music_server = zbus::blocking::connection::Builder::address(address)
+            .unwrap()
+            .serve_at(PATH, TestRoot)
+            .unwrap()
+            .serve_at(
+                PATH,
+                TestPlayer {
+                    status: Arc::new(Mutex::new("Paused".into())),
+                    commands: music_tx,
+                    art_url: format!("file://{}", art.to_string_lossy().replace(' ', "%20")),
+                },
+            )
+            .unwrap()
+            .build()
+            .unwrap();
+        music_server
+            .request_name(super::super::MUSIC_PLAYER)
+            .unwrap();
+        wait_for(&mut event_loop, &mut snapshots, |s| {
+            s.music_image.is_some()
+                && s.music_player
+                    .as_ref()
+                    .is_some_and(|p| p.name == super::super::MUSIC_PLAYER)
+                && s.player.as_ref().is_some_and(|p| p.name == name)
+        });
+        for command in [Command::Previous, Command::PlayPause, Command::Next] {
+            tx.send(Request::MusicCommand(command)).unwrap();
+            assert_eq!(
+                music_commands
+                    .recv_timeout(std::time::Duration::from_secs(3))
+                    .unwrap(),
+                command
+            );
+            assert!(
+                commands.try_recv().is_err(),
+                "Spotify commands must not reach the active player"
+            );
+        }
+        let mut changed = Properties::new();
+        changed.insert(
+            "Metadata".into(),
+            Value::from(Properties::from([(
+                "xesam:title".into(),
+                Str::from("Spotify update").into(),
+            )]))
+            .try_into()
+            .unwrap(),
+        );
+        music_server
+            .emit_signal(
+                None::<&str>,
+                PATH,
+                "org.freedesktop.DBus.Properties",
+                "PropertiesChanged",
+                &(PLAYER, changed, Vec::<String>::new()),
+            )
+            .unwrap();
+        wait_for(&mut event_loop, &mut snapshots, |s| {
+            s.music_player
+                .as_ref()
+                .is_some_and(|p| p.title() == "Spotify update")
+                && s.player.as_ref().is_some_and(|p| p.name == name)
+        });
+        music_server
+            .release_name(super::super::MUSIC_PLAYER)
+            .unwrap();
+        wait_for(&mut event_loop, &mut snapshots, |s| {
+            s.music_player.is_none()
         });
         // Invalidated properties are fetched on the worker as well.
         *status.lock().unwrap() = "Paused".into();

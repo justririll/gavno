@@ -87,7 +87,7 @@ impl Gavno {
                     DragKind::Widget(name, origin) => {
                         let x = (origin[0] + (p.x - drag.origin.x).round() as i32)
                             .clamp(0, (d.size.w - 280).max(0));
-                        let height = if name == "clock" { 132 } else { 170 };
+                        let height = super::widgets::widget_height(name);
                         let y = (origin[1] + (p.y - drag.origin.y).round() as i32)
                             .clamp(0, (d.size.h - super::TASKBAR_HEIGHT - height).max(0));
                         d.positions.widgets.insert(name.clone(), [x, y]);
@@ -126,6 +126,10 @@ impl Gavno {
                                 gv.persist_desktop();
                             }
                             DragKind::Rubber(_) => {}
+                        }
+                    } else if matches!(&drag.kind, DragKind::Widget(name, _) if name == "music") {
+                        if gv.classic_music_at(pos) {
+                            gv.toggle_classic_music();
                         }
                     } else if let Some(i) = drag.clicked {
                         let ctrl = gv
@@ -208,10 +212,14 @@ impl Gavno {
                 .map(|(n, r)| (n.to_owned(), r));
             if let Some(command) = widget
                 .as_ref()
-                .filter(|(name, _)| name == "media")
+                .filter(|(name, _)| name == "media" || name == "music")
                 .and_then(|(_, r)| super::widgets::media_button(*r, p))
             {
-                gv.media_command(command);
+                if widget.as_ref().is_some_and(|(name, _)| name == "music") {
+                    gv.music_command(command);
+                } else {
+                    gv.media_command(command);
+                }
                 return true;
             }
             if let Some((name, origin)) = widget.map(|(n, r)| (n, [r.loc.x, r.loc.y])) {
@@ -663,6 +671,80 @@ mod interaction_tests {
                 time: 1,
             },
         );
+    }
+    #[test]
+    fn music_widget_buttons_target_spotify_without_opening_panel() {
+        let (mut h, root) = super::super::desktop_io::tests::setup();
+        h.gv.classic.desktop.widgets.configure(&["music".into()]);
+        let (tx, rx) = std::sync::mpsc::channel();
+        h.gv.now_playing.borrow_mut().worker = Some(tx);
+        let spotify = crate::media::Player {
+            name: crate::media::MUSIC_PLAYER.into(),
+            playback: crate::media::Playback::Playing,
+            can_next: true,
+            can_previous: true,
+            can_pause: true,
+            ..Default::default()
+        };
+        h.gv.media_update(crate::media::Snapshot {
+            player: Some(crate::media::Player {
+                name: "other".into(),
+                ..Default::default()
+            }),
+            music_player: Some(spotify.clone()),
+            music_available: true,
+            ..Default::default()
+        });
+        let r =
+            h.gv.classic
+                .desktop
+                .widgets
+                .layouts(
+                    &h.gv.classic.desktop.positions.widgets,
+                    h.gv.classic.desktop.size,
+                )
+                .next()
+                .unwrap()
+                .1;
+        h.gv.config.media.music_panel = false;
+        for (index, command) in [
+            crate::media::Command::Previous,
+            crate::media::Command::PlayPause,
+            crate::media::Command::Next,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            motion(
+                &mut h.gv,
+                (
+                    r.loc.x as f64 + 20.0 + index as f64 * 52.0,
+                    r.loc.y as f64 + 90.0,
+                )
+                    .into(),
+            );
+            assert!(h.gv.classic_desktop_button(0x110, true));
+            assert!(h.gv.classic_desktop_button(0x110, false));
+            assert!(
+                matches!(rx.try_recv(), Ok(crate::media::mpris::Request::MusicCommand(c)) if c == command)
+            );
+            assert!(!h.gv.music_open());
+            assert!(h.gv.classic.desktop.drag.is_none());
+        }
+        // Unsupported buttons remain consumed, without sending commands or opening.
+        h.gv.media_update(crate::media::Snapshot {
+            music_player: Some(crate::media::Player {
+                can_next: false,
+                ..spotify
+            }),
+            ..Default::default()
+        });
+        assert!(h.gv.classic_desktop_button(0x110, true));
+        assert!(rx.try_recv().is_err());
+        assert!(!h.gv.music_open());
+        h.gv.stop_classic_desktop();
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        let _ = std::fs::remove_dir_all(root);
     }
     #[test]
     fn f2_enter_renames_asynchronously_and_keeps_the_cell() {
