@@ -931,10 +931,6 @@ pub fn screenshot(gv: &mut Gavno) -> Option<(u32, u32, Vec<u8>)> {
 /// Renders `output` offscreen (the SDR composition, also in HDR mode) and
 /// returns its physical size and tightly packed RGBA pixels.
 pub fn capture_output(gv: &mut Gavno, output: &Output, cursor: bool) -> Option<(u32, u32, Vec<u8>)> {
-    use smithay::backend::renderer::{damage::OutputDamageTracker, Bind, ExportMem, Offscreen};
-    use smithay::backend::renderer::gles::GlesTexture;
-    use smithay::utils::{Buffer as BufferCoord, Rectangle, Size};
-
     // A pointer position outside every output leaves the cursor out of the frame.
     let pointer_pos = if cursor { gv.pointer_location() } else { (-1.0e6, -1.0e6).into() };
     let time = gv.start_time.elapsed();
@@ -964,18 +960,6 @@ pub fn capture_output(gv: &mut Gavno, output: &Output, cursor: bool) -> Option<(
         &gv.config,
         &mut gv.features,
     );
-    let size: Size<i32, BufferCoord> = (mode.size.w, mode.size.h).into();
-    let mut texture: GlesTexture = gpu.renderer.create_buffer(Fourcc::Abgr8888, size).ok()?;
-    let mapping = {
-        let mut fb = gpu.renderer.bind(&mut texture).ok()?;
-        let mut damage = OutputDamageTracker::new(mode.size, scale, Transform::Normal);
-        damage
-            .render_output(&mut gpu.renderer, &mut fb, 0, &elements, render::CLEAR_COLOR)
-            .ok()?;
-        gpu.renderer
-            .copy_framebuffer(&fb, Rectangle::from_size(size), Fourcc::Abgr8888)
-            .ok()?
-    };
-    let bytes = gpu.renderer.map_texture(&mapping).ok()?.to_vec();
+    let bytes = render::capture_elements(&mut gpu.renderer, &elements, (mode.size.w, mode.size.h), scale)?;
     Some((mode.size.w as u32, mode.size.h as u32, bytes))
 }
