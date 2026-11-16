@@ -323,9 +323,10 @@ impl Gavno {
             if s.axis.is_none() {
                 s.axis = lock_axis(s.delta.x, s.delta.y);
             }
+            let toward_classic = crate::classic::toward_classic_sign(gv.features.on(crate::module::Feature::Overview));
             if s.axis == Some(Axis::Vertical) && s.vertical.is_none() {
                 s.vertical = Some(if gv.features.on(crate::module::Feature::Classic) {
-                    crate::classic::vertical_route(s.classic_origin, s.delta.y > 0.0,
+                    crate::classic::vertical_route(s.classic_origin, toward_classic * s.delta.y > 0.0,
                         gv.features.on(crate::module::Feature::Overview), s.overview_origin)
                 } else if gv.features.on(crate::module::Feature::Overview) {
                     crate::classic::VerticalRoute::Overview
@@ -334,8 +335,8 @@ impl Gavno {
             }
             let o = gv.workspaces.ensure(&s.output);
             let vertical = match s.vertical {
-                Some(crate::classic::VerticalRoute::Mode) => (s.classic_start + s.delta.y / OVERVIEW_SWIPE_DISTANCE).clamp(0.0, 1.0),
-                Some(crate::classic::VerticalRoute::ShowDesktop) => (s.delta.y / OVERVIEW_SWIPE_DISTANCE).clamp(0.0, 1.0),
+                Some(crate::classic::VerticalRoute::Mode) => (s.classic_start + toward_classic * s.delta.y / OVERVIEW_SWIPE_DISTANCE).clamp(0.0, 1.0),
+                Some(crate::classic::VerticalRoute::ShowDesktop) => (toward_classic * s.delta.y / OVERVIEW_SWIPE_DISTANCE).clamp(0.0, 1.0),
                 _ => progress(s.overview_start, s.delta.y, OVERVIEW_SWIPE_DISTANCE).clamp(0.0, 1.0),
             };
             let position = Point::from((

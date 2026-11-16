@@ -177,16 +177,28 @@ pub enum VerticalRoute {
     ShowDesktop,
     Ignore,
 }
+/// Sign of the vertical swipe delta (positive = fingers down) that moves
+/// toward Classic. Swipe up enters Classic and down returns; with the overview
+/// enabled, up keeps opening the overview, so Classic moves to swipe down.
+pub fn toward_classic_sign(overview: bool) -> f64 {
+    if overview {
+        1.0
+    } else {
+        -1.0
+    }
+}
+
+/// `toward_classic`: the swipe moves in the direction that enters Classic.
 pub fn vertical_route(
     mode: ShellMode,
-    down: bool,
+    toward_classic: bool,
     overview: bool,
     overview_open: bool,
 ) -> VerticalRoute {
     if overview && overview_open {
         return VerticalRoute::Overview;
     }
-    match (mode, down) {
+    match (mode, toward_classic) {
         (ShellMode::Gavno, true) | (ShellMode::Classic, false) => VerticalRoute::Mode,
         (ShellMode::Classic, true) => VerticalRoute::ShowDesktop,
         (ShellMode::Gavno, false) if overview => VerticalRoute::Overview,
