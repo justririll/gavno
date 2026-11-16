@@ -362,6 +362,9 @@ pub enum BarAction {
     PowerMenu,
     Calendar,
     Month(i32),
+    DoNotDisturb,
+    ClearNotifications,
+    Notification(u32),
     Power(PowerAction),
     Mute,
     Volume,
@@ -385,6 +388,11 @@ struct BarView {
     popover: Option<PopoverLayout>,
 }
 pub struct TopBar {
+    pub notifications: crate::notify::Shared,
+    pub notification_history: Vec<crate::notify::History>,
+    pub notification_dnd: bool,
+    pub notification_unread: bool,
+    pub notifications_active: bool,
     views: Vec<BarView>,
     pub enabled: bool,
     pub title: String,
@@ -410,6 +418,11 @@ impl Default for TopBar {
     fn default() -> Self {
         let today = theme::LocalTime::now();
         Self {
+            notifications: Default::default(),
+            notification_history: Vec::new(),
+            notification_dnd: false,
+            notification_unread: false,
+            notifications_active: false,
             views: Vec::new(),
             enabled: true,
             title: String::new(),
@@ -610,6 +623,9 @@ impl TopBar {
             l.clock.size.w,
             clock_style,
         );
+        if self.notification_unread && self.notifications_active {
+            c.rect(rect(l.clock.loc.x + l.clock.size.w - 12, 13, 5, 5), 2.5, self.accent, 0.0, LINE);
+        }
         v.hits.push((l.clock.to_f64(), BarAction::Calendar));
         capsule(
             c,
@@ -649,9 +665,10 @@ impl TopBar {
         // Keep drawing the closing panel until its spring settles.
         if (self.popover_output.as_ref() == Some(output)) && self.opening.value > 0.001 {
             let p = if self.popover == Popover::Quick {
-                PopoverLayout::quick(width, self.status.brightness.is_some())
+                PopoverLayout::quick_notifications(width, self.status.brightness.is_some(), self.notifications_active)
             } else {
-                PopoverLayout::calendar(width)
+                if self.notifications_active { PopoverLayout::calendar_notifications(width, self.notification_history.len()) }
+                else { PopoverLayout::calendar(width) }
             };
             c.alpha = self.opening.value.clamp(0.0, 1.0) as f32;
             c.zoom = 0.94 + 0.06 * self.opening.value;
@@ -673,12 +690,18 @@ impl TopBar {
                     self.accent,
                     &p,
                     v.hover.as_ref(),
+                    self.notification_dnd,
                 );
             } else {
                 draw_calendar(c, renderer, &p, self.month, self.accent, v.hover.as_ref());
+                calendar::draw_notifications(c, renderer, &p, &self.notification_history, v.hover.as_ref());
             }
             for (item, r) in &p.items {
-                push_hit(c, &mut v.hits, *r, item_action(*item));
+                let action = if let Item::Notification(i) = *item {
+                    let Some(h) = self.notification_history.get(i) else { continue };
+                    BarAction::Notification(h.notice.id)
+                } else { item_action(*item) };
+                push_hit(c, &mut v.hits, *r, action);
             }
             v.popover = Some(p);
         }
@@ -709,6 +732,9 @@ fn item_action(item: Item) -> BarAction {
         Item::Brightness => BarAction::Brightness,
         Item::Network => BarAction::Network,
         Item::Battery => BarAction::Consume,
+        Item::DoNotDisturb => BarAction::DoNotDisturb,
+        Item::ClearNotifications => BarAction::ClearNotifications,
+        Item::Notification(i) => BarAction::Notification(i as u32),
         Item::Previous => BarAction::Month(-1),
         Item::Next => BarAction::Month(1),
         Item::Power(i) => BarAction::Power(POWER[i].0),
@@ -792,10 +818,17 @@ fn draw_quick(
     accent: [f32; 4],
     p: &PopoverLayout,
     hover: Option<&BarAction>,
+    dnd: bool,
 ) {
     for (item, area) in &p.items {
         let a = *area;
         match *item {
+            Item::DoNotDisturb => {
+                capsule(c, a, hover == Some(&BarAction::DoNotDisturb));
+                c.label(r, "Do not disturb", a.loc.x + 12, a.loc.y + 12, 210, 12.5);
+                c.label(r, if dnd { "On" } else { "Off" }, a.loc.x + 244, a.loc.y + 12, 36, 12.5);
+            }
+            Item::ClearNotifications | Item::Notification(_) => {}
             Item::VolumeIcon => {
                 if hover == Some(&BarAction::Mute) {
                     capsule(c, a, true);
@@ -936,6 +969,7 @@ fn draw_calendar(
     let w = c.text.measure(&header, label_style(14.0)).ceil() as i32;
     c.label(r, &header, x + (320 - w) / 2, y + 20, w, 14.0);
     for (item, a) in &p.items {
+        if !matches!(item, Item::Previous | Item::Next) { continue; }
         if hover == Some(&item_action(*item)) {
             capsule(c, *a, true);
         }
@@ -1114,11 +1148,32 @@ impl Gavno {
                     self.topbar.menu = Some(output.clone());
                     self.topbar.popover_output = Some(output.clone());
                     self.topbar.popover = kind;
+                    if kind == Popover::Calendar {
+                        self.guard(crate::module::Feature::Notifications, (), |gv| {
+                            gv.notifications.borrow_mut().unread = false;
+                            gv.refresh_notifications();
+                        });
+                    }
                     self.topbar.opening.set(1.0);
                     let today = theme::LocalTime::now();
                     self.topbar.month = (today.year, today.month);
                 }
             }
+            BarAction::DoNotDisturb => {
+                self.guard(crate::module::Feature::Notifications, (), |gv| {
+                    let dnd = gv.notifications.borrow().dnd;
+                    gv.notifications.borrow_mut().dnd = !dnd;
+                    gv.refresh_notifications();
+                });
+            }
+            BarAction::ClearNotifications => {
+                self.guard(crate::module::Feature::Notifications, (), |gv| {
+                    gv.notifications.borrow_mut().history.clear();
+                    gv.notifications.borrow_mut().unread = false;
+                    gv.refresh_notifications();
+                });
+            }
+            BarAction::Notification(id) => self.notification_history_action(id),
             BarAction::Month(delta) => {
                 self.topbar.month =
                     calendar::shift_month(self.topbar.month.0, self.topbar.month.1, delta)
@@ -1259,6 +1314,7 @@ impl Gavno {
         if let Some((_, _, token)) = self.media.repeat.take() { self.loop_handle.remove(token); }
         self.refresh_bar_status(false);
         self.topbar = Default::default();
+        self.topbar.notifications = self.notifications.clone();
         self.loop_handle.insert_idle(|gv| gv.refit_fixed_windows());
     }
 }

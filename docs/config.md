@@ -135,6 +135,7 @@ decorations = true
 ipc = true
 screencopy = true
 launcher = true
+notifications = true
 ```
 
 `dock.enabled` and `bar.enabled` still work: a feature is off if either its legacy
@@ -212,3 +213,38 @@ layout = "us,ru"
 variant = ""
 options = "grp:alt_shift_toggle"
 ```
+
+## Built-in notifications
+
+GAVNO serves `org.freedesktop.Notifications` on the session bus (specification
+1.2), so `notify-send` and application notifications need no external daemon.
+If another daemon already owns the name, GAVNO logs one warning and leaves its
+notification UI inactive. Greeter mode never starts the server.
+
+```toml
+[notifications]
+timeout_ms = 5000
+max_visible = 3
+```
+
+`timeout_ms` is the default for applications requesting the server default
+(`expire_timeout = -1`). An explicit zero timeout and critical urgency are
+persistent. `max_visible` is clamped to `1..=3`; additional cards wait in order.
+Cards appear below the bar on the active output. Hover pauses expiry; the close
+button dismisses a card, and its body invokes an offered default action before
+dismissing it. Up to three other actions appear as buttons.
+
+Quick settings offers **Do not disturb**. Normal popups are suppressed while it
+is on; critical popups still appear. The clock shows a dot for unread history.
+Click the clock to see the newest four of the last 50 notifications beneath the
+calendar, or use **Clear** to clear history. A history item invokes its default
+action while the sending application remains available, including after its popup closes.
+History is kept in memory for the session, including notifications received
+while locked. Locked and greeter screens never draw cards; after unlock,
+non-expired queued cards can appear. Queued cards age while waiting, including
+under DND or the lock; expiry is checked when the event loop next wakes. Only
+visible, unhovered cards have an expiry timer, so hidden queues do not poll.
+
+Supported hints are `urgency`, `desktop-entry`, and `image-path`. Bodies display
+plain text after simple markup/entity removal. Image-data hints are ignored.
+Set `[modules] notifications = false` to disable the server and all its UI.

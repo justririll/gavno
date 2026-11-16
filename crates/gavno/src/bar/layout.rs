@@ -60,6 +60,9 @@ pub enum Item {
     Power(usize),
     Previous,
     Next,
+    DoNotDisturb,
+    ClearNotifications,
+    Notification(usize),
 }
 #[derive(Debug)]
 pub struct PopoverLayout {
@@ -92,6 +95,29 @@ impl PopoverLayout {
             panel: rect(x, y, 320, 244 + offset),
             items,
         }
+    }
+    pub fn quick_notifications(width: i32, brightness: bool, enabled: bool) -> Self {
+        let mut layout = Self::quick(width, brightness);
+        if enabled {
+            let y = layout.panel.loc.y + 164 + if brightness { 48 } else { 0 };
+            for (item, r) in &mut layout.items {
+                if matches!(item, Item::Power(_)) { r.loc.y += 48; }
+            }
+            layout.items.push((Item::DoNotDisturb, rect(layout.panel.loc.x + 16, y, 288, 40)));
+            layout.panel.size.h += 48;
+        }
+        layout
+    }
+    pub fn calendar_notifications(width: i32, count: usize) -> Self {
+        let mut layout = Self::calendar(width);
+        let x = layout.panel.loc.x;
+        let y = layout.panel.loc.y + 316;
+        layout.items.push((Item::ClearNotifications, rect(x + 244, y, 60, 28)));
+        for i in 0..count.min(4) {
+            layout.items.push((Item::Notification(i), rect(x + 12, y + 36 + i as i32 * 52, 296, 48)));
+        }
+        layout.panel.size.h += 44 + count.min(4) as i32 * 52;
+        layout
     }
     pub fn calendar(width: i32) -> Self {
         let panel = rect((width - 320) / 2, 40, 320, 316);
@@ -132,6 +158,8 @@ mod tests {
             PopoverLayout::quick(800, false),
             PopoverLayout::quick(1646, true),
             PopoverLayout::calendar(1280),
+            PopoverLayout::calendar_notifications(1280, 4),
+            PopoverLayout::quick_notifications(1646, true, true),
         ] {
             for (i, (_, r)) in l.items.iter().enumerate() {
                 assert!(l.panel.contains_rect(*r));

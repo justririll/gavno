@@ -1,0 +1,302 @@
+use super::*;
+
+fn notice(id: u32) -> Notice {
+    Notice {
+        id,
+        app: "Test".into(),
+        icon: String::new(),
+        desktop: String::new(),
+        summary: format!("Notice {id}"),
+        body: "<b>Hello</b> &amp; goodbye".into(),
+        actions: vec![("default".into(), "Open".into())],
+        urgency: 1,
+        timeout: -1,
+    }
+}
+fn model() -> Notifications {
+    Notifications {
+        active: true,
+        ..Default::default()
+    }
+}
+fn visible(n: &Notifications) -> Vec<u32> {
+    n.cards
+        .iter()
+        .filter(|c| c.visible && !c.closing)
+        .map(|c| c.notice.id)
+        .collect()
+}
+
+#[test]
+fn replacement_keeps_slot_and_visible_limit_promotes_queue() {
+    let mut n = model();
+    for id in 1..=5 {
+        n.receive(notice(id), Duration::ZERO, 5000);
+    }
+    n.update(Duration::ZERO, false, 3);
+    assert_eq!(visible(&n), [1, 2, 3]);
+    let mut replace = notice(2);
+    replace.summary = "Updated".into();
+    n.receive(replace, Duration::ZERO, 5000);
+    assert_eq!(
+        n.cards.iter().map(|c| c.notice.id).collect::<Vec<_>>(),
+        [1, 2, 3, 4, 5]
+    );
+    assert_eq!(n.cards[1].notice.summary, "Updated");
+    n.close(2, Some(2));
+    n.cards[1].spring.jump(0.0);
+    n.update(Duration::ZERO, false, 3);
+    assert_eq!(visible(&n), [1, 3, 4]);
+    n.update(Duration::ZERO, false, 1);
+    assert_eq!(visible(&n), [1]);
+}
+#[test]
+fn expiry_persistence_critical_and_no_hidden_timer() {
+    let mut n = model();
+    let (tx, rx) = mpsc::channel();
+    n.signals = Some(tx);
+    n.receive(notice(1), Duration::ZERO, 5000);
+    let mut persistent = notice(2);
+    persistent.timeout = 0;
+    n.receive(persistent, Duration::ZERO, 5000);
+    let mut critical = notice(3);
+    critical.urgency = 2;
+    critical.timeout = 1;
+    n.receive(critical, Duration::ZERO, 5000);
+    n.update(Duration::ZERO, false, 3);
+    assert_eq!(n.next_expiry(), Some(Duration::from_secs(5)));
+    n.update(Duration::from_secs(6), false, 3);
+    assert_eq!(visible(&n), [2, 3]);
+    assert_eq!(rx.try_recv().unwrap(), Signal::Closed(1, 1));
+    assert_eq!(n.next_expiry(), None);
+    n.update(Duration::from_secs(6), true, 3);
+    assert!(visible(&n).is_empty());
+    assert_eq!(n.next_expiry(), None);
+    n.update(Duration::from_secs(7), false, 3);
+    assert_eq!(visible(&n), [2, 3]);
+}
+#[test]
+fn dnd_suppresses_normal_but_not_critical_and_history_caps_at_fifty() {
+    let mut n = model();
+    n.dnd = true;
+    for id in 1..=55 {
+        n.receive(notice(id), Duration::ZERO, 5000);
+    }
+    let mut critical = notice(56);
+    critical.urgency = 2;
+    n.receive(critical, Duration::ZERO, 5000);
+    n.update(Duration::ZERO, false, 3);
+    assert_eq!(visible(&n), [56]);
+    assert_eq!(n.history.len(), 50);
+    assert_eq!(n.history.front().unwrap().notice.id, 56);
+    assert_eq!(n.history.back().unwrap().notice.id, 7);
+    assert!(n.unread);
+    n.update(Duration::from_secs(6), false, 3);
+    n.dnd = false;
+    n.update(Duration::from_secs(6), false, 3);
+    assert_eq!(visible(&n), [56]);
+}
+#[test]
+fn supported_markup_decodes_once_and_preserves_literal_angles() {
+    assert_eq!(
+        plain_body(
+            "<b>Bold</b> <i>I</i><u>U</u> <a href='x'>link</a> &amp; &lt; &gt; &quot; &apos;"
+        ),
+        "Bold IU link & < > \" '"
+    );
+    assert_eq!(plain_body("1 < 2 &amp;lt; <broken"), "1 < 2 &lt; <broken");
+    assert_eq!(plain_body("<script>text</script>"), "<script>text</script>");
+}
+
+fn harness() -> (crate::state::tests::Harness, Output) {
+    use smithay::output::{Mode, PhysicalProperties, Subpixel};
+    let mut h = crate::state::tests::Harness::new();
+    let output = Output::new(
+        "notifications-test".into(),
+        PhysicalProperties {
+            size: (0, 0).into(),
+            subpixel: Subpixel::Unknown,
+            make: "test".into(),
+            model: "test".into(),
+        },
+    );
+    output.change_current_state(
+        Some(Mode {
+            size: (1646, 926).into(),
+            refresh: 60000,
+        }),
+        None,
+        None,
+        None,
+    );
+    h.gv.space.map_output(&output, (0, 0));
+    h.gv.workspaces.ensure(&output);
+    (h, output)
+}
+fn settle(h: &mut crate::state::tests::Harness) {
+    let mut n = h.gv.notifications.borrow_mut();
+    for c in &mut n.cards {
+        c.spring.jump(if c.closing { 0.0 } else { 1.0 });
+    }
+    n.layout((1646, 926).into());
+}
+#[test]
+fn channel_card_hit_click_action_and_lock_suppression() {
+    let (mut h, output) = harness();
+    let tx = channel(&h.gv.loop_handle).unwrap();
+    let (signals, rx) = mpsc::channel();
+    h.gv.notifications.borrow_mut().signals = Some(signals);
+    tx.send(Request::Active).unwrap();
+    tx.send(Request::Notify(notice(1))).unwrap();
+    h.event_loop.dispatch(Duration::ZERO, &mut h.gv).unwrap();
+    settle(&mut h);
+    let r = h.gv.notifications.borrow().cards[0].rect.unwrap();
+    let p = (r.loc.x as f64 + 80.0, r.loc.y as f64 + 70.0).into();
+    assert!(h.gv.shell_contains(p));
+    assert!(h.gv.notifications.borrow().contains(&output, p));
+    assert!(h.gv.notification_button(p, 0x110, true));
+    assert_eq!(rx.try_recv().unwrap(), Signal::Action(1, "default".into()));
+    assert_eq!(rx.try_recv().unwrap(), Signal::Closed(1, 2));
+    assert!(h.gv.notification_button(p, 0x110, true));
+    assert!(rx.try_recv().is_err());
+    tx.send(Request::Notify(notice(2))).unwrap();
+    h.gv.protocols.locks.locked = true;
+    h.event_loop.dispatch(Duration::ZERO, &mut h.gv).unwrap();
+    assert!(visible(&h.gv.notifications.borrow()).is_empty());
+    assert!(!h.gv.notifications.borrow().animating());
+    assert!(h.gv.notifications.borrow().timer.is_none());
+    assert!(!h.gv.notifications.borrow().contains(&output, p));
+    assert!(!h.gv.notification_button(p, 0x110, true));
+    h.gv.protocols.locks.locked = false;
+    h.gv.refresh_notifications();
+    assert_eq!(visible(&h.gv.notifications.borrow()), [2]);
+}
+#[test]
+fn hover_pauses_expiry_and_empty_state_has_no_timer_or_animation() {
+    let (mut h, _) = harness();
+    let tx = channel(&h.gv.loop_handle).unwrap();
+    tx.send(Request::Active).unwrap();
+    tx.send(Request::Notify(notice(1))).unwrap();
+    h.event_loop.dispatch(Duration::ZERO, &mut h.gv).unwrap();
+    settle(&mut h);
+    assert!(h.gv.notifications.borrow().timer.is_some());
+    let r = h.gv.notifications.borrow().cards[0].rect.unwrap();
+    h.gv.notification_motion((r.loc.x as f64 + 40.0, r.loc.y as f64 + 50.0).into());
+    assert!(h.gv.notifications.borrow().cards[0].hovered.is_some());
+    assert!(h.gv.notifications.borrow().timer.is_none());
+    assert!(!h.gv.notifications.borrow().animating());
+    h.gv.notification_motion((500.0, 500.0).into());
+    assert!(h.gv.notifications.borrow().timer.is_some());
+    h.gv.reset_notifications();
+    assert!(h.gv.notifications.borrow().timer.is_none());
+    assert!(!h.gv.notifications.borrow().animating());
+}
+#[test]
+fn panic_drops_ui_but_channel_remains_usable() {
+    let (mut h, _) = harness();
+    let tx = channel(&h.gv.loop_handle).unwrap();
+    tx.send(Request::Active).unwrap();
+    tx.send(Request::Notify(notice(1))).unwrap();
+    h.event_loop.dispatch(Duration::ZERO, &mut h.gv).unwrap();
+    h.gv.features.inject_panic(Feature::Notifications);
+    h.gv.refresh_notifications();
+    assert!(h.gv.notifications.borrow().cards.is_empty());
+    tx.send(Request::Notify(notice(2))).unwrap();
+    h.event_loop.dispatch(Duration::ZERO, &mut h.gv).unwrap();
+    assert!(h.gv.notifications.borrow().cards.is_empty());
+}
+
+#[test]
+fn hidden_queue_ages_without_an_expiry_timer() {
+    let mut n = model();
+    let mut persistent = notice(1);
+    persistent.timeout = 0;
+    n.receive(persistent, Duration::ZERO, 5000);
+    n.receive(notice(2), Duration::ZERO, 5000);
+    n.update(Duration::ZERO, false, 1);
+    assert_eq!(visible(&n), [1]);
+    assert_eq!(n.next_expiry(), None);
+    n.update(Duration::from_secs(6), false, 1);
+    assert_eq!(n.cards.len(), 1);
+    n.receive(notice(3), Duration::from_secs(6), 5000);
+    n.update(Duration::from_secs(6), true, 3);
+    assert_eq!(n.next_expiry(), None);
+    n.update(Duration::from_secs(12), false, 3);
+    assert_eq!(visible(&n), [1]);
+}
+
+#[test]
+fn action_buttons_and_close_use_card_geometry() {
+    let (mut h, _) = harness();
+    let tx = channel(&h.gv.loop_handle).unwrap();
+    let (signals, rx) = mpsc::channel();
+    h.gv.notifications.borrow_mut().signals = Some(signals);
+    let mut n = notice(1);
+    for i in 0..5 {
+        n.actions
+            .push((format!("action{i}"), format!("Action {i}")));
+    }
+    tx.send(Request::Active).unwrap();
+    tx.send(Request::Notify(n)).unwrap();
+    h.event_loop.dispatch(Duration::ZERO, &mut h.gv).unwrap();
+    settle(&mut h);
+    let (panel, buttons) = {
+        let state = h.gv.notifications.borrow();
+        (state.cards[0].rect.unwrap(), state.cards[0].buttons.clone())
+    };
+    assert_eq!(buttons.len(), 3);
+    for (i, (r, _)) in buttons.iter().enumerate() {
+        assert!(panel.contains_rect(*r));
+        assert!(!r.overlaps(ui::close_rect(panel)));
+        for (s, _) in &buttons[i + 1..] {
+            assert!(!r.overlaps(*s));
+        }
+    }
+    let r = buttons[1].0;
+    assert!(h.gv.notification_button(
+        (r.loc.x as f64 + 4.0, r.loc.y as f64 + 4.0).into(),
+        0x110,
+        true
+    ));
+    assert_eq!(rx.try_recv().unwrap(), Signal::Action(1, "action1".into()));
+    assert_eq!(rx.try_recv().unwrap(), Signal::Closed(1, 2));
+    tx.send(Request::Notify(notice(2))).unwrap();
+    h.event_loop.dispatch(Duration::ZERO, &mut h.gv).unwrap();
+    settle(&mut h);
+    h.gv.refresh_notifications();
+    let r = ui::close_rect(
+        h.gv.notifications
+            .borrow()
+            .cards
+            .iter()
+            .find(|c| c.notice.id == 2)
+            .unwrap()
+            .rect
+            .unwrap(),
+    );
+    assert!(h.gv.notification_button(
+        (r.loc.x as f64 + 4.0, r.loc.y as f64 + 4.0).into(),
+        0x110,
+        true
+    ));
+    assert_eq!(rx.try_recv().unwrap(), Signal::Closed(2, 2));
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn one_shot_timer_expires_a_visible_card() {
+    let (mut h, _) = harness();
+    let tx = channel(&h.gv.loop_handle).unwrap();
+    let (signals, rx) = mpsc::channel();
+    h.gv.notifications.borrow_mut().signals = Some(signals);
+    let mut n = notice(1);
+    n.timeout = 10;
+    tx.send(Request::Active).unwrap();
+    tx.send(Request::Notify(n)).unwrap();
+    h.event_loop.dispatch(Duration::ZERO, &mut h.gv).unwrap();
+    h.event_loop
+        .dispatch(Duration::from_millis(100), &mut h.gv)
+        .unwrap();
+    assert_eq!(rx.try_recv().unwrap(), Signal::Closed(1, 1));
+    assert!(h.gv.notifications.borrow().timer.is_none());
+}

@@ -412,6 +412,7 @@ impl Gavno {
         let resizing=self.resize_mode_motion(pos);
         self.overview_motion(pos);
         self.launcher_motion(pos);
+        self.notification_motion(pos);
         let new_under = if resizing {None} else {self.surface_under(pos)};
         let serial = SERIAL_COUNTER.next_serial();
         pointer.motion(self, new_under.clone(), &MotionEvent { location: pos, serial, time: event.time_msec() });
@@ -449,6 +450,7 @@ impl Gavno {
         let resizing=self.resize_mode_motion(pos);
         self.overview_motion(pos);
         self.launcher_motion(pos);
+        self.notification_motion(pos);
         let under = if resizing {None} else {self.surface_under(pos)};
         pointer.motion(
             self,
@@ -521,6 +523,10 @@ impl Gavno {
         }
         if button_state==ButtonState::Pressed && self.exit_resize_mode() {
             self.suppressed_buttons.push(button);return;
+        }
+        if self.notification_button(pointer.current_location(), button, button_state == ButtonState::Pressed) {
+            if button_state == ButtonState::Pressed { self.suppressed_buttons.push(button); }
+            return;
         }
         if self.launcher_button(pointer.current_location(), button_state == ButtonState::Pressed) {
             if button_state == ButtonState::Pressed { self.suppressed_buttons.push(button); }

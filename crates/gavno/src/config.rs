@@ -39,6 +39,7 @@ pub struct Config {
     pub bar: BarConfig,
     pub tiling: TilingConfig,
     pub lock: LockConfig,
+    pub notifications: NotificationsConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -116,6 +117,7 @@ struct FileConfig {
     bar: BarConfig,
     tiling: TilingConfig,
     lock: LockConfig,
+    notifications: NotificationsConfig,
     #[serde(flatten)]
     unknown: toml::Table,
 }
@@ -178,13 +180,18 @@ impl Config {
         // Capture unknown fields during deserialization, so this list cannot drift from the schema.
         let mut unknown = Vec::new();
         for (prefix, extra) in
-            [("", &file.unknown), ("output.", &file.output.unknown), ("keyboard.", &file.keyboard.unknown), ("dock.", &file.dock.unknown), ("bar.", &file.bar.unknown), ("tiling.", &file.tiling.unknown), ("lock.", &file.lock.unknown), ("modules.", &file.modules.unknown)]
+            [("", &file.unknown), ("output.", &file.output.unknown), ("keyboard.", &file.keyboard.unknown), ("dock.", &file.dock.unknown), ("bar.", &file.bar.unknown), ("tiling.", &file.tiling.unknown), ("notifications.", &file.notifications.unknown), ("lock.", &file.lock.unknown), ("modules.", &file.modules.unknown)]
         {
             unknown.extend(extra.keys().map(|key| format!("{prefix}{key}")));
         }
         if !unknown.is_empty() {
             warnings.push(format!("unknown config keys ignored: {}", unknown.join(", ")));
         }
+        let max_visible = file.notifications.max_visible.clamp(1, 3);
+        if max_visible != file.notifications.max_visible {
+            warnings.push(format!("notifications.max_visible {} clamped to {max_visible}", file.notifications.max_visible));
+        }
+        file.notifications.max_visible = max_visible;
         if file.output.internal_scale.is_some_and(|scale| !scale.is_finite())
             || file.output.sdr_white_nits.is_some_and(|nits| !nits.is_finite()) {
             warnings.push("invalid config file: output scale and SDR white must be finite".into());
@@ -249,6 +256,7 @@ impl Config {
                 bar: file.bar,
                 tiling: file.tiling,
                 lock: file.lock,
+                notifications: file.notifications,
             },
             warnings,
         )
@@ -318,6 +326,7 @@ options = "caps:escape"
             bar: Default::default(),
             tiling: Default::default(),
             lock: Default::default(),
+            notifications: Default::default(),
         };
         assert_eq!(build(false, None, &[]), (expected.clone(), vec![]));
         let example = include_str!("../../../dist/config.toml");
@@ -355,6 +364,7 @@ options = "caps:escape"
             bar: Default::default(),
             tiling: Default::default(),
             lock: Default::default(),
+            notifications: Default::default(),
         };
         assert_eq!(build(false, Some(FULL), &[]), (expected, vec![]));
         let mut partial = build(false, None, &[]).0;
@@ -532,12 +542,13 @@ pub struct ModulesConfig {
     pub ipc: bool,
     pub screencopy: bool,
     pub launcher: bool,
+    pub notifications: bool,
     #[serde(flatten)]
     unknown: toml::Table,
 }
 impl Default for ModulesConfig {
     fn default() -> Self {
-        Self { dock: true, bar: true, overview: true, tiling: true, snap: true, switcher: true, gestures: true, window_gestures: true, resize_mode: true, animations: true, decorations: true, ipc: true, screencopy: true, launcher: true, unknown: Default::default() }
+        Self { dock: true, bar: true, overview: true, tiling: true, snap: true, switcher: true, gestures: true, window_gestures: true, resize_mode: true, animations: true, decorations: true, ipc: true, screencopy: true, launcher: true, notifications: true, unknown: Default::default() }
     }
 }
 
@@ -560,5 +571,34 @@ mod module_tests {
         assert!(!Features::new(&config).on(Feature::Dock));
         let config = Config::build(false, None, |_| None).0;
         assert!(Feature::ALL.into_iter().all(|f| Features::new(&config).on(f)));
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct NotificationsConfig {
+    pub timeout_ms: u64,
+    pub max_visible: usize,
+    #[serde(flatten)]
+    unknown: toml::Table,
+}
+impl Default for NotificationsConfig {
+    fn default() -> Self { Self { timeout_ms: 5000, max_visible: 3, unknown: Default::default() } }
+}
+
+#[cfg(test)]
+mod notification_tests {
+    use super::*;
+    #[test]
+    fn notification_defaults_clamps_and_module_toggle() {
+        let (config, warnings) = Config::build(false, Some("[notifications]\ntimeout_ms = 1200\nmax_visible = 9\n[modules]\nnotifications = false"), |_| None);
+        assert_eq!(config.notifications.timeout_ms, 1200);
+        assert_eq!(config.notifications.max_visible, 3);
+        assert_eq!(warnings.len(), 1);
+        assert!(!crate::module::Features::new(&config).on(crate::module::Feature::Notifications));
+        let (config, warnings) = Config::build(false, Some("[notifications]\nmax_visible = 0"), |_| None);
+        assert_eq!(config.notifications.max_visible, 1);
+        assert_eq!(config.notifications.timeout_ms, 5000);
+        assert_eq!(warnings.len(), 1);
     }
 }

@@ -217,6 +217,11 @@ pub fn output_elements(
     }
 
     elements.extend(features.call(Feature::ResizeMode, Vec::new(), || overlay.resize_mode.elements(renderer, output, output_geo, scale.x)));
+    if !locks.locked && !lock.internal() {
+        elements.extend(features.call(Feature::Notifications, Vec::new(), || {
+            topbar.notifications.borrow_mut().elements(renderer, output, output_geo.size, scale.x, time, &config.dock.icon_theme)
+        }));
+    }
     let accent = topbar.accent();
     elements.extend(features.call(Feature::Launcher, Vec::new(), || {
         launcher.elements(renderer, output, output_geo.size, scale.x, time, accent, &config.dock.icon_theme)

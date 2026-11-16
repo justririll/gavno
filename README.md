@@ -75,6 +75,7 @@ What works today:
 - HDR output on DRM: EDID/BT.2020/PQ setup, SDR-to-HDR composition,
   Mod+Shift+H toggle and runtime SDR white control
   (`crates/gavno/src/hdr/`, `crates/gavno/src/backend/udev.rs`).
+- Built-in session D-Bus notifications, popup actions, calendar history and Do not disturb.
 - Idle means no redraw.
 
 Keyboard binds: [docs/keybinds.md](docs/keybinds.md)
@@ -85,7 +86,8 @@ Configuration: [docs/config.md](docs/config.md)
 
 The startup config supports `[modules]` boolean flags `dock`, `bar`, `overview`,
 `tiling`, `snap`, `switcher`, `gestures`, `window_gestures`, `resize_mode`,
-`animations`, `decorations`, `ipc`, and `screencopy`, all `true` by default.
+`animations`, `decorations`, `ipc`, `screencopy`, `launcher`, and `notifications`,
+all `true` by default.
 For example, `[modules]` followed by `dock = false` disables the dock. The legacy
 `dock.enabled` and `bar.enabled` switches also apply; either flag can disable the
 feature. Feature panics disable and reset only that feature until restart.
