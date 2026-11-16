@@ -93,6 +93,7 @@ pub struct Gavno {
     pub lock: crate::lock::Lock,
     pub launcher: crate::launcher::Launcher,
     pub notifications: crate::notify::Shared,
+    pub now_playing: crate::media::Shared,
 }
 
 impl Gavno {
@@ -133,8 +134,10 @@ impl Gavno {
 
         let socket_name = Self::init_wayland_listener(display, event_loop);
         let notifications = crate::notify::Shared::default();
+        let now_playing = crate::media::Shared::default();
         let mut topbar = crate::topbar::TopBar::default();
         topbar.notifications = notifications.clone();
+        topbar.now_playing = now_playing.clone();
 
         Self {
             protocols,
@@ -157,6 +160,7 @@ impl Gavno {
             dock: Default::default(),
             topbar,
             notifications,
+            now_playing,
             media: Default::default(),
             gestures: Default::default(),
             window_gestures: Default::default(),
@@ -243,6 +247,7 @@ impl Gavno {
         self.refresh_internal_lock();
         self.refresh_shell();
         self.refresh_notifications();
+        self.refresh_media();
         self.finish_dock_launches();
         self.refresh_idle();
         self.popups.cleanup();

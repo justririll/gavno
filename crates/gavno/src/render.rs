@@ -149,7 +149,13 @@ pub fn output_elements(
                 ) { elements.push(GavnoRenderElement::Memory(cursor)); }
             }
             elements.extend(osd.elements(renderer, output, output_geo.size, time, &config.dock.icon_theme, topbar.accent()));
-            elements.extend(lock.elements(renderer, output_geo.size, scale.x, time));
+            let lock_elements = lock.elements(renderer, output_geo.size, scale.x, time);
+            let media_elements = features.call(Feature::Media, Vec::new(), || {
+                lock.media_elements(renderer, output_geo.size, scale.x, &topbar.now_playing.borrow().snapshot)
+            });
+            // Media is in front of the trusted lock background, beneath its cursor.
+            elements.extend(media_elements);
+            elements.extend(lock_elements);
             // Desktop pixels are permitted only after local PAM success. Input
             // remains blocked until the fade completes on the event loop.
             if !lock.desktop_visible() { return elements; }
@@ -232,7 +238,7 @@ pub fn output_elements(
     let zone = layer_map_for_output(output).non_exclusive_zone();
     let work_area = crate::dock::reserve(smithay::utils::Rectangle::new(zone.loc + output_geo.loc, zone.size),
         features.on(Feature::Bar) && config.bar.enabled, features.on(Feature::Dock) && config.dock.enabled, config.dock.autohide);
-    elements.extend(features.call(Feature::Bar, Vec::new(), || topbar.elements(renderer, output, output_geo.size.w, workspaces.get(output), time, shell_visible)));
+    elements.extend(features.read(Feature::Bar, Vec::new(), || topbar.elements(renderer, output, output_geo.size.w, workspaces.get(output), time, shell_visible, features)));
     elements.extend(features.call(Feature::Dock, Vec::new(), || dock.elements(renderer, output, output_geo.size, pointer_pos - output_geo.loc.to_f64(), time, shell_visible)));
     // Workspace ownership and transitions are core; overview only adds its zoom.
     let mut scene = if features.on(Feature::Overview) {

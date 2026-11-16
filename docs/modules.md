@@ -6,7 +6,7 @@ basic surface rendering remain core even when their implementation lives beside
 a feature. Lock and Greeter are always present security boundaries.
 
 The optional features are Dock, Bar, Overview, Tiling, Snap, Switcher,
-Gestures, WindowGestures, ResizeMode, Animations, Decorations, Ipc, Screencopy, Launcher and Notifications.
+Gestures, WindowGestures, ResizeMode, Animations, Decorations, Ipc, Screencopy, Launcher, Notifications and Media.
 `module.rs` stores their startup state. A feature is enabled, disabled by config,
 or crashed. A crash disables it until the compositor restarts. The registry has
 no timer, animation, or periodic redraw source.
@@ -83,6 +83,7 @@ ipc = true
 screencopy = true
 launcher = true
 notifications = true
+media = true
 ```
 
 Legacy `[dock] enabled = false` and `[bar] enabled = false` still disable their
@@ -123,3 +124,17 @@ Notifications guard without changing backend rendering APIs. History and DND
 controls use snapshots in the bar and enter Notifications guards for mutations.
 A single one-shot expiry timer tracks the earliest visible deadline. Springs
 request frames only while a visible card enters or leaves.
+
+## Media worker
+
+`media/mpris.rs` lists `org.mpris.MediaPlayer2.*` names once, watches
+`NameOwnerChanged` and consumes relevant `PropertiesChanged` signals. Blocking
+bus calls and PNG/SVG decoding run on a worker. Signal readers forward to the
+worker's command channel; a calloop channel publishes active-player snapshots
+to the compositor. Track position changes are ignored. There are no media
+polling timers, animation loops or idle redraws.
+
+The `Media` boundary owns updates, commands and lock media rendering. Reset
+clears its shared snapshot and stale bar targets; later worker events are
+ignored. The worker may remain alive. Bar resets preserve the shared media
+reference. Core lock input gating and authentication remain independent.

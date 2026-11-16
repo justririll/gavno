@@ -552,12 +552,13 @@ pub struct ModulesConfig {
     pub screencopy: bool,
     pub launcher: bool,
     pub notifications: bool,
+    pub media: bool,
     #[serde(flatten)]
     unknown: toml::Table,
 }
 impl Default for ModulesConfig {
     fn default() -> Self {
-        Self { dock: true, bar: true, overview: true, tiling: true, snap: true, switcher: true, gestures: true, window_gestures: true, resize_mode: true, animations: true, decorations: true, ipc: true, screencopy: true, launcher: true, notifications: true, unknown: Default::default() }
+        Self { dock: true, bar: true, overview: true, tiling: true, snap: true, switcher: true, gestures: true, window_gestures: true, resize_mode: true, animations: true, decorations: true, ipc: true, screencopy: true, launcher: true, notifications: true, media: true, unknown: Default::default() }
     }
 }
 

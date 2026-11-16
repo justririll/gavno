@@ -367,6 +367,7 @@ pub enum PowerAction {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BarAction {
     Tiling,
+    Media(crate::media::Command),
     Workspace(usize),
     Layout,
     PowerMenu,
@@ -399,6 +400,7 @@ struct BarView {
 }
 pub struct TopBar {
     pub notifications: crate::notify::Shared,
+    pub now_playing: crate::media::Shared,
     pub notification_history: Vec<crate::notify::History>,
     pub notification_dnd: bool,
     pub notification_unread: bool,
@@ -429,6 +431,7 @@ impl Default for TopBar {
         let today = theme::LocalTime::now();
         Self {
             notifications: Default::default(),
+            now_playing: Default::default(),
             notification_history: Vec::new(),
             notification_dnd: false,
             notification_unread: false,
@@ -457,6 +460,11 @@ impl Default for TopBar {
     }
 }
 impl TopBar {
+    pub(crate) fn clear_media_hits(&mut self) {
+        for view in &mut self.views {
+            view.hits.retain(|(_, action)| !matches!(action, BarAction::Media(_)));
+        }
+    }
     pub fn accent(&self) -> [f32; 4] {
         self.accent
     }
@@ -497,6 +505,7 @@ impl TopBar {
         owner: Option<&crate::workspace::OutputWorkspaces>,
         now: Duration,
         visible: bool,
+        features: &crate::module::Features,
     ) -> Vec<GavnoRenderElement> {
         let index = if let Some(i) = self.views.iter().position(|v| &v.output == output) {
             i
@@ -539,7 +548,7 @@ impl TopBar {
         v.dots
             .resize_with(count, || Spring::new(7.0, SpringParams::SNAPPY));
         v.dots.truncate(count);
-        let l = Layout::new(width, count as i32 * 12 + 31, self.multiple_layouts);
+        let (l, media) = media_layout(&self.now_playing, width, count as i32 * 12 + 31, self.multiple_layouts, features);
         capsule(
             c,
             l.workspaces,
@@ -670,12 +679,21 @@ impl TopBar {
             l.battery,
             false,
         );
+        features.read(crate::module::Feature::Media, (), || {
+            if let (Some(area), Some(player)) = (l.media, media.player.as_ref()) {
+                let action = BarAction::Media(crate::media::Command::PlayPause);
+                capsule(c, area, v.hover == Some(action.clone()));
+                c.label(renderer, crate::media::ui::glyph(player, crate::media::Command::PlayPause), area.loc.x + 8, 7, 20, 12.0);
+                c.label(renderer, &player.label(), area.loc.x + 30, 7, area.size.w - 38, 12.0);
+                push_hit(c, &mut v.hits, area, action);
+            }
+        });
         v.layout = Some(l);
         v.popover = None;
         // Keep drawing the closing panel until its spring settles.
         if (self.popover_output.as_ref() == Some(output)) && self.opening.value > 0.001 {
             let p = if self.popover == Popover::Quick {
-                PopoverLayout::quick_notifications(width, self.status.brightness.is_some(), self.notifications_active)
+                PopoverLayout::quick_notifications(width, self.status.brightness.is_some(), self.notifications_active).with_media(media.player.is_some())
             } else {
                 if self.notifications_active { PopoverLayout::calendar_notifications(width, self.notification_history.len()) }
                 else { PopoverLayout::calendar(width) }
@@ -701,6 +719,8 @@ impl TopBar {
                     &p,
                     v.hover.as_ref(),
                     self.notification_dnd,
+                    &media,
+                    features,
                 );
             } else {
                 draw_calendar(c, renderer, &p, self.month, self.accent, v.hover.as_ref());
@@ -718,6 +738,15 @@ impl TopBar {
         c.finish()
     }
 }
+fn media_layout(
+    media: &crate::media::Shared, width: i32, workspace_width: i32, layouts: bool,
+    features: &crate::module::Features,
+) -> (Layout, crate::media::Snapshot) {
+    let snapshot = features.read(crate::module::Feature::Media, Default::default(), || media.borrow().snapshot.clone());
+    let layout = Layout::new(width, workspace_width, layouts).with_media(snapshot.player.is_some());
+    (layout, snapshot)
+}
+
 fn push_hit(
     c: &Canvas,
     hits: &mut Vec<(Rectangle<f64, Logical>, BarAction)>,
@@ -737,6 +766,10 @@ fn capsule(c: &mut Canvas, r: Rect, hover: bool) {
 }
 fn item_action(item: Item) -> BarAction {
     match item {
+        Item::MediaInfo => BarAction::Consume,
+        Item::MediaPrevious => BarAction::Media(crate::media::Command::Previous),
+        Item::MediaPlayPause => BarAction::Media(crate::media::Command::PlayPause),
+        Item::MediaNext => BarAction::Media(crate::media::Command::Next),
         Item::VolumeIcon => BarAction::Mute,
         Item::Volume => BarAction::Volume,
         Item::Brightness => BarAction::Brightness,
@@ -829,10 +862,18 @@ fn draw_quick(
     p: &PopoverLayout,
     hover: Option<&BarAction>,
     dnd: bool,
+    media: &crate::media::Snapshot,
+    features: &crate::module::Features,
 ) {
     for (item, area) in &p.items {
         let a = *area;
         match *item {
+            Item::MediaInfo => features.read(crate::module::Feature::Media, (), || crate::media::ui::info(c, r, media, a)),
+            Item::MediaPrevious | Item::MediaPlayPause | Item::MediaNext => features.read(crate::module::Feature::Media, (), || {
+                if let (Some(player), Some(command)) = (media.player.as_ref(), crate::media::ui::item_command(*item)) {
+                    crate::media::ui::button(c, r, player, command, a, hover == Some(&BarAction::Media(command)));
+                }
+            }),
             Item::DoNotDisturb => {
                 capsule(c, a, hover == Some(&BarAction::DoNotDisturb));
                 c.label(r, "Do not disturb", a.loc.x + 12, a.loc.y + 12, 210, 12.5);
@@ -1137,6 +1178,7 @@ impl Gavno {
     fn bar_action_feature(&mut self, output: &Output, action: BarAction) {
         match action {
             BarAction::Tiling => self.toggle_workspace_tiling(output),
+            BarAction::Media(command) => self.media_command(command),
             BarAction::Workspace(i) => {
                 self.switch_workspace(output, i);
             }
@@ -1324,6 +1366,7 @@ impl Gavno {
         self.refresh_bar_status(false);
         self.topbar = Default::default();
         self.topbar.notifications = self.notifications.clone();
+        self.topbar.now_playing = self.now_playing.clone();
         self.loop_handle.insert_idle(|gv| gv.refit_fixed_windows());
     }
 }
