@@ -90,12 +90,12 @@ fn resolvable_pins(pinned: &[String], mut resolved: impl FnMut(&str) -> bool) ->
     pinned.iter().filter(|id| resolved(id)).cloned().collect()
 }
 #[derive(Clone)]
-struct App {
-    id: String,
-    name: String,
-    icon: String,
-    entry: Option<DesktopEntry>,
-    windows: Vec<Window>,
+pub(crate) struct App {
+    pub id: String,
+    pub name: String,
+    pub icon: String,
+    pub entry: Option<DesktopEntry>,
+    pub windows: Vec<Window>,
 }
 struct IconMotion {
     id: String,
@@ -161,6 +161,7 @@ impl Dock {
 }
 
 pub struct Dock {
+    pub shell_progress: f64,
     initialized: bool,
     config: DockConfig,
     pinned: Vec<String>,
@@ -183,6 +184,7 @@ pub struct Dock {
 impl Default for Dock {
     fn default() -> Self {
         Self {
+            shell_progress: 0.0,
             initialized: false,
             config: Default::default(),
             pinned: Vec::new(),
@@ -204,6 +206,16 @@ impl Default for Dock {
     }
 }
 impl Dock {
+    pub(crate) fn classic_apps(&mut self, pins: &[String]) -> Vec<App> {
+        let pins: Vec<_> = pins.iter().take(128).map(|id| self.canonical(id)).collect();
+        let running: Vec<_> = self.apps.iter().filter(|a| !a.windows.is_empty()).map(|a| a.id.clone()).collect();
+        item_order(&pins, &running).into_iter().filter_map(|key| {
+            let ItemKey::App(id) = key else { return None };
+            if let Some(app) = self.apps.iter().find(|a| a.id == id) { return Some(app.clone()); }
+            let entry = self.entries.resolve(&id)?;
+            Some(App { id, name: entry.name.clone(), icon: entry.icon.clone(), entry: Some(entry), windows: Vec::new() })
+        }).collect()
+    }
     pub fn close_menu(&mut self) {
         self.menu = None;
     }
@@ -302,7 +314,7 @@ impl Dock {
         // Remove sources as soon as a launched instance maps its first window.
         // Tokens are handed back to Gavno below, since Dock does not own the loop.
     }
-    fn canonical(&mut self, id: &str) -> String {
+    pub(crate) fn canonical(&mut self, id: &str) -> String {
         self.entries
             .resolve(id)
             .map(|e| e.id)
@@ -356,7 +368,7 @@ impl Dock {
             self.views.len() - 1
         };
         let v = &mut self.views[index];
-        v.visible = visible && self.config.enabled;
+        v.visible = visible && self.config.enabled && self.shell_progress < 0.999;
         if !v.visible {
             v.hits.clear();
             v.menu_rect = None;
@@ -381,7 +393,7 @@ impl Dock {
         let reveal = !self.config.autohide || v.pushed || over || menu_open;
         v.slide.advance(now);
         v.slide.set(if reveal { 0.0 } else { 1.0 });
-        let bottom = size.h as f64 - DOCK_M as f64 + (DOCK_H + 16) as f64 * v.slide.value;
+        let bottom = size.h as f64 - DOCK_M as f64 + (DOCK_H + 16) as f64 * (v.slide.value + self.shell_progress);
         let mut base_x = base_left + 9.0 * fit;
         let mut scales = Vec::new();
         for key in &self.order {
@@ -677,6 +689,9 @@ impl Gavno {
             })
     }
     pub fn shell_contains(&self, pos: Point<f64, Logical>) -> bool {
+        if !self.protocols.locks.locked && self.greeter.is_none()
+            && self.features.read(crate::module::Feature::Classic, false, || self.classic.start.open
+                || self.classic.desktop.menu.is_some() || (self.classic_mode() && self.topbar.menu.is_some())) { return true; }
         if !self.protocols.locks.locked && !self.lock.internal() && self.greeter.is_none()
             && self.features.read(crate::module::Feature::Notifications, false, || {
                 self.space.outputs().any(|o| self.space.output_geometry(o).is_some_and(|g|
@@ -693,8 +708,13 @@ impl Gavno {
                 return false;
             }
             let p = pos - geo.loc.to_f64();
-            (self.features.read(crate::module::Feature::Bar, false, || self.config.bar.enabled && (p.y < PANEL as f64 || self.topbar.action(o, p).is_some())))
+            self.features.read(crate::module::Feature::Classic, false, || {
+                (self.shell_progress() > 0.001 && self.classic.taskbar.contains(o, p, geo.size))
+                    || self.classic.start.open || self.classic.start.contains(o, p)
+            })
+                || (self.features.read(crate::module::Feature::Bar, false, || self.config.bar.enabled && (p.y < PANEL as f64 * (1.0 - self.shell_progress()) || self.topbar.action(o, p).is_some())))
                 || ((self.features.on(crate::module::Feature::Dock) && self.config.dock.enabled)
+                    && self.shell_progress() < 0.999
                     && self
                         .dock
                         .views
@@ -743,7 +763,7 @@ impl Gavno {
                 return true;
             }
         }
-        let bar_hit = self.features.read(crate::module::Feature::Bar, false, || p.y < PANEL as f64 || self.topbar.menu.is_some());
+        let bar_hit = self.features.read(crate::module::Feature::Bar, false, || p.y < PANEL as f64 * (1.0 - self.shell_progress()) || self.topbar.menu.is_some());
         if bar_hit {
             self.guard(crate::module::Feature::Dock, (), |gv| gv.dock.close_menu());
             self.guard(crate::module::Feature::Bar, (), |gv| gv.topbar.close());
@@ -981,7 +1001,7 @@ impl Gavno {
             .dock
             .canonical(&crate::overlay::window_labels(window).1);
         let from = Rectangle::new(location, window.geometry().size).to_f64();
-        let to = self.dock.target(&output, &id, geo);
+        let to = if self.classic_mode() { self.classic.taskbar.target(&output, &id, geo) } else { self.dock.target(&output, &id, geo) };
         let now = self.start_time.elapsed();
         let current = self
             .dock
@@ -1038,7 +1058,7 @@ impl Gavno {
             .iter()
             .find(|m| &m.window == window)
             .map(|m| crate::anim::interpolate_rect(m.from, m.to, m.progress.value.clamp(0.0, 1.0)))
-            .unwrap_or_else(|| self.dock.target(&output, &id, geo));
+            .unwrap_or_else(|| if self.classic_mode() { self.classic.taskbar.target(&output, &id, geo) } else { self.dock.target(&output, &id, geo) });
         let to = Rectangle::new(location, window.geometry().size).to_f64();
         let mut progress = Spring::new(0.0, SpringParams::SNAPPY);
         progress.advance(now);

@@ -38,6 +38,9 @@ struct App {
 
 pub struct Launcher {
     pub open: bool,
+    pub run_style: bool,
+    loading: bool,
+    launch_after_load: bool,
     query: String,
     selected: usize,
     apps: Option<Vec<App>>,
@@ -57,6 +60,9 @@ impl Default for Launcher {
     fn default() -> Self {
         Self {
             open: false,
+            run_style: false,
+            loading: false,
+            launch_after_load: false,
             query: String::new(),
             selected: 0,
             apps: None,
@@ -73,7 +79,7 @@ impl Default for Launcher {
 }
 
 /// Rank of `app` for a lower-case query: lower is better, `None` hides it.
-fn score(name: &str, words: &str, query: &str) -> Option<u8> {
+pub(crate) fn score(name: &str, words: &str, query: &str) -> Option<u8> {
     if query.is_empty() {
         return Some(0);
     }
@@ -99,13 +105,10 @@ impl Launcher {
         self.open || self.fade.value > 0.004 || self.fade.is_active()
     }
 
-    fn load(&mut self) {
-        if self.apps.is_some() {
-            return;
-        }
+    fn install_entries(&mut self, entries: Vec<DesktopEntry>) {
+        self.loading = false;
         let mut seen = std::collections::HashSet::new();
-        let mut apps: Vec<App> = desktop_entry::load_all()
-            .into_iter()
+        let mut apps: Vec<App> = entries.into_iter().take(4096)
             .filter(|e| !e.hidden_from_menus && !e.name.is_empty())
             // Several data dirs may ship the same app; keep the first by name.
             .filter(|e| seen.insert(e.name.to_lowercase()))
@@ -139,14 +142,9 @@ impl Launcher {
     }
 
     fn show(&mut self, output: Option<Output>) {
-        self.load();
-        // Desktop files may have changed since the last time; reload lazily
-        // on every open would cost a disk walk, so only refresh when empty.
-        if self.apps.as_ref().is_some_and(|a| a.is_empty()) {
-            self.apps = None;
-            self.load();
-        }
         self.open = true;
+        self.run_style = false;
+        self.launch_after_load = false;
         self.query.clear();
         self.refilter();
         self.output = output;
@@ -155,6 +153,7 @@ impl Launcher {
 
     fn hide(&mut self) {
         self.open = false;
+        self.launch_after_load = false;
         self.fade.set(0.0);
     }
 
@@ -179,7 +178,7 @@ impl Launcher {
     /// Panel rectangle for an output of `size` logical pixels.
     fn panel_rect(&self, size: Size<i32, Logical>) -> Rect {
         let w = 640.min(size.w - 32).max(200);
-        let rows = self.results.len().clamp(1, ROWS) as i32;
+        let rows = if self.run_style { 0 } else { self.results.len().clamp(1, ROWS) as i32 };
         let h = SEARCH_H + PAD + rows * ROW_H + PAD;
         rect((size.w - w) / 2, (size.h as f64 * 0.16) as i32, w, h)
     }
@@ -223,7 +222,7 @@ impl Launcher {
         let text_w = panel.size.w - 52 - 20;
         if self.query.is_empty() {
             style.color = [0.96, 0.95, 0.98, 0.45];
-            c.styled_label(renderer, "Search applications", text_x, y + 17, text_w, style);
+            c.styled_label(renderer, if self.run_style { "Run a command" } else { "Search applications" }, text_x, y + 17, text_w, style);
         } else {
             c.styled_label(renderer, &self.query, text_x, y + 17, text_w, style);
         }
@@ -236,12 +235,12 @@ impl Launcher {
 
         // Results.
         let apps = self.apps.as_deref().unwrap_or_default();
-        if self.results.is_empty() {
+        if self.results.is_empty() && !self.run_style {
             let mut dim = label_style(13.5);
             dim.color = [0.96, 0.95, 0.98, 0.5];
-            c.styled_label(renderer, "No applications found", x + 20, y + SEARCH_H + PAD + 14, panel.size.w - 40, dim);
+            c.styled_label(renderer, if self.loading { "Loading applications…" } else { "No applications found" }, x + 20, y + SEARCH_H + PAD + 14, panel.size.w - 40, dim);
         }
-        for (row, &i) in self.results.iter().enumerate().skip(first).take(ROWS) {
+        for (row, &i) in self.results.iter().enumerate().skip(first).take(if self.run_style { 0 } else { ROWS }) {
             let Some(app) = apps.get(i) else { continue };
             let ry = y + SEARCH_H + PAD + (row - first) as i32 * ROW_H;
             let r = rect(x + PAD, ry, panel.size.w - 2 * PAD, ROW_H);
@@ -271,6 +270,19 @@ impl Launcher {
 }
 
 impl Gavno {
+    pub fn toggle_run_launcher(&mut self) {
+        self.guard(crate::module::Feature::Launcher, (), |gv| {
+            if gv.launcher.open && gv.launcher.run_style { gv.launcher.hide(); }
+            else {
+                gv.launcher.open = true;
+                gv.launcher.run_style = true;
+                gv.launcher.output = gv.active_output();
+                gv.launcher.query.clear(); gv.launcher.results.clear(); gv.launcher.selected=0;
+                gv.launcher.fade.set(1.0);
+            }
+            gv.queue_redraw_all();
+        });
+    }
     /// Opens the launcher on the active output, or closes it when open.
     pub fn toggle_launcher(&mut self) {
         self.guard(crate::module::Feature::Launcher, (), |gv| {
@@ -279,6 +291,22 @@ impl Gavno {
             } else {
                 let output = gv.active_output();
                 gv.launcher.show(output);
+                if !gv.launcher.loading && gv.launcher.apps.as_ref().is_none_or(|apps| apps.is_empty()) {
+                    gv.launcher.loading = true;
+                    let (tx,rx)=smithay::reexports::calloop::channel::channel();
+                    let result=gv.loop_handle.insert_source(rx,|event,_,gv|{
+                        if let smithay::reexports::calloop::channel::Event::Msg(entries)=event {
+                            gv.guard(crate::module::Feature::Launcher,(),|gv|{
+                                gv.launcher.install_entries(entries);
+                                if !gv.launcher.run_style { gv.launcher.refilter(); }
+                                if gv.launcher.open && !gv.launcher.run_style && gv.launcher.launch_after_load { gv.launch_selected(); }
+                                else if gv.launcher.open { gv.queue_redraw_all(); }
+                            });
+                        }
+                    });
+                    if result.is_ok() { std::thread::spawn(move||{let _=tx.send(desktop_entry::load_all());}); }
+                    else {gv.launcher.loading=false;}
+                }
             }
             gv.queue_redraw_all();
         });
@@ -292,7 +320,13 @@ impl Gavno {
     }
 
     fn launch_selected(&mut self) {
-        let command = self.launcher.selected_entry().and_then(|e| e.command(&self.config.terminal));
+        if !self.launcher.run_style && self.launcher.loading && self.launcher.results.is_empty() {
+            self.launcher.launch_after_load=true;
+            return;
+        }
+        let command = if self.launcher.run_style {
+            Some(self.launcher.query.trim().to_owned()).filter(|s| !s.is_empty())
+        } else { self.launcher.selected_entry().and_then(|e| e.command(&self.config.terminal)) };
         self.launcher.hide();
         if let Some(command) = command {
             crate::state::spawn_shell(&command);
@@ -305,6 +339,7 @@ impl Gavno {
         let mods = *mods;
         self.guard(crate::module::Feature::Launcher, (), |gv| {
             let l = &mut gv.launcher;
+            if !matches!(sym.raw(), keysyms::KEY_Return | keysyms::KEY_KP_Enter) { l.launch_after_load=false; }
             match sym.raw() {
                 keysyms::KEY_Escape => l.hide(),
                 keysyms::KEY_Return | keysyms::KEY_KP_Enter => return gv.launch_selected(),
@@ -503,5 +538,16 @@ mod tests {
         for _ in 0..10 { l.move_selection(true); }
         assert_eq!(l.selected, 10);
         assert_eq!(l.scroll(), 10 - (ROWS - 1));
+    }
+}
+
+#[cfg(test)]
+mod asynchronous_tests {
+    use super::*;
+    #[test]
+    fn loading_preserves_query_and_escape_cancels_a_queued_launch() {
+        let mut h=crate::state::tests::Harness::new();h.gv.launcher.open=true;h.gv.launcher.loading=true;h.gv.launcher.query="term".into();h.gv.launch_selected();assert!(h.gv.launcher.open&&h.gv.launcher.launch_after_load);
+        h.gv.launcher.install_entries(vec![DesktopEntry::parse("foot","[Desktop Entry]\nName=Terminal\nExec=foot\n",None).unwrap()]);h.gv.launcher.refilter();assert_eq!(h.gv.launcher.selected_entry().unwrap().id,"foot");assert_eq!(h.gv.launcher.query,"term");h.gv.close_launcher();assert!(!h.gv.launcher.launch_after_load);
+        h.gv.launcher=Launcher::default();h.gv.toggle_run_launcher();assert!(h.gv.launcher.apps.is_none());assert!(!h.gv.launcher.loading);
     }
 }

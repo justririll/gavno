@@ -70,6 +70,15 @@ pub struct PopoverLayout {
     pub items: Vec<(Item, Rect)>,
 }
 impl PopoverLayout {
+    pub fn anchor_bottom(&mut self, width: i32, height: i32, taskbar: i32, progress: f64) {
+        let x = (width - self.panel.size.w - 8).max(0);
+        let y = (height - taskbar - self.panel.size.h - 8).max(0);
+        let dx = ((x - self.panel.loc.x) as f64 * progress).round() as i32;
+        let dy = ((y - self.panel.loc.y) as f64 * progress).round() as i32;
+        self.panel.loc.x += dx;
+        self.panel.loc.y += dy;
+        for (_, r) in &mut self.items { r.loc.x += dx; r.loc.y += dy; }
+    }
     pub fn quick(width: i32, brightness: bool) -> Self {
         let x = (width - 328).max(8);
         let y = 40;

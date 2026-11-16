@@ -7,12 +7,12 @@ use crate::{config::Config, Gavno};
 #[repr(usize)]
 pub enum Feature {
     Dock, Bar, Overview, Tiling, Snap, Switcher, Gestures,
-    WindowGestures, ResizeMode, Animations, Decorations, Ipc, Screencopy, Launcher, Notifications,
+    WindowGestures, ResizeMode, Animations, Decorations, Ipc, Screencopy, Launcher, Notifications, Classic,
 }
 impl Feature {
-    pub const ALL: [Self; 15] = [Self::Dock, Self::Bar, Self::Overview, Self::Tiling,
+    pub const ALL: [Self; 16] = [Self::Dock, Self::Bar, Self::Overview, Self::Tiling,
         Self::Snap, Self::Switcher, Self::Gestures, Self::WindowGestures,
-        Self::ResizeMode, Self::Animations, Self::Decorations, Self::Ipc, Self::Screencopy, Self::Launcher, Self::Notifications];
+        Self::ResizeMode, Self::Animations, Self::Decorations, Self::Ipc, Self::Screencopy, Self::Launcher, Self::Notifications, Self::Classic];
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -23,25 +23,25 @@ pub enum FeatureState {
 }
 
 pub struct Features {
-    states: [RefCell<FeatureState>; 15],
-    pending: [Cell<bool>; 15],
+    states: [RefCell<FeatureState>; 16],
+    pending: [Cell<bool>; 16],
     resetting: bool,
     #[cfg(test)]
-    injected: [Cell<bool>; 15],
+    injected: [Cell<bool>; 16],
     #[cfg(test)]
-    pub reset_count: [usize; 15],
+    pub reset_count: [usize; 16],
 }
 impl Features {
     pub fn new(config: &Config) -> Self {
         let m = &config.modules;
         let enabled = [m.dock && config.dock.enabled, m.bar && config.bar.enabled,
             m.overview, m.tiling, m.snap, m.switcher, m.gestures, m.window_gestures,
-            m.resize_mode, m.animations, m.decorations, m.ipc, m.screencopy, m.launcher, m.notifications];
+            m.resize_mode, m.animations, m.decorations, m.ipc, m.screencopy, m.launcher, m.notifications, m.classic];
         Self {
             states: enabled.map(|on| RefCell::new(if on { FeatureState::Enabled } else { FeatureState::Disabled })),
             pending: std::array::from_fn(|_| Cell::new(false)), resetting: false,
             #[cfg(test)] injected: std::array::from_fn(|_| Cell::new(false)),
-            #[cfg(test)] reset_count: [0; 15],
+            #[cfg(test)] reset_count: [0; 16],
         }
     }
     pub fn on(&self, id: Feature) -> bool { matches!(*self.states[id as usize].borrow(), FeatureState::Enabled) }
@@ -143,6 +143,7 @@ impl Gavno {
             Feature::Screencopy => self.protocols.screencopy.fail_pending(),
             Feature::Launcher => self.launcher = Default::default(),
             Feature::Notifications => self.reset_notifications(),
+            Feature::Classic => self.reset_classic(),
         }
     }
     fn drop_feature_state(&mut self, id: Feature) {
@@ -160,6 +161,7 @@ impl Gavno {
             Feature::Screencopy => self.protocols.screencopy.fail_pending(),
             Feature::Launcher => self.launcher = Default::default(),
             Feature::Notifications => self.reset_notifications(),
+            Feature::Classic => self.reset_classic(),
             Feature::Snap | Feature::Tiling => (),
         }
     }

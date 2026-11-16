@@ -49,6 +49,7 @@ render_elements! {
     Space = SpaceRenderElements<GlesRenderer, WaylandSurfaceRenderElement<GlesRenderer>>,
     Surface = WaylandSurfaceRenderElement<GlesRenderer>,
     Memory = MemoryRenderBufferRenderElement<GlesRenderer>,
+    Desktop = crate::classic::cache::CachedElement,
     Window = crate::decor::WindowElement,
     Shader = smithay::backend::renderer::gles::element::PixelShaderElement,
     Thumbnail = crate::overview::ThumbnailElement,
@@ -128,12 +129,14 @@ pub fn output_elements(
     features: &mut Features,
     osd: &mut crate::topbar::osd::Osd,
     launcher: &mut crate::launcher::Launcher,
+    classic: &mut crate::classic::Classic,
 ) -> Vec<GavnoRenderElement> {
     let mut elements: Vec<GavnoRenderElement> = Vec::new();
     let Some(output_geo) = space.output_geometry(output) else {
         return elements;
     };
     let scale = Scale::from(output.current_scale().fractional_scale());
+    topbar.shell_height = output_geo.size.h;
 
     // Locked sessions expose only locker surfaces; the normal clear color is
     // the fail-closed fallback when the locker has no buffer or has crashed.
@@ -216,10 +219,19 @@ pub fn output_elements(
         return elements;
     }
 
+    let p = features.call(Feature::Classic, 0.0, || {
+        classic.advance(time);
+        classic.progress.value.clamp(0.0, 1.0)
+    });
+    topbar.shell_progress = p;
+    topbar.shell_height = output_geo.size.h;
+    dock.shell_progress = p;
+    window_decor.classic = features.on(Feature::Classic) && classic.settled == crate::classic::ShellMode::Classic;
+    window_decor.pointer = pointer_pos;
     elements.extend(features.call(Feature::ResizeMode, Vec::new(), || overlay.resize_mode.elements(renderer, output, output_geo, scale.x)));
     if !locks.locked && !lock.internal() {
         elements.extend(features.call(Feature::Notifications, Vec::new(), || {
-            topbar.notifications.borrow_mut().elements(renderer, output, output_geo.size, scale.x, time, &config.dock.icon_theme)
+            topbar.notifications.borrow_mut().elements(renderer, output, output_geo.size, scale.x, time, &config.dock.icon_theme, topbar.shell_progress)
         }));
     }
     let accent = topbar.accent();
@@ -230,9 +242,14 @@ pub fn output_elements(
     let shell_visible = !space.elements().any(|w| crate::window_mode::mode_state(w).mode == crate::window_mode::WindowMode::Fullscreen
         && space.element_location(w).is_some_and(|p| output_geo.contains(p)));
     let zone = layer_map_for_output(output).non_exclusive_zone();
-    let work_area = crate::dock::reserve(smithay::utils::Rectangle::new(zone.loc + output_geo.loc, zone.size),
+    let work_area = crate::classic::reserve(smithay::utils::Rectangle::new(zone.loc + output_geo.loc, zone.size),
+        if features.on(Feature::Classic) { classic.settled } else { crate::classic::ShellMode::Gavno },
         features.on(Feature::Bar) && config.bar.enabled, features.on(Feature::Dock) && config.dock.enabled, config.dock.autohide);
-    elements.extend(features.call(Feature::Bar, Vec::new(), || topbar.elements(renderer, output, output_geo.size.w, workspaces.get(output), time, shell_visible)));
+    features.call(Feature::Classic, (), || classic.desktop.append_overlay(renderer, output, &mut elements, scale.x));
+    let focused = classic.taskbar.focused.clone();
+    features.call(Feature::Classic, (), || classic.start.append(renderer, output, output_geo.size, time, config.classic.align, accent, &config.dock.icon_theme, &mut elements));
+    features.call(Feature::Classic, (), || classic.taskbar.append(renderer, output, output_geo.size, p, config.classic.align, focused.as_ref(), topbar.status(), accent, &config.dock.icon_theme, shell_visible, &mut elements));
+    elements.extend(features.call(Feature::Bar, Vec::new(), || topbar.elements(renderer, output, output_geo.size.w, workspaces.get(output), time, shell_visible || (p > 0.0 && topbar.menu.as_ref() == Some(output)))));
     elements.extend(features.call(Feature::Dock, Vec::new(), || dock.elements(renderer, output, output_geo.size, pointer_pos - output_geo.loc.to_f64(), time, shell_visible)));
     // Workspace ownership and transitions are core; overview only adds its zoom.
     let mut scene = if features.on(Feature::Overview) {
@@ -267,18 +284,26 @@ pub fn output_elements(
     elements.extend(decorated.unwrap_or_else(|| {
         plain_elements(renderer, space, output, scene.as_deref())
     }));
+    features.call(Feature::Classic, (), || classic.desktop.append(renderer, output, &mut elements, p, scale.x, accent, &config.dock.icon_theme));
+    elements.extend(background_elements(renderer, output));
     elements
 }
 
 /// Core surface rendering survives decoration failure, including workspace,
 /// overview and dock scene transforms. It needs no decoration shaders or caches.
-fn plain_elements(
+pub(crate) fn plain_elements(
     renderer: &mut GlesRenderer, space: &Space<Window>, output: &Output,
     scene: Option<&[crate::overview::SceneWindow]>,
 ) -> Vec<GavnoRenderElement> {
-    let Some(scene) = scene else {
-        return smithay::desktop::space::space_render_elements(renderer, [space], output, 1.0)
-            .unwrap_or_default().into_iter().map(GavnoRenderElement::Space).collect();
+    let fallback;
+    let scene = if let Some(scene) = scene { scene } else {
+        let origin = space.output_geometry(output).unwrap_or_default().loc;
+        fallback = space.elements().filter_map(|window| {
+            let location = space.element_location(window)?;
+            Some(crate::overview::SceneWindow { window: window.clone(), location,
+                rect: smithay::utils::Rectangle::new((location - origin).to_f64(), window.geometry().size.to_f64()) })
+        }).collect::<Vec<_>>();
+        &fallback
     };
     let scale = Scale::from(output.current_scale().fractional_scale());
     let layers = layer_map_for_output(output);
@@ -298,12 +323,27 @@ fn plain_elements(
                 }
             }
         }
-        for layer in layers.layers().rev().filter(|l| matches!(l.layer(), smithay::wayland::shell::wlr_layer::Layer::Top | smithay::wayland::shell::wlr_layer::Layer::Overlay) == upper) {
+        for layer in layers.layers().rev().filter(|l| upper && matches!(l.layer(), smithay::wayland::shell::wlr_layer::Layer::Top | smithay::wayland::shell::wlr_layer::Layer::Overlay)) {
             if let Some(geometry) = layers.layer_geometry(layer) {
                 result.extend(layer.render_elements::<WaylandSurfaceRenderElement<_>>(
                     renderer, geometry.loc.to_physical_precise_round(scale), scale, 1.0,
                 ).into_iter().map(GavnoRenderElement::Surface));
             }
+        }
+    }
+    result
+}
+
+fn background_elements(renderer: &mut GlesRenderer, output: &Output) -> Vec<GavnoRenderElement> {
+    use smithay::wayland::shell::wlr_layer::Layer;
+    let layers = layer_map_for_output(output);
+    let scale = Scale::from(output.current_scale().fractional_scale());
+    let mut result = Vec::new();
+    for layer in layers.layers().rev().filter(|l| matches!(l.layer(), Layer::Bottom | Layer::Background)) {
+        if let Some(geometry) = layers.layer_geometry(layer) {
+            result.extend(layer.render_elements::<WaylandSurfaceRenderElement<_>>(
+                renderer, geometry.loc.to_physical_precise_round(scale), scale, 1.0,
+            ).into_iter().map(GavnoRenderElement::Surface));
         }
     }
     result

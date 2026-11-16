@@ -365,6 +365,8 @@ struct Cache {
     trackers: HashMap<Id, Tracker>,
     border: ShaderBox,
     shadows: [ShaderBox; 2],
+    titlebar: crate::topbar::Canvas,
+    icons: crate::icons::Icons,
 }
 struct WindowCache {
     window: Window,
@@ -379,6 +381,8 @@ pub struct WindowDecor {
     caches: Vec<WindowCache>,
     stack: Vec<Window>,
     focused: Option<Window>,
+    pub classic: bool,
+    pub pointer: smithay::utils::Point<f64, smithay::utils::Logical>,
 }
 
 fn transformed_rect(
@@ -570,11 +574,7 @@ impl WindowDecor {
             }
         }
         let (Some(programs), Some(shaders)) = (&self.programs, &self.shaders) else {
-            return smithay::desktop::space::space_render_elements(renderer, [space], output, 1.0)
-                .unwrap_or_default()
-                .into_iter()
-                .map(GavnoRenderElement::Space)
-                .collect();
+            return crate::render::plain_elements(renderer, space, output, scene);
         };
         let Some(output_geo) = space.output_geometry(output) else {
             return Vec::new();
@@ -754,7 +754,7 @@ impl WindowDecor {
                 .clamp(0.0, 1.0);
             let mode = mode_state(window).mode;
             let focused = self.focused.as_ref() == Some(window);
-            let radius = corner_radius(mode) * scale.x as f32;
+            let radius = if self.classic && crate::classic::decor::ssd(window) { 0.0 } else { corner_radius(mode) * scale.x as f32 };
             let Some(toplevel) = window.toplevel() else {
                 continue;
             };
@@ -828,10 +828,28 @@ impl WindowDecor {
             // Popups must remain above the parent's focus ring.
             result.extend(content.drain(..popup_count).map(GavnoRenderElement::Window));
             result.extend(border);
+            if self.classic && mode != WindowMode::Fullscreen && crate::classic::decor::ssd(window) {
+                let r = crate::classic::decor::title_rect(shown.to_i32_round());
+                let c = &mut cache.titlebar;
+                c.begin(renderer, scale.x);
+                c.alpha = opacity;
+                c.rect(r, 0.0, [0.065, 0.075, 0.10, 1.0], 0.0, crate::topbar::LINE);
+                let (title, app) = crate::overlay::window_labels(window);
+                // App IDs commonly double as themed icon names; use the same fallback as the dock.
+                c.icon(renderer, &mut cache.icons, &[&app, "application-x-executable-symbolic"], "Adwaita", crate::topbar::geometry::rect(r.loc.x + 8, r.loc.y + 7, 18, 18));
+                c.label(renderer, &title, r.loc.x + 34, r.loc.y + 9, r.size.w - 180, 12.0);
+                let hover = crate::classic::decor::part(r, self.pointer - output_geo.loc.to_f64());
+                for (i, (part, glyph)) in [(crate::classic::decor::Part::Minimize, "−"), (crate::classic::decor::Part::Maximize, if mode == WindowMode::Maximized { "❐" } else { "□" }), (crate::classic::decor::Part::Close, "×")].into_iter().enumerate() {
+                    let button = crate::topbar::geometry::rect(r.loc.x + r.size.w - 138 + i as i32 * 46, r.loc.y, 46, 32);
+                    if hover == Some(part) { c.rect(button, 0.0, if part == crate::classic::decor::Part::Close { [0.85, 0.12, 0.16, 1.0] } else { [1.0, 1.0, 1.0, 0.12] }, 0.0, crate::topbar::LINE); }
+                    c.label(renderer, glyph, button.loc.x + 17, button.loc.y + 7, 24, 16.0);
+                }
+                result.extend(c.finish());
+            }
             result.extend(content.into_iter().map(GavnoRenderElement::Window));
             result.extend(shadow);
         }
-        append_layers(&mut result, renderer, false);
+
         result
     }
 }

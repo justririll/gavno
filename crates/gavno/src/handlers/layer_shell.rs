@@ -99,7 +99,8 @@ impl Gavno {
     pub fn work_area(&self, output: &Output) -> Rectangle<i32, Logical> {
         let geo = self.space.output_geometry(output).unwrap_or_default();
         let zone = layer_map_for_output(output).non_exclusive_zone();
-        crate::dock::reserve(Rectangle::new(zone.loc + geo.loc, zone.size),
+        crate::classic::reserve(Rectangle::new(zone.loc + geo.loc, zone.size),
+            if self.greeter.is_none() && self.features.on(crate::module::Feature::Classic) { self.classic.settled } else { crate::classic::ShellMode::Gavno },
             self.greeter.is_none() && (self.features.on(crate::module::Feature::Bar) && self.config.bar.enabled),
             self.greeter.is_none() && (self.features.on(crate::module::Feature::Dock) && self.config.dock.enabled), self.config.dock.autohide)
     }

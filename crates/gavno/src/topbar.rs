@@ -124,6 +124,7 @@ pub struct Canvas {
     pub alpha: f32,
     pub zoom: f64,
     pub anchor: Point<f64, Logical>,
+    pub offset: Point<f64, Logical>,
     #[cfg(test)]
     drawn: Vec<Rect>,
 }
@@ -140,6 +141,7 @@ impl Default for Canvas {
             alpha: 1.0,
             zoom: 1.0,
             anchor: (0.0, 0.0).into(),
+            offset: (0.0, 0.0).into(),
             #[cfg(test)]
             drawn: Vec::new(),
         }
@@ -150,6 +152,7 @@ impl Canvas {
         self.scale = scale;
         self.alpha = 1.0;
         self.zoom = 1.0;
+        self.offset = (0.0, 0.0).into();
         self.used = 0;
         #[cfg(test)]
         self.drawn.clear();
@@ -260,8 +263,8 @@ impl Canvas {
     }
     pub fn mapped(&self, r: Rect) -> Rect {
         rect(
-            (self.anchor.x + (r.loc.x as f64 - self.anchor.x) * self.zoom).round() as i32,
-            (self.anchor.y + (r.loc.y as f64 - self.anchor.y) * self.zoom).round() as i32,
+            (self.offset.x + self.anchor.x + (r.loc.x as f64 - self.anchor.x) * self.zoom).round() as i32,
+            (self.offset.y + self.anchor.y + (r.loc.y as f64 - self.anchor.y) * self.zoom).round() as i32,
             (r.size.w as f64 * self.zoom).round() as i32,
             (r.size.h as f64 * self.zoom).round() as i32,
         )
@@ -398,6 +401,8 @@ struct BarView {
     popover: Option<PopoverLayout>,
 }
 pub struct TopBar {
+    pub shell_progress: f64,
+    pub shell_height: i32,
     pub notifications: crate::notify::Shared,
     pub notification_history: Vec<crate::notify::History>,
     pub notification_dnd: bool,
@@ -428,6 +433,8 @@ impl Default for TopBar {
     fn default() -> Self {
         let today = theme::LocalTime::now();
         Self {
+            shell_progress: 0.0,
+            shell_height: 0,
             notifications: Default::default(),
             notification_history: Vec::new(),
             notification_dnd: false,
@@ -457,6 +464,7 @@ impl Default for TopBar {
     }
 }
 impl TopBar {
+    pub fn status(&self) -> &status::Snapshot { &self.status }
     pub fn accent(&self) -> [f32; 4] {
         self.accent
     }
@@ -523,9 +531,18 @@ impl TopBar {
             v.popover = None;
             return Vec::new();
         }
+        if self.shell_progress >= 0.999 && self.menu.is_none() && !self.opening.is_active() {
+            if v.visible { v.canvas=Canvas::default(); }
+            v.visible=false; v.hits.clear(); v.popover=None;
+            for dot in &mut v.dots { dot.jump(dot.target); }
+            return Vec::new();
+        }
         let c = &mut v.canvas;
         c.begin(renderer, output.current_scale().fractional_scale());
+        c.offset.y = -self.shell_progress * PANEL as f64;
+        c.alpha = (1.0 - self.shell_progress) as f32;
         v.hits.clear();
+        if self.shell_progress < 0.999 {
         c.rect(rect(0, 0, width, PANEL), 0.0, GLASS, 0.0, LINE);
         c.rect(
             rect(0, PANEL - 1, width, 1),
@@ -670,16 +687,25 @@ impl TopBar {
             l.battery,
             false,
         );
+        if self.shell_progress >= 0.999 { v.hits.clear(); }
         v.layout = Some(l);
+        } else {
+            v.layout=None;
+            for dot in &mut v.dots { dot.jump(dot.target); }
+        }
         v.popover = None;
         // Keep drawing the closing panel until its spring settles.
         if (self.popover_output.as_ref() == Some(output)) && self.opening.value > 0.001 {
-            let p = if self.popover == Popover::Quick {
+            let mut p = if self.popover == Popover::Quick {
                 PopoverLayout::quick_notifications(width, self.status.brightness.is_some(), self.notifications_active)
             } else {
                 if self.notifications_active { PopoverLayout::calendar_notifications(width, self.notification_history.len()) }
                 else { PopoverLayout::calendar(width) }
             };
+            if self.shell_progress > 0.0 {
+                p.anchor_bottom(width, self.shell_height, crate::classic::TASKBAR_HEIGHT, self.shell_progress);
+            }
+            c.offset = (0.0, 0.0).into();
             c.alpha = self.opening.value.clamp(0.0, 1.0) as f32;
             c.zoom = 0.94 + 0.06 * self.opening.value;
             c.anchor = (
@@ -1030,6 +1056,11 @@ impl Gavno {
     /// Re-evaluate visibility after protocol/input events; no source wakes a hidden panel.
     pub fn refresh_shell(&mut self) {
         let outputs: Vec<_> = self.space.outputs().cloned().collect();
+        let progress = self.shell_progress();
+        self.topbar.shell_progress = progress;
+        self.dock.shell_progress = progress;
+        self.window_decor.classic = self.features.on(crate::module::Feature::Classic) && self.classic.settled == crate::classic::ShellMode::Classic;
+        self.window_decor.pointer = self.pointer_location();
         self.guard(crate::module::Feature::Dock, (), |gv| {
             gv.dock.refresh(&gv.config.dock, &gv.workspaces, &gv.space, gv.start_time.elapsed());
             gv.dock.drop_stale_menu(&outputs);
@@ -1037,6 +1068,16 @@ impl Gavno {
         if self.topbar.menu.as_ref().is_some_and(|o| !outputs.contains(o)) {
             self.topbar.menu = None;
         }
+        self.guard(crate::module::Feature::Classic, (), |gv| {
+            let pins = gv.config.classic.pinned.as_ref().unwrap_or(&gv.config.dock.pinned);
+            if gv.classic.mode == crate::classic::ShellMode::Classic || gv.shell_progress() > 0.001 {
+                gv.classic.taskbar.focused = gv.focused_window();
+                gv.classic.taskbar.refresh(&mut gv.dock, pins, &outputs);
+            } else {
+                if let Some(t)=gv.classic.taskbar.hover_timer.take() { gv.loop_handle.remove(t); }
+                gv.classic.taskbar.release(); gv.classic.start.release();
+            }
+        });
         self.refresh_bar_status(outputs.iter().any(|o| self.shell_visible(o)) && self.features.on(crate::module::Feature::Bar));
         self.guard(crate::module::Feature::Bar, (), |gv| gv.refresh_bar(&outputs));
     }

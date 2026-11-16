@@ -216,6 +216,7 @@ fn disabled_feature_bindings_reach_the_real_client() {
             Feature::Screencopy => m.screencopy = false,
             Feature::Launcher => m.launcher = false,
             Feature::Notifications => m.notifications = false,
+            Feature::Classic => m.classic = false,
         }
         h.gv.features = Features::new(&h.gv.config);
         h.gv.focus_window(Some(&w));
@@ -260,4 +261,32 @@ fn tiling_panic_inside_pointer_grab_recovers_without_reentering_the_seat() {
     assert!(!pointer.is_grabbed());
     assert!(h.gv.pointer_buttons.is_empty());
     for w in [a, b] { assert!(h.gv.space.element_location(&w).is_some()); assert!(!h.gv.tiled(&w)); }
+}
+
+#[test]
+fn classic_mod_tap_works_without_pointer_gestures_and_scroll_cancels_it() {
+    let (mut h, _) = setup();
+    h.gv.config.mod_key=crate::config::ModKey::Super;
+    h.gv.config.modules.gestures=false;
+    h.gv.features=crate::module::Features::new(&h.gv.config);
+    h.gv.set_shell_mode(crate::classic::ShellMode::Classic);
+    h.gv.classic.progress.jump(1.0);h.gv.settle_classic();
+    h.gv.on_keyboard::<TestBackend>(Key(133,KeyState::Pressed));
+    h.gv.on_keyboard::<TestBackend>(Key(133,KeyState::Released));
+    assert!(h.gv.classic.start.open);
+    h.gv.classic.start.close();
+    h.gv.on_keyboard::<TestBackend>(Key(133,KeyState::Pressed));
+    h.gv.on_pointer_axis::<TestBackend>(Scroll);
+    h.gv.on_keyboard::<TestBackend>(Key(133,KeyState::Released));
+    assert!(!h.gv.classic.start.open);
+}
+
+#[test]
+fn gavno_mod_tap_opens_launcher_and_run_style_skips_application_scan() {
+    let (mut h, _) = setup();h.gv.config.mod_key=crate::config::ModKey::Super;
+    h.gv.on_keyboard::<TestBackend>(Key(133,KeyState::Pressed));
+    h.gv.on_keyboard::<TestBackend>(Key(133,KeyState::Released));
+    assert!(h.gv.launcher.open);assert!(!h.gv.overview.open());
+    h.gv.close_launcher();h.gv.launcher=Default::default();
+    h.gv.toggle_run_launcher();assert!(h.gv.launcher.open&&h.gv.launcher.run_style);
 }

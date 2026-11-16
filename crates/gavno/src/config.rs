@@ -37,6 +37,7 @@ pub struct Config {
     /// Gap between a new window and the work area edge, logical px.
     pub gap: i32,
     pub modules: ModulesConfig,
+    pub classic: crate::classic::ClassicConfig,
     pub dock: DockConfig,
     pub bar: BarConfig,
     pub tiling: TilingConfig,
@@ -116,6 +117,7 @@ struct FileConfig {
     output: Output,
     keyboard: Keyboard,
     modules: ModulesConfig,
+    classic: crate::classic::ClassicConfig,
     dock: DockConfig,
     bar: BarConfig,
     tiling: TilingConfig,
@@ -183,7 +185,7 @@ impl Config {
         // Capture unknown fields during deserialization, so this list cannot drift from the schema.
         let mut unknown = Vec::new();
         for (prefix, extra) in
-            [("", &file.unknown), ("output.", &file.output.unknown), ("keyboard.", &file.keyboard.unknown), ("dock.", &file.dock.unknown), ("bar.", &file.bar.unknown), ("tiling.", &file.tiling.unknown), ("notifications.", &file.notifications.unknown), ("lock.", &file.lock.unknown), ("modules.", &file.modules.unknown)]
+            [("", &file.unknown), ("output.", &file.output.unknown), ("keyboard.", &file.keyboard.unknown), ("classic.", &file.classic.unknown), ("dock.", &file.dock.unknown), ("bar.", &file.bar.unknown), ("tiling.", &file.tiling.unknown), ("notifications.", &file.notifications.unknown), ("lock.", &file.lock.unknown), ("modules.", &file.modules.unknown)]
         {
             unknown.extend(extra.keys().map(|key| format!("{prefix}{key}")));
         }
@@ -259,6 +261,7 @@ impl Config {
                 ),
                 gap: gap.clamp(0, 64) as i32,
                 modules: file.modules,
+                classic: file.classic,
                 dock: file.dock,
                 bar: file.bar,
                 tiling: file.tiling,
@@ -330,6 +333,7 @@ options = "caps:escape"
             xkb_variant: "".into(),
             xkb_options: Some("grp:alt_shift_toggle".into()),
             gap: 12,
+            classic: Default::default(),
             dock: Default::default(),
             bar: Default::default(),
             tiling: Default::default(),
@@ -369,6 +373,7 @@ options = "caps:escape"
             xkb_variant: "nodeadkeys".into(),
             xkb_options: Some("caps:escape".into()),
             gap: 20,
+            classic: Default::default(),
             dock: Default::default(),
             bar: Default::default(),
             tiling: Default::default(),
@@ -537,6 +542,7 @@ options = "caps:escape"
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct ModulesConfig {
+    pub classic: bool,
     pub dock: bool,
     pub bar: bool,
     pub overview: bool,
@@ -557,7 +563,7 @@ pub struct ModulesConfig {
 }
 impl Default for ModulesConfig {
     fn default() -> Self {
-        Self { dock: true, bar: true, overview: true, tiling: true, snap: true, switcher: true, gestures: true, window_gestures: true, resize_mode: true, animations: true, decorations: true, ipc: true, screencopy: true, launcher: true, notifications: true, unknown: Default::default() }
+        Self { classic: true, dock: true, bar: true, overview: true, tiling: true, snap: true, switcher: true, gestures: true, window_gestures: true, resize_mode: true, animations: true, decorations: true, ipc: true, screencopy: true, launcher: true, notifications: true, unknown: Default::default() }
     }
 }
 

@@ -4,7 +4,7 @@
 //! minute), so each string is rasterized once per (text, size, weight,
 //! scale) and cached as a GPU-uploadable buffer.
 
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{collections::{HashMap, HashSet}, path::PathBuf, sync::Arc};
 
 use fontdue::{
     layout::{CoordinateSystem, Layout, LayoutSettings, TextStyle},
@@ -84,7 +84,7 @@ pub struct TextImage {
     pub logical_h: i32,
 }
 
-#[derive(Hash, PartialEq, Eq)]
+#[derive(Clone, Hash, PartialEq, Eq)]
 struct Key {
     text: String,
     size_milli: u32,
@@ -100,6 +100,8 @@ pub struct TextRenderer {
     /// Scale of the last render; `measure` lays text out at it, because the
     /// rasterizer snaps every glyph to whole physical pixels.
     measure_scale: f64,
+    /// Opt-in scopes used by cached shells to release obsolete raster images.
+    frame_keys: Option<HashSet<Key>>,
 }
 
 impl TextRenderer {
@@ -108,8 +110,19 @@ impl TextRenderer {
             fonts: HashMap::new(),
             cache: HashMap::new(),
             measure_scale: 1.0,
+            frame_keys: None,
         }
     }
+
+    pub(crate) fn begin_frame_cache(&mut self) {
+        self.frame_keys = Some(HashSet::new());
+    }
+    pub(crate) fn end_frame_cache(&mut self) {
+        if let Some(keys) = self.frame_keys.take() {
+            self.cache.retain(|key, _| keys.contains(key));
+        }
+    }
+    pub(crate) fn clear_images(&mut self) { self.cache.clear(); }
 
     fn font(&mut self, weight: Weight) -> Option<Arc<Font>> {
         if let Some(f) = self.fonts.get(&weight) {
@@ -164,6 +177,7 @@ impl TextRenderer {
             tracking_milli: (style.tracking * 1000.0) as i32,
             scale_milli: (scale * 1000.0) as u32,
         };
+        if let Some(keys) = &mut self.frame_keys { keys.insert(key.clone()); }
         if let Some(img) = self.cache.get(&key) {
             return Some(img.clone());
         }

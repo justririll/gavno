@@ -123,3 +123,25 @@ Notifications guard without changing backend rendering APIs. History and DND
 controls use snapshots in the bar and enter Notifications guards for mutations.
 A single one-shot expiry timer tracks the earliest visible deadline. Springs
 request frames only while a visible card enters or leaves.
+
+## Classic
+
+`[modules] classic = true` enables the alternate desktop shell, its taskbar,
+Start menu, Windows-style shortcuts and the three-finger mode gesture. Windows
+remain in their existing workspaces. The shell spring is shared by all outputs;
+it stops scheduling frames when settled. Start discovers applications on a
+worker thread. A Classic panic drops its menus, hover timer and mode state,
+returns to GAVNO and refits fixed windows. The bar supplies the existing status,
+quick settings, calendar, notification history and power actions; the dock
+supplies application identity and minimize/restore operations.
+
+Classic also owns the desktop directory watch, selection, icon positions and
+widgets. They use the primary output, below every window and above wallpaper
+layers. Inotify rescans are debounced and delivered through a calloop channel;
+workers exit after each operation. Widget clocks and system sampling use
+visible-only one-shot timers and stop when covered, locked or outside settled
+Classic. The existing tree has no now-playing module, so the optional `media`
+widget is skipped. Static desktop, taskbar and Start frames reuse prepared
+render handles without allocating or laying out text again. Leaving Classic
+releases desktop graphics, watchers and widget sources; panic recovery also
+removes them before returning to the normal shell.

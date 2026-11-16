@@ -141,3 +141,15 @@ It connects via `GAVNO_SOCK`, falling back to `$XDG_RUNTIME_DIR/gavno/ipc.sock`,
 and exposes the same five tools. Window tool arguments use numeric ids;
 compact screen output labels them `w3`, `w4`, etc. If GAVNO is unavailable,
 tool calls return an error while the MCP server stays running.
+
+### Classic desktop shell
+
+Swipe down with three fingers, or press `Mod+Shift+W`, to enter Classic: a
+Windows-style taskbar and Start menu around the same windows and workspaces.
+Swipe up to return. Classic includes Windows shortcuts, bottom-anchored quick
+settings and calendar, and a show-desktop toggle. Configure startup mode, pins,
+alignment and helper commands in [`[classic]`](docs/config.md#classic-shell);
+see the [gesture and shortcut tables](docs/keybinds.md#classic-mode). Desktop
+icons, selection, safe trash/rename actions and draggable clock/system widgets
+use the primary output. File updates use inotify, and widget refreshes stop
+when the desktop is covered or locked. Taskbar apps default to left alignment.

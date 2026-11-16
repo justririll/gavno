@@ -757,6 +757,7 @@ fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
         &mut gv.features,
         &mut gv.media.osd,
         &mut gv.launcher,
+        &mut gv.classic,
     );
     let mut result = draw_frame(surface, &mut gpu.renderer, &elements);
     if result.is_err() && surface.hdr.is_some() {
@@ -992,6 +993,7 @@ fn capture_output_with_cursor_state(gv: &mut Gavno, output: &Output) -> Option<(
         &mut gv.features,
         &mut gv.media.osd,
         &mut gv.launcher,
+        &mut gv.classic,
     );
     let bytes = render::capture_elements(&mut gpu.renderer, &elements, (mode.size.w, mode.size.h), scale)?;
     Some((mode.size.w as u32, mode.size.h as u32, bytes))
