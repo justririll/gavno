@@ -267,6 +267,7 @@ impl Gavno {
                 false
             }
         });
+        let refit = !orphaned.is_empty();
         if let Some(output) = outputs.first() {
             for (mut w, origin) in orphaned {
                 self.space.unmap_elem(&w.window);
@@ -286,6 +287,32 @@ impl Gavno {
                 if !crate::window_mode::mode_state(&w.window).minimized { self.space.map_element(w.window.clone(), w.location, false); }
                 owner.list.items[active].windows.push(w);
             }
+        }
+        // Windows mapped while no output existed never got an owner.
+        if let Some(output) = outputs.first() {
+            let homeless: Vec<_> = self
+                .space
+                .elements()
+                .filter(|w| self.workspaces.membership(w).is_none())
+                .map(|w| (w.clone(), self.space.element_location(w).unwrap_or_default()))
+                .collect();
+            for (window, location) in homeless {
+                let area = self.work_area(output);
+                let size = window.geometry().size;
+                let location = Point::from((
+                    location.x.clamp(area.loc.x, (area.loc.x + area.size.w - size.w).max(area.loc.x)),
+                    location.y.clamp(area.loc.y, (area.loc.y + area.size.h - size.h).max(area.loc.y)),
+                ));
+                self.space.map_element(window.clone(), location, false);
+                let owner = self.workspaces.ensure(output);
+                let active = owner.list.active;
+                owner.list.items[active].windows.push(OwnedWindow { window, location });
+            }
+        }
+        // Fixed-size windows moved off a removed output must fit the
+        // surviving one, including hidden and minimized windows.
+        if refit {
+            self.loop_handle.insert_idle(|gv| gv.refit_fixed_windows());
         }
         // A dragged window changes output ownership once its centre crosses outputs.
         let transfers: Vec<_> = self

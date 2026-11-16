@@ -300,7 +300,8 @@ impl Gavno {
             return;
         };
 
-        let Some(output) = self.active_output() else {
+        // Constrain to the parent window's output, not the pointer's.
+        let Some(output) = self.output_for_window(window).or_else(|| self.active_output()) else {
             return;
         };
         let Some(output_geo) = self.space.output_geometry(&output) else {

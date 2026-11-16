@@ -935,7 +935,9 @@ impl Gavno {
             .insert_source(
                 Timer::from_duration(Duration::from_secs(3)),
                 move |_, _, gv| {
-                    gv.dock.launches.retain(|l| l.id != expired);
+                    gv.guard(crate::module::Feature::Dock, (), |gv| {
+                        gv.dock.launches.retain(|l| l.id != expired);
+                    });
                     gv.queue_redraw_all();
                     TimeoutAction::Drop
                 },
@@ -1308,7 +1310,14 @@ impl Gavno {
                 self.space.map_element(m.window.clone(), m.location, false);
             }
         }
+        for launch in &mut self.dock.launches {
+            if let Some(token) = launch.timer.take() {
+                self.loop_handle.remove(token);
+            }
+        }
         self.dock = Default::default();
         self.reflow_tiling(false);
+        // The dock no longer reserves space: grow maximized/snapped windows.
+        self.loop_handle.insert_idle(|gv| gv.refit_fixed_windows());
     }
 }

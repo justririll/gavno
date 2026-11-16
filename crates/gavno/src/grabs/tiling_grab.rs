@@ -21,6 +21,9 @@ pub struct SplitterGrab {
     start_data: PointerGrabStartData<Gavno>,
     output: Output,
     splits: Vec<Splitter>,
+    /// Leaves of the tree when the drag started. Splits are addressed by
+    /// tree path, so a changed topology would retarget another split.
+    leaves: Option<Vec<Window>>,
 }
 impl SplitterGrab {
     pub fn new(start_data: PointerGrabStartData<Gavno>, output: Output, split: Splitter) -> Self {
@@ -28,6 +31,7 @@ impl SplitterGrab {
             start_data,
             output,
             splits: vec![split],
+            leaves: None,
         }
     }
     pub fn for_tile(
@@ -58,6 +62,7 @@ impl SplitterGrab {
                 start_data,
                 output,
                 splits,
+                leaves: None,
             })
         })
     }
@@ -70,6 +75,7 @@ impl PointerGrab<Gavno> for SplitterGrab {
         _focus: Option<(WlSurface, Point<f64, Logical>)>,
         event: &MotionEvent,
     ) {
+        let mut stale = false;
         data.guard(crate::module::Feature::Tiling, (), |data| {
             handle.motion(data, None, event);
             let delta = event.location - self.start_data.location;
@@ -77,6 +83,15 @@ impl PointerGrab<Gavno> for SplitterGrab {
             let gap = data.config.gap;
             let owner = data.workspaces.ensure(&self.output);
             let tree = &mut owner.list.items[owner.list.active].tree;
+            let leaves: Vec<Window> = tree.layout(area, gap).0.into_iter().map(|(w, _)| w).collect();
+            match &self.leaves {
+                None => self.leaves = Some(leaves),
+                Some(saved) if *saved != leaves => {
+                    stale = true;
+                    return;
+                }
+                Some(_) => {}
+            }
             let mut changed = false;
             for original in &self.splits {
                 let desired = original.cut.saturating_add(
@@ -113,6 +128,9 @@ impl PointerGrab<Gavno> for SplitterGrab {
                 data.reflow_tiling(false);
             }
         });
+        if stale {
+            handle.unset_grab(self, data, event.serial, event.time, true);
+        }
     }
     fn button(
         &mut self,

@@ -499,6 +499,10 @@ impl Gavno {
         }
 
         self.guard(Feature::Gestures, (), |gv| gv.gestures.super_tap.cancel());
+        // A new press ends any earlier synthetic release of this button.
+        if button_state == ButtonState::Pressed {
+            self.suppressed_buttons.retain(|b| *b != button);
+        }
         // Balance presses already delivered to Smithay before desktop UI can
         // consume their releases. Shell-only presses never enter this list.
         if button_state == ButtonState::Released && self.pointer_buttons.contains(&button) {

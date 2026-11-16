@@ -707,6 +707,13 @@ impl Gavno {
         self.window_gestures = Default::default();
         self.features.call(crate::module::Feature::Overview, (), || { self.overview.drag = None; });
         self.features.call(crate::module::Feature::Overview, (), || { self.overview.flick = None; });
+        // A swipe interrupted mid-way must not leave the overview half open
+        // and holding desktop input.
+        self.features.call(crate::module::Feature::Overview, (), || {
+            self.overview.held = false;
+            let target = self.overview.progress.target.round().clamp(0.0, 1.0);
+            self.overview.progress.jump(target);
+        });
         self.workspaces.moving_tile = None;
         for owner in &mut self.workspaces.outputs {
             owner.held = false;
@@ -722,13 +729,10 @@ impl Gavno {
         // access to idle there, since Smithay holds the pointer mutex.
         self.loop_handle.insert_idle(|gv| {
             if let Some(pointer) = gv.seat.get_pointer() {
+                // Release through the grab first, so the client that got the
+                // presses gets the releases, before focus is restored.
+                gv.release_held_buttons(&pointer);
                 pointer.unset_grab(gv, smithay::utils::SERIAL_COUNTER.next_serial(), gv.clock.now().as_millis() as u32);
-                for button in std::mem::take(&mut gv.pointer_buttons) {
-                    pointer.button(gv, &smithay::input::pointer::ButtonEvent {
-                        button, state: smithay::backend::input::ButtonState::Released,
-                        serial: smithay::utils::SERIAL_COUNTER.next_serial(), time: gv.clock.now().as_millis() as u32,
-                    });
-                }
                 pointer.frame(gv);
             }
         });
@@ -738,6 +742,24 @@ impl Gavno {
 }
 
 impl Gavno {
+    /// Sends releases for every button still held and swallows their later
+    /// physical releases, leaving client and Smithay button state balanced.
+    pub(crate) fn release_held_buttons(&mut self, pointer: &smithay::input::pointer::PointerHandle<Gavno>) {
+        let buttons = std::mem::take(&mut self.pointer_buttons);
+        for &button in &buttons {
+            pointer.button(self, &smithay::input::pointer::ButtonEvent {
+                button,
+                state: smithay::backend::input::ButtonState::Released,
+                serial: smithay::utils::SERIAL_COUNTER.next_serial(),
+                time: self.clock.now().as_millis() as u32,
+            });
+        }
+        for button in buttons {
+            if !self.suppressed_buttons.contains(&button) {
+                self.suppressed_buttons.push(button);
+            }
+        }
+    }
     pub(crate) fn super_tap_key(&mut self, code: u32, is_super: bool, pressed: bool, other_down: bool) -> bool {
         self.guard(crate::module::Feature::Gestures, false, |gv| gv.gestures.super_tap.key(code, is_super, pressed, other_down))
     }

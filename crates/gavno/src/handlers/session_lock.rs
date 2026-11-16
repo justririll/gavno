@@ -148,6 +148,10 @@ impl Gavno {
                     time: 0,
                 },
             );
+            // Buttons held when locking would stay pressed in Smithay (their
+            // releases are not delivered while locked); release them now,
+            // with no client focused.
+            self.release_held_buttons(&pointer);
             pointer.frame(self);
         }
         self.cursor_status = smithay::input::pointer::CursorImageStatus::default_named();
