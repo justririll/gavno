@@ -16,16 +16,6 @@ use std::{
     time::Duration,
 };
 
-/// GTK's software renderer for this small, mostly static window: it starts
-/// faster and skips the GPU driver's per-process memory (the resident polkit
-/// agent measured 48 MB PSS on Vulkan on the Snapdragon laptop; cairo needs
-/// about half). An explicit GSK_RENDERER still wins.
-fn prefer_software_rendering() {
-    if std::env::var_os("GSK_RENDERER").is_none() {
-        std::env::set_var("GSK_RENDERER", "cairo");
-    }
-}
-
 /// Cap glibc malloc at two arenas. Every helper thread (Mesa shader queues,
 /// D-Bus workers) otherwise gets its own arena; in the compositor that was
 /// ~58 MB of idle RSS. An explicit MALLOC_ARENA_MAX still wins.
@@ -41,7 +31,6 @@ fn limit_malloc_arenas() {
 
 fn main() -> glib::ExitCode {
     limit_malloc_arenas();
-    prefer_software_rendering();
     let app = adw::Application::builder()
         .application_id("org.gavno.Settings")
         .build();

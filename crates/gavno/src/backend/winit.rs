@@ -2,6 +2,7 @@
 
 use smithay::{
     backend::{
+        egl::EGLDevice,
         renderer::{damage::OutputDamageTracker, gles::GlesRenderer, ImportDma, ImportMemWl},
         winit::{self, WinitEvent, WinitGraphicsBackend},
     },
@@ -57,12 +58,23 @@ pub fn init(event_loop: &mut EventLoop<'static, Gavno>, gv: &mut Gavno) -> Resul
 
     gv.shm_state.update_formats(backend.renderer().shm_formats());
     let formats = backend.renderer().dmabuf_formats();
-    if let Ok(feedback) = DmabufFeedbackBuilder::new(0, formats.clone()).build() {
-        let _ = gv
-            .dmabuf_state
-            .create_global_with_default_feedback::<Gavno>(&gv.display_handle, &feedback);
-    } else {
-        let _ = gv.dmabuf_state.create_global::<Gavno>(&gv.display_handle, formats);
+    // Announce the GPU's render node: with main_device 0 clients cannot find
+    // the GPU, so GTK falls back to llvmpipe and Vulkan to lavapipe, whose
+    // buffers the host's EGL then fails to import.
+    let render_node = EGLDevice::device_for_display(backend.renderer().egl_context().display())
+        .ok()
+        .and_then(|device| device.try_get_render_node().ok().flatten());
+    let feedback = render_node.and_then(|node| DmabufFeedbackBuilder::new(node.dev_id(), formats.clone()).build().ok());
+    match feedback {
+        Some(feedback) => {
+            let _ = gv
+                .dmabuf_state
+                .create_global_with_default_feedback::<Gavno>(&gv.display_handle, &feedback);
+        }
+        None => {
+            tracing::warn!("no render node for the nested renderer; dmabuf without feedback");
+            let _ = gv.dmabuf_state.create_global::<Gavno>(&gv.display_handle, formats);
+        }
     }
 
     let damage_tracker = OutputDamageTracker::from_output(&output);
