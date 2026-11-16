@@ -3,6 +3,7 @@ use super::*;
 fn notice(id: u32) -> Notice {
     Notice {
         id,
+        gen: id as u64,
         app: "Test".into(),
         icon: String::new(),
         desktop: String::new(),
@@ -67,7 +68,7 @@ fn expiry_persistence_critical_and_no_hidden_timer() {
     assert_eq!(n.next_expiry(), Some(Duration::from_secs(5)));
     n.update(Duration::from_secs(6), false, 3);
     assert_eq!(visible(&n), [2, 3]);
-    assert_eq!(rx.try_recv().unwrap(), Signal::Closed(1, 1));
+    assert_eq!(rx.try_recv().unwrap(), Signal::Closed(1, 1, 1));
     assert_eq!(n.next_expiry(), None);
     n.update(Duration::from_secs(6), true, 3);
     assert!(visible(&n).is_empty());
@@ -94,7 +95,7 @@ fn dnd_suppresses_normal_but_not_critical_and_history_caps_at_fifty() {
     n.update(Duration::from_secs(6), false, 3);
     n.dnd = false;
     n.update(Duration::from_secs(6), false, 3);
-    assert_eq!(visible(&n), [56]);
+    assert_eq!(visible(&n), [25, 26, 27]);
 }
 #[test]
 fn supported_markup_decodes_once_and_preserves_literal_angles() {
@@ -106,6 +107,11 @@ fn supported_markup_decodes_once_and_preserves_literal_angles() {
     );
     assert_eq!(plain_body("1 < 2 &amp;lt; <broken"), "1 < 2 &lt; <broken");
     assert_eq!(plain_body("<script>text</script>"), "<script>text</script>");
+    assert_eq!(plain_body(&"<".repeat(200_000)).len(), 200_000);
+    assert_eq!(
+        plain_body(&format!("{}>", "<".repeat(200_000))).len(),
+        200_001
+    );
 }
 
 fn harness() -> (crate::state::tests::Harness, Output) {
@@ -155,8 +161,11 @@ fn channel_card_hit_click_action_and_lock_suppression() {
     assert!(h.gv.shell_contains(p));
     assert!(h.gv.notifications.borrow().contains(&output, p));
     assert!(h.gv.notification_button(p, 0x110, true));
-    assert_eq!(rx.try_recv().unwrap(), Signal::Action(1, "default".into()));
-    assert_eq!(rx.try_recv().unwrap(), Signal::Closed(1, 2));
+    assert_eq!(
+        rx.try_recv().unwrap(),
+        Signal::Action(1, 1, "default".into())
+    );
+    assert_eq!(rx.try_recv().unwrap(), Signal::Closed(1, 1, 2));
     assert!(h.gv.notification_button(p, 0x110, true));
     assert!(rx.try_recv().is_err());
     tx.send(Request::Notify(notice(2))).unwrap();
@@ -207,22 +216,55 @@ fn panic_drops_ui_but_channel_remains_usable() {
 }
 
 #[test]
-fn hidden_queue_ages_without_an_expiry_timer() {
+fn queued_countdown_starts_on_first_show() {
     let mut n = model();
-    let mut persistent = notice(1);
-    persistent.timeout = 0;
-    n.receive(persistent, Duration::ZERO, 5000);
+    let (tx, rx) = mpsc::channel();
+    n.signals = Some(tx);
+    for id in 1..=3 {
+        let mut persistent = notice(id);
+        persistent.timeout = 0;
+        n.receive(persistent, Duration::ZERO, 5000);
+    }
+    n.receive(notice(4), Duration::ZERO, 5000);
+    n.update(Duration::ZERO, false, 3);
+    n.update(Duration::from_secs(60), false, 3);
+    assert_eq!(visible(&n), [1, 2, 3]);
+    assert_eq!(n.cards[3].ttl, Some(Duration::from_secs(5)));
+    assert_eq!(n.cards[3].expires, None);
+    assert_eq!(n.next_expiry(), None);
+    assert!(rx.try_recv().is_err());
+    n.close(1, None);
+    n.cards[0].spring.jump(0.0);
+    n.update(Duration::from_secs(60), false, 3);
+    assert_eq!(visible(&n), [2, 3, 4]);
+    assert_eq!(n.next_expiry(), Some(Duration::from_secs(65)));
+    n.update(Duration::from_secs(64), false, 3);
+    assert!(rx.try_recv().is_err());
+    n.update(Duration::from_secs(65), false, 3);
+    assert_eq!(rx.try_recv().unwrap(), Signal::Closed(4, 4, 1));
+}
+
+#[test]
+fn lock_and_slot_changes_preserve_remaining_countdown() {
+    let mut n = model();
+    n.receive(notice(1), Duration::ZERO, 5000);
     n.receive(notice(2), Duration::ZERO, 5000);
-    n.update(Duration::ZERO, false, 1);
-    assert_eq!(visible(&n), [1]);
+    n.update(Duration::ZERO, false, 3);
+    n.update(Duration::from_secs(2), true, 3);
+    assert_eq!(n.cards[0].ttl, Some(Duration::from_secs(3)));
+    assert_eq!(n.cards[0].expires, None);
     assert_eq!(n.next_expiry(), None);
-    n.update(Duration::from_secs(6), false, 1);
-    assert_eq!(n.cards.len(), 1);
-    n.receive(notice(3), Duration::from_secs(6), 5000);
-    n.update(Duration::from_secs(6), true, 3);
-    assert_eq!(n.next_expiry(), None);
-    n.update(Duration::from_secs(12), false, 3);
-    assert_eq!(visible(&n), [1]);
+    n.update(Duration::from_secs(60), false, 3);
+    assert_eq!(n.next_expiry(), Some(Duration::from_secs(63)));
+    n.update(Duration::from_secs(61), false, 1);
+    assert_eq!(n.cards[1].ttl, Some(Duration::from_secs(2)));
+    assert_eq!(n.cards[1].expires, None);
+    n.update(Duration::from_secs(62), false, 3);
+    assert_eq!(n.cards[1].expires, Some(Duration::from_secs(64)));
+    n.update(Duration::from_secs(63), false, 3);
+    assert_eq!(visible(&n), [2]);
+    n.update(Duration::from_secs(64), false, 3);
+    assert!(visible(&n).is_empty());
 }
 
 #[test]
@@ -258,8 +300,11 @@ fn action_buttons_and_close_use_card_geometry() {
         0x110,
         true
     ));
-    assert_eq!(rx.try_recv().unwrap(), Signal::Action(1, "action1".into()));
-    assert_eq!(rx.try_recv().unwrap(), Signal::Closed(1, 2));
+    assert_eq!(
+        rx.try_recv().unwrap(),
+        Signal::Action(1, 1, "action1".into())
+    );
+    assert_eq!(rx.try_recv().unwrap(), Signal::Closed(1, 1, 2));
     tx.send(Request::Notify(notice(2))).unwrap();
     h.event_loop.dispatch(Duration::ZERO, &mut h.gv).unwrap();
     settle(&mut h);
@@ -279,7 +324,7 @@ fn action_buttons_and_close_use_card_geometry() {
         0x110,
         true
     ));
-    assert_eq!(rx.try_recv().unwrap(), Signal::Closed(2, 2));
+    assert_eq!(rx.try_recv().unwrap(), Signal::Closed(2, 2, 2));
     assert!(rx.try_recv().is_err());
 }
 
@@ -297,6 +342,123 @@ fn one_shot_timer_expires_a_visible_card() {
     h.event_loop
         .dispatch(Duration::from_millis(100), &mut h.gv)
         .unwrap();
-    assert_eq!(rx.try_recv().unwrap(), Signal::Closed(1, 1));
+    assert_eq!(rx.try_recv().unwrap(), Signal::Closed(1, 1, 1));
     assert!(h.gv.notifications.borrow().timer.is_none());
+}
+
+#[test]
+fn pending_cap_keeps_visible_cards_and_prefers_noncritical() {
+    let mut n = model();
+    let (tx, rx) = mpsc::channel();
+    n.signals = Some(tx);
+    for id in 1..=40 {
+        let mut persistent = notice(id);
+        persistent.timeout = 0;
+        n.receive(persistent, Duration::ZERO, 5000);
+        n.update(Duration::ZERO, false, 3);
+    }
+    assert_eq!(n.cards.iter().filter(|c| !c.closing).count(), 32);
+    assert_eq!(visible(&n), [1, 2, 3]);
+    assert_eq!(
+        rx.try_iter().collect::<Vec<_>>(),
+        (4..=11)
+            .map(|id| Signal::Closed(id, id as u64, 4))
+            .collect::<Vec<_>>()
+    );
+
+    let mut n = model();
+    let (tx, rx) = mpsc::channel();
+    n.signals = Some(tx);
+    for id in 1..=32 {
+        let mut critical = notice(id);
+        critical.urgency = 2;
+        n.receive(critical, Duration::ZERO, 5000);
+        n.update(Duration::ZERO, false, 3);
+    }
+    n.receive(notice(33), Duration::ZERO, 5000);
+    assert_eq!(rx.try_recv().unwrap(), Signal::Closed(4, 4, 4));
+    n.receive(notice(34), Duration::ZERO, 5000);
+    assert_eq!(rx.try_recv().unwrap(), Signal::Closed(33, 33, 4));
+    assert_eq!(visible(&n), [1, 2, 3]);
+}
+
+#[test]
+fn history_actions_require_live_matching_generation_and_dismiss() {
+    let mut n = model();
+    let (tx, rx) = mpsc::channel();
+    n.signals = Some(tx);
+    n.receive(notice(1), Duration::ZERO, 5000);
+    n.history_action(1);
+    assert!(rx.try_recv().is_err());
+    n.registry
+        .lock()
+        .unwrap()
+        .live
+        .insert(1, (String::new(), 2));
+    n.history_action(1);
+    assert!(rx.try_recv().is_err());
+    assert!(!n.cards[0].closing);
+    n.registry
+        .lock()
+        .unwrap()
+        .live
+        .insert(1, (String::new(), 1));
+    n.history_action(1);
+    assert_eq!(
+        rx.try_recv().unwrap(),
+        Signal::Action(1, 1, "default".into())
+    );
+    assert_eq!(rx.try_recv().unwrap(), Signal::Closed(1, 1, 2));
+    assert!(n.cards[0].closing);
+    n.registry.lock().unwrap().live.remove(&1);
+    n.history_action(1);
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn replacement_resets_visible_and_queued_ttl_and_uses_latest_generation() {
+    let mut n = model();
+    let (tx, rx) = mpsc::channel();
+    n.signals = Some(tx);
+    n.receive(notice(1), Duration::ZERO, 5000);
+    n.receive(notice(2), Duration::ZERO, 5000);
+    n.update(Duration::ZERO, false, 1);
+    let mut replacement = notice(1);
+    replacement.gen = 100;
+    n.receive(replacement, Duration::from_secs(3), 7000);
+    assert_eq!(n.cards[0].expires, Some(Duration::from_secs(10)));
+    n.receive(notice(2), Duration::from_secs(3), 8000);
+    assert_eq!(n.cards[1].ttl, Some(Duration::from_secs(8)));
+    assert_eq!(n.cards[1].expires, None);
+    n.close(1, Some(2));
+    assert_eq!(rx.try_recv().unwrap(), Signal::Closed(1, 100, 2));
+}
+
+#[test]
+fn reset_disables_server_closes_outstanding_cards_and_retains_active() {
+    let (mut h, _) = harness();
+    let (tx, rx) = mpsc::channel();
+    {
+        let mut n = h.gv.notifications.borrow_mut();
+        n.active = true;
+        n.signals = Some(tx);
+        for id in 1..=3 {
+            n.receive(notice(id), Duration::ZERO, 5000);
+        }
+        n.close(1, Some(2));
+    }
+    assert_eq!(rx.try_recv().unwrap(), Signal::Closed(1, 1, 2));
+    h.gv.reset_notifications();
+    assert_eq!(
+        rx.try_iter().collect::<Vec<_>>(),
+        [Signal::Closed(2, 2, 4), Signal::Closed(3, 3, 4)]
+    );
+    let n = h.gv.notifications.borrow();
+    assert!(!n.enabled.load(Ordering::Acquire));
+    assert!(n.active);
+    assert!(n.cards.is_empty());
+    assert!(n.history.is_empty());
+    drop(n);
+    h.gv.refresh_notifications();
+    assert!(h.gv.notifications.borrow().enabled.load(Ordering::Acquire));
 }

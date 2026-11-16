@@ -17,13 +17,23 @@ use smithay::{
     },
     utils::{Logical, Point},
 };
-use std::{cell::RefCell, collections::VecDeque, rc::Rc, sync::mpsc, time::Duration};
+use std::{
+    cell::RefCell,
+    collections::VecDeque,
+    rc::Rc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc,
+    },
+    time::Duration,
+};
 
 pub type Shared = Rc<RefCell<Notifications>>;
 
 #[derive(Clone, Debug)]
 pub struct Notice {
     pub id: u32,
+    pub gen: u64,
     pub app: String,
     pub icon: String,
     pub desktop: String,
@@ -41,18 +51,18 @@ pub struct History {
 #[derive(Debug)]
 pub enum Request {
     Notify(Notice),
-    Close(u32),
+    Close(u32, u64),
     Active,
 }
 #[derive(Debug, PartialEq, Eq)]
 pub enum Signal {
-    Closed(u32, u32),
-    Action(u32, String),
-    HistoryAction(u32),
+    Closed(u32, u64, u32),
+    Action(u32, u64, String),
 }
 
 struct Card {
     notice: Notice,
+    ttl: Option<Duration>,
     expires: Option<Duration>,
     hovered: Option<Duration>,
     visible: bool,
@@ -73,6 +83,8 @@ pub struct Notifications {
     /// when needed instead of on every input event.
     history_rev: u64,
     synced_rev: Option<u64>,
+    enabled: Arc<AtomicBool>,
+    registry: dbus::Live,
     active: bool,
     started: bool,
     blocked: bool,
@@ -92,17 +104,16 @@ pub fn plain_body(body: &str) -> String {
     while let Some(i) = rest.find('<') {
         out.push_str(&rest[..i]);
         rest = &rest[i..];
-        if let Some(end) = rest.find('>') {
-            let tag = rest[1..end].trim();
-            if matches!(tag, "b" | "/b" | "i" | "/i" | "u" | "/u" | "a" | "/a")
-                || tag.starts_with("a ")
-            {
-                rest = &rest[end + 1..];
-                continue;
-            }
+        let Some(end) = rest.find('>') else {
+            break;
+        };
+        let tag = rest[1..end].trim();
+        if !(matches!(tag, "b" | "/b" | "i" | "/i" | "u" | "/u" | "a" | "/a")
+            || tag.starts_with("a "))
+        {
+            out.push_str(&rest[..=end]);
         }
-        out.push('<');
-        rest = &rest[1..];
+        rest = &rest[end + 1..];
     }
     out.push_str(rest);
     let mut decoded = String::new();
@@ -148,7 +159,6 @@ impl Notifications {
                 n.timeout as u64
             }))
         };
-        let expires = ttl.map(|t| now.saturating_add(t));
         let clock = crate::ui::theme::LocalTime::now();
         let history = History {
             notice: n.clone(),
@@ -166,12 +176,25 @@ impl Notifications {
         {
             card.notice = n;
             card.lines = None;
-            card.expires = expires;
+            card.ttl = ttl;
+            card.expires = ttl.filter(|_| card.visible).map(|t| now.saturating_add(t));
             card.hovered = card.hovered.map(|_| now);
         } else {
+            if self.cards.iter().filter(|c| !c.closing).count() >= 32 {
+                let victim = self
+                    .cards
+                    .iter()
+                    .find(|c| !c.closing && !c.visible && c.notice.urgency != 2)
+                    .or_else(|| self.cards.iter().find(|c| !c.closing && !c.visible))
+                    .map(|c| c.notice.id);
+                if let Some(id) = victim {
+                    self.close(id, Some(4));
+                }
+            }
             self.cards.push(Card {
                 notice: n,
-                expires,
+                ttl,
+                expires: None,
                 hovered: None,
                 visible: false,
                 closing: false,
@@ -196,8 +219,9 @@ impl Notifications {
             card.closing = true;
             card.spring.set(0.0);
             card.rect = None;
+            let gen = card.notice.gen;
             if let Some(reason) = reason {
-                self.emit(Signal::Closed(id, reason));
+                self.emit(Signal::Closed(id, gen, reason));
             }
         }
     }
@@ -207,21 +231,17 @@ impl Notifications {
             .iter()
             .map(|c| (c.notice.id, c.visible, c.closing))
             .collect();
-        // A hidden card cannot remain hovered. Preserve time already paused,
-        // then let queued cards age without installing hidden timers.
-        for card in &mut self.cards {
-            if blocked || (self.dnd && card.notice.urgency != 2) {
-                if let Some(start) = card.hovered.take() {
-                    card.expires = card
-                        .expires
-                        .map(|t| t.saturating_add(now.saturating_sub(start)));
-                }
-            }
-        }
+        // Pause newly hidden cards before checking their deadlines.
+        self.set_visibility(now, blocked, max_visible);
         let expired: Vec<_> = self
             .cards
             .iter()
-            .filter(|c| !c.closing && c.hovered.is_none() && c.expires.is_some_and(|t| t <= now))
+            .filter(|c| {
+                c.visible
+                    && !c.closing
+                    && c.hovered.is_none()
+                    && c.expires.is_some_and(|t| t <= now)
+            })
             .map(|c| c.notice.id)
             .collect();
         for id in expired {
@@ -230,6 +250,16 @@ impl Notifications {
         self.cards
             .retain(|c| !(c.closing && (!c.visible || !c.spring.is_active())));
         self.blocked = blocked;
+        // Finished closing animations may have freed a visible slot.
+        self.set_visibility(now, blocked, max_visible);
+        before
+            != self
+                .cards
+                .iter()
+                .map(|c| (c.notice.id, c.visible, c.closing))
+                .collect::<Vec<_>>()
+    }
+    fn set_visibility(&mut self, now: Duration, blocked: bool, max_visible: usize) {
         let mut slots = 0;
         for card in &mut self.cards {
             let visible = self.active
@@ -238,6 +268,18 @@ impl Notifications {
                 && slots < max_visible.clamp(1, 3);
             if visible {
                 slots += 1;
+            }
+            if visible != card.visible {
+                if visible {
+                    card.expires = card.ttl.map(|ttl| now.saturating_add(ttl));
+                } else {
+                    if let Some(start) = card.hovered.take() {
+                        card.expires = card
+                            .expires
+                            .map(|t| t.saturating_add(now.saturating_sub(start)));
+                    }
+                    card.ttl = card.expires.take().map(|t| t.saturating_sub(now));
+                }
             }
             if !card.closing && visible != card.visible {
                 card.spring.jump(0.0);
@@ -248,12 +290,24 @@ impl Notifications {
                 card.rect = None;
             }
         }
-        before
-            != self
-                .cards
-                .iter()
-                .map(|c| (c.notice.id, c.visible, c.closing))
-                .collect::<Vec<_>>()
+    }
+    fn history_action(&mut self, id: u32) {
+        let Some(h) = self.history.iter().find(|h| {
+            h.notice.id == id && h.notice.actions.iter().any(|(key, _)| key == "default")
+        }) else {
+            return;
+        };
+        let gen = h.notice.gen;
+        let live = self.registry.lock().is_ok_and(|registry| {
+            registry
+                .live
+                .get(&id)
+                .is_some_and(|(_, current)| *current == gen)
+        });
+        if live {
+            self.emit(Signal::Action(id, gen, "default".into()));
+            self.close(id, Some(2));
+        }
     }
     pub fn animating(&self) -> bool {
         !self.blocked && self.cards.iter().any(|c| c.visible && c.spring.is_active())
@@ -306,7 +360,15 @@ pub fn channel(
                 match request {
                     Request::Active => state.active = true,
                     Request::Notify(n) => state.receive(n, now, gv.config.notifications.timeout_ms),
-                    Request::Close(id) => state.close(id, None),
+                    Request::Close(id, gen) => {
+                        if state
+                            .cards
+                            .iter()
+                            .any(|c| c.notice.id == id && c.notice.gen == gen && !c.closing)
+                        {
+                            state.close(id, None);
+                        }
+                    }
                 }
                 drop(state);
                 gv.refresh_notifications();
@@ -329,13 +391,18 @@ impl Gavno {
         });
     }
     fn refresh_notifications_inner(&mut self, pointer: Option<Point<f64, Logical>>) {
+        self.notifications
+            .borrow()
+            .enabled
+            .store(true, Ordering::Release);
         if !self.notifications.borrow().started
             && !matches!(self.backend, crate::backend::Backend::None)
             && self.greeter.is_none()
         {
             self.notifications.borrow_mut().started = true;
             if let Some(events) = channel(&self.loop_handle) {
-                self.notifications.borrow_mut().signals = dbus::spawn(events);
+                let mut state = self.notifications.borrow_mut();
+                state.signals = dbus::spawn(events, state.registry.clone(), state.enabled.clone());
             }
         }
         let output = self.active_output();
@@ -425,6 +492,7 @@ impl Gavno {
             };
             if pressed && button == 0x110 && !c.closing {
                 let id = c.notice.id;
+                let gen = c.notice.gen;
                 let close = c
                     .rect
                     .is_some_and(|r| ui::close_rect(r).to_f64().contains(p));
@@ -444,7 +512,7 @@ impl Gavno {
                         })
                 };
                 if let Some(key) = action {
-                    state.emit(Signal::Action(id, key));
+                    state.emit(Signal::Action(id, gen, key));
                 }
                 state.close(id, Some(2));
             }
@@ -456,14 +524,8 @@ impl Gavno {
     }
     pub fn notification_history_action(&mut self, id: u32) {
         self.guard(Feature::Notifications, (), |gv| {
-            let state = gv.notifications.borrow();
-            if let Some(h) = state
-                .history
-                .iter()
-                .find(|h| h.notice.id == id && h.notice.actions.iter().any(|(k, _)| k == "default"))
-            {
-                state.emit(Signal::HistoryAction(h.notice.id));
-            }
+            gv.notifications.borrow_mut().history_action(id);
+            gv.refresh_notifications();
         });
     }
     pub(crate) fn reset_notifications(&mut self) {
@@ -471,9 +533,14 @@ impl Gavno {
         if let Some((_, token)) = state.timer.take() {
             self.loop_handle.remove(token);
         }
+        state.enabled.store(false, Ordering::Release);
+        for card in &state.cards {
+            if !card.closing {
+                state.emit(Signal::Closed(card.notice.id, card.notice.gen, 4));
+            }
+        }
         state.cards.clear();
         state.clear_history();
-        state.active = false;
         self.topbar.notifications_active = false;
         self.topbar.notification_history.clear();
         self.topbar.notification_unread = false;
