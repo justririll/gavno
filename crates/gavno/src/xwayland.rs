@@ -137,6 +137,7 @@ fn claim_display(dir: &Path, check_abstract: bool) -> Option<XDisplay> {
         }
     }
     for number in 0..=1023u16 {
+        remove_stale_display(dir, number);
         if occupied_in(dir, number) || (check_abstract && abstract_socket_occupied(number)) {
             continue;
         }
@@ -165,6 +166,37 @@ fn claim_display(dir: &Path, check_abstract: bool) -> Option<XDisplay> {
         }
     }
     None
+}
+
+/// Cleans up after an X server that died without doing it itself (GAVNO
+/// killed by a signal, a crashed Xwayland), like Xorg does: a lock file whose
+/// pid is gone, or a socket without a lock file that refuses connections.
+/// Without this every crash moves X to the next display number.
+fn remove_stale_display(dir: &Path, number: u16) {
+    let path = dir.join(format!(".X11-unix/X{number}"));
+    let lock = dir.join(format!(".X{number}-lock"));
+    if lock.symlink_metadata().is_ok() {
+        let pid = std::fs::read_to_string(&lock)
+            .ok()
+            .and_then(|text| text.trim().parse::<libc::pid_t>().ok())
+            .filter(|&pid| pid > 0);
+        let Some(pid) = pid else { return };
+        // SAFETY: signal 0 only checks that the process exists.
+        let dead = unsafe { libc::kill(pid, 0) } != 0
+            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+        if dead && std::fs::remove_file(&lock).is_ok() {
+            let _ = std::fs::remove_file(&path);
+        }
+        return;
+    }
+    if path.symlink_metadata().is_err() {
+        return;
+    }
+    let refused = std::os::unix::net::UnixStream::connect(&path)
+        .is_err_and(|e| e.kind() == std::io::ErrorKind::ConnectionRefused);
+    if refused {
+        let _ = std::fs::remove_file(&path);
+    }
 }
 
 pub fn start(gv: &mut Gavno) {
@@ -285,6 +317,32 @@ mod tests {
         drop(display);
         assert!(!dir.join(".X1-lock").exists());
         assert!(!dir.join(".X11-unix/X1").exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn stale_displays_are_reclaimed_but_live_ones_are_not() {
+        let dir = std::env::temp_dir().join(format!("gavno-x-stale-test-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join(".X11-unix")).unwrap();
+        // :0 dead socket, no lock: bound once, listener dropped.
+        drop(std::os::unix::net::UnixListener::bind(dir.join(".X11-unix/X0")).unwrap());
+        // :1 live socket, no lock.
+        let _live = std::os::unix::net::UnixListener::bind(dir.join(".X11-unix/X1")).unwrap();
+        // :2 lock of a process that has exited, with its socket.
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let dead = child.id();
+        child.wait().unwrap();
+        std::fs::write(dir.join(".X2-lock"), format!("{dead:>10}\n")).unwrap();
+        drop(std::os::unix::net::UnixListener::bind(dir.join(".X11-unix/X2")).unwrap());
+        // :3 lock of a live process.
+        std::fs::write(dir.join(".X3-lock"), format!("{:>10}\n", std::process::id())).unwrap();
+        for n in 0..4 {
+            remove_stale_display(&dir, n);
+        }
+        assert!(!dir.join(".X11-unix/X0").exists());
+        assert!(dir.join(".X11-unix/X1").exists());
+        assert!(!dir.join(".X2-lock").exists());
+        assert!(!dir.join(".X11-unix/X2").exists());
+        assert!(dir.join(".X3-lock").exists());
         std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]
