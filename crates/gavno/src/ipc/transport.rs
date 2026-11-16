@@ -49,10 +49,21 @@ fn flush(stream: &UnixStream, outbox: &mut Outbox) -> io::Result<()> {
     Ok(())
 }
 
+// Synchronous adapters are also used by the standalone socket tests.
+#[allow(dead_code)]
 pub fn listen<D: 'static>(
     handle: LoopHandle<'static, D>,
     listener: UnixListener,
     dispatch: impl Fn(&[u8], &mut D) -> Vec<u8> + Clone + 'static,
+) -> io::Result<Listener> {
+    listen_async(handle, listener, move |line, data, reply| reply.send(dispatch(line, data)))
+}
+
+#[allow(dead_code)]
+pub fn listen_async<D: 'static>(
+    handle: LoopHandle<'static, D>,
+    listener: UnixListener,
+    dispatch: impl Fn(&[u8], &mut D, Reply<D>) + Clone + 'static,
 ) -> io::Result<Listener> {
     listener.set_nonblocking(true)?;
     let clients = handle.clone();
@@ -70,7 +81,7 @@ pub fn listen<D: 'static>(
                             accepted.borrow_mut().retain(|s| s.strong_count() > 0);
                             if let Some(copy) = &lifetime { accepted.borrow_mut().push(Arc::downgrade(copy)); }
                             let registered = if lifetime.is_some() { add_client_inner(clients.clone(), stream, dispatch.clone(), lifetime) }
-                                else { add_client(clients.clone(), stream, dispatch.clone()) };
+                                else { add_client_inner(clients.clone(), stream, dispatch.clone(), None) };
                             if let Err(err) = registered
                             {
                                 tracing::warn!(?err, "failed to register IPC client");
@@ -91,31 +102,32 @@ pub fn listen<D: 'static>(
     Ok(Listener { token, streams })
 }
 
+#[allow(dead_code)]
 pub fn add_client<D: 'static>(
     handle: LoopHandle<'static, D>,
     stream: UnixStream,
     dispatch: impl Fn(&[u8], &mut D) -> Vec<u8> + 'static,
 ) -> io::Result<()> {
-    add_client_inner(handle, stream, dispatch, None)
+    add_client_inner(handle, stream, move |line, data, reply| reply.send(dispatch(line, data)), None)
 }
 
 fn add_client_inner<D: 'static>(
     handle: LoopHandle<'static, D>,
     stream: UnixStream,
-    dispatch: impl Fn(&[u8], &mut D) -> Vec<u8> + 'static,
+    dispatch: impl Fn(&[u8], &mut D, Reply<D>) + 'static,
     lifetime: Option<Arc<UnixStream>>,
 ) -> io::Result<()> {
     stream.set_nonblocking(true)?;
     let mut input = Vec::new();
     let outbox = Rc::new(RefCell::new(Outbox::default()));
     let writers = handle.clone();
+    let response_stream = match &lifetime { Some(stream) => stream.clone(), None => Arc::new(stream.try_clone()?) };
     handle
         .insert_source(
             Generic::new(stream, Interest::READ, Mode::Level),
             move |_, stream, data| {
                 let _keepalive = &lifetime;
                 let mut stream = &**stream;
-                let mut output = outbox.borrow_mut();
                 let mut closed = false;
                 let mut count = 0;
                 let mut chunk = [0; 4096];
@@ -132,9 +144,11 @@ fn add_client_inner<D: 'static>(
                                 if end > MAX_LINE {
                                     return Ok(PostAction::Remove);
                                 }
-                                output.bytes.extend(dispatch(&input[..end], data));
+                                dispatch(&input[..end], data, Reply {
+                                    outbox: outbox.clone(), stream: response_stream.clone(), handle: writers.clone(),
+                                });
                                 input.drain(..=end);
-                                if output.bytes.len() > MAX_PENDING {
+                                if outbox.borrow().bytes.len() > MAX_PENDING {
                                     return Ok(PostAction::Remove);
                                 }
                             }
@@ -148,39 +162,6 @@ fn add_client_inner<D: 'static>(
                         Err(_) => return Ok(PostAction::Remove),
                     }
                 }
-                if flush(stream, &mut output).is_err() {
-                    return Ok(PostAction::Remove);
-                }
-                if !output.bytes.is_empty() && !output.writer_registered {
-                    let writer = match stream.try_clone() {
-                        Ok(writer) => writer,
-                        Err(_) => return Ok(PostAction::Remove),
-                    };
-                    let pending = outbox.clone();
-                    let writer_lifetime = lifetime.clone();
-                    if writers
-                        .insert_source(
-                            Generic::new(writer, Interest::WRITE, Mode::Level),
-                            move |_, stream, _| {
-                                let _keepalive = &writer_lifetime;
-                                let mut output = pending.borrow_mut();
-                                if flush(stream, &mut output).is_err() {
-                                    output.bytes.clear();
-                                }
-                                if output.bytes.is_empty() {
-                                    output.writer_registered = false;
-                                    Ok(PostAction::Remove)
-                                } else {
-                                    Ok(PostAction::Continue)
-                                }
-                            },
-                        )
-                        .is_err()
-                    {
-                        return Ok(PostAction::Remove);
-                    }
-                    output.writer_registered = true;
-                }
                 Ok(if closed {
                     PostAction::Remove
                 } else {
@@ -190,4 +171,40 @@ fn add_client_inner<D: 'static>(
         )
         .map_err(|e| io::Error::other(e.to_string()))?;
     Ok(())
+}
+
+/// A response may be delivered on a later calloop turn (never from a worker).
+pub struct Reply<D: 'static> {
+    outbox: Rc<RefCell<Outbox>>,
+    stream: Arc<UnixStream>,
+    handle: LoopHandle<'static, D>,
+}
+impl<D: 'static> Reply<D> {
+    pub fn send(self, bytes: Vec<u8>) {
+        let mut output = self.outbox.borrow_mut();
+        output.bytes.extend(bytes);
+        if output.bytes.len() > MAX_PENDING || flush(&self.stream, &mut output).is_err() {
+            output.bytes.clear();
+            let _ = self.stream.shutdown(std::net::Shutdown::Both);
+            return;
+        }
+        if output.bytes.is_empty() || output.writer_registered { return; }
+        let writer = match self.stream.try_clone() { Ok(s) => s, Err(_) => return };
+        let pending = self.outbox.clone();
+        let lifetime = self.stream.clone();
+        if self.handle.insert_source(Generic::new(writer, Interest::WRITE, Mode::Level), move |_, stream, _| {
+            let _keepalive = &lifetime;
+            let mut output = pending.borrow_mut();
+            if flush(stream, &mut output).is_err() { output.bytes.clear(); }
+            if output.bytes.is_empty() {
+                output.writer_registered = false;
+                Ok(PostAction::Remove)
+            } else { Ok(PostAction::Continue) }
+        }).is_ok() {
+            output.writer_registered = true;
+        } else {
+            output.bytes.clear();
+            let _ = self.stream.shutdown(std::net::Shutdown::Both);
+        }
+    }
 }

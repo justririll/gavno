@@ -346,6 +346,9 @@ fn run(
             }
             Ok(Request::Disconnected) | Err(_) => {
                 let _ = events.send(Snapshot::default());
+                // Explicit shutdown wakes the signal iterators too. Their
+                // connection clones must not keep idle threads alive.
+                let _ = connection.clone().close();
                 break;
             }
         }

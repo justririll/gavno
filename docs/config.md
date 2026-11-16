@@ -93,7 +93,8 @@ before suspend and on a logind Lock request. See [the lock screen](lock.md)
 for authentication, backoff and what is blocked while locked.
 
 `[output] internal_scale` applies to built-in panels (eDP) only; external
-outputs always use a scale of 1.0.
+outputs default to a scale of 1.0. Connector-specific `[outputs."name"]`
+settings can override these fallbacks (see Live display and keyboard settings).
 
 `[output] mode = "2880x1620@120"` selects the panel's 120 Hz timing.
 Omit `@HZ` to select the highest refresh at that resolution. Integer Hz allow
@@ -130,8 +131,10 @@ default. Set `options = ""` in the file to disable XKB options; an empty
 
 ## Optional modules
 
-Every feature can be switched off independently at startup. All flags default to
-`true`; unknown keys warn. There is no live reload.
+Every feature can be switched off independently at startup or through an explicit
+reload. All flags default to `true`; unknown keys warn. Normal disable/enable
+cycles run the feature registry resets; a crashed feature stays disabled until
+restart.
 
 ```toml
 [modules]
@@ -195,8 +198,56 @@ bad configuration file.
 
 ## Reloading
 
-The file is read once at startup. Restart GAVNO to apply changes. Live reload is
-planned but not implemented.
+`gavno-settings` edits every supported key using pages generated from the
+compositor's `config_schema` IPC method. Its sidebar includes Displays, Keyboard,
+each configuration section, and **Edit config file**. Search matches key names
+and descriptions across sections. Rows show descriptions, numeric bounds,
+reset-to-default controls, and an **after re-login** tag for startup-only values.
+Output overrides can be added by connector name, even without connected outputs.
+String lists support add/remove/reorder and show at most 32 editable items per
+page. Existing comments and unknown keys survive form edits.
+
+Text rows commit with Enter/the checkmark, when leaving the field, or when
+closing the window. Incomplete mode, keymap and theme names are not applied on
+every keystroke. Other controls save immediately when changed.
+
+Control edits are saved immediately, then the app calls `reload_config` using
+the usual JSON-lines envelope. Writes are serialized and pending edits are
+coalesced by key; there is no debounce timer, file watcher or resident helper.
+Leaving a section drops its GTK widgets and text layouts. Only the schema and a
+bounded config model remain; the file/editor limit is 1 MiB. Search shows up to
+64 matching rows, and the connector selector lists up to 128 outputs. The raw
+editor remains available for larger collections within the file-size limit.
+
+`reload_config` takes no parameters and returns
+`{applied: ["gap", ...], needs_relogin: ["autostart", ...]}` for changed keys.
+Disk reads, TOML validation and XKB compilation run on a short-lived worker.
+A parse/type error includes its line and column and changes no runtime settings;
+a bad keymap also rejects the reload before other changes. Output changes use
+the existing live modeset/scale/HDR path, rolling back earlier outputs if a later
+output fails. A busy page flip can return `output is presenting; retry`; the app
+retries it. HDR still reports asynchronous completion through `outputs`.
+
+Live values include bindings and application commands, gaps, keyboard layout and
+repeat, dock/bar, tiling defaults for new/empty workspaces, lock timeout,
+notification defaults, output timing/scale/HDR/SDR white, and module switches.
+Disabling a module runs its reset and drops its state. Media/notification workers
+stop on disable, and Screencopy removes its advertised global. Disabling IPC
+closes live control after the reload reply; re-enable it in the file and restart
+the session. Features that previously crashed still require a restart.
+
+`polkit_agent`, `autostart`, and per-connector `enabled` apply after re-login;
+reload never spawns autostart commands or replaces the authorization agent.
+Environment overrides still take precedence. No cursor/theme keys are currently
+read, apart from `dock.icon_theme`.
+
+The raw editor uses a plain monospace `gtk::TextView`. Save validates TOML and
+known value types before writing, keeps `config.toml.bak`, then requests reload.
+Errors select the indicated line. A reload rejection restores the previous file;
+the invalid draft remains available for correction. If IPC is unavailable, a
+banner says **GAVNO is not running; changes apply at next login** and validated
+file editing continues without a polling/reconnect worker. **Refresh** explicitly
+retries the connection. Only active display previews have a countdown timer.
 
 ## Settings that are not file keys
 
@@ -265,6 +316,61 @@ Supported hints are `urgency`, `desktop-entry`, and `image-path`. Bodies display
 plain text after simple markup/entity removal. Image-data hints are ignored.
 Set `[modules] notifications = false` to disable the server and all its UI.
 
+## Live display and keyboard settings
+
+`gavno-settings` includes live Displays and Keyboard pages alongside the full
+configuration editor. Display changes have a
+15-second confirmation deadline: Keep persists them; Revert, closing the window,
+or expiry restores the previous live state. Keyboard's Apply and save validates
+and applies the keymap before writing it. The app preserves comments and
+unrelated TOML keys using an atomic replacement. It follows the same config path
+as the compositor. Environment overrides still affect the next session.
+
+Connector tables override individual global output fallbacks:
+
+```toml
+[outputs."eDP-1"]
+mode = "2880x1620@120" # Hz; fractional values such as 59.94 are supported
+scale = 1.75
+hdr = false
+enabled = true
+
+[outputs."DP-1"]
+scale = 1.25
+```
+
+Every key is optional. Absent mode/HDR inherit `[output] mode`/`hdr`; absent scale
+inherits `internal_scale` for internal panels, or 1.0 for external outputs.
+Invalid connector modes/scales warn and use those fallbacks. Connector scales
+must be finite and within 0.5–3.0. Enabled defaults to true. Configured enabled
+outputs are initialized first; if none work, one configured disabled output is
+kept enabled so the session retains a display. Enabling/disabling an output is
+currently a startup configuration operation.
+
+IPC uses the envelope `{"id":1,"method":"outputs","params":{}}` on
+`$XDG_RUNTIME_DIR/gavno/ipc.sock`, one JSON request/response per line. Replies
+contain `id` and either `result` or `error`. All methods reject locked sessions.
+
+- `outputs`: array with `name`, `make`, `model`, `enabled`, `mode`, `modes`,
+  `scale`, `position: {x,y}`, `hdr: {supported,enabled,pending}`, and `internal`.
+  Each mode has `w`, `h`, `refresh` in **millihertz**, and `preferred`.
+- `set_output`: `{output, mode?: {w,h,refresh?}, scale?, hdr?}`. Refresh uses
+  millihertz; omitting it selects the highest advertised refresh for the size.
+  Scale accepts 0.5–3.0 in steps of 0.05. The compositor tests modes through
+  Smithay's DRM modeset path, restores the previous mode on failure, refits
+  windows, and redraws layers, bar and dock. A flip in progress returns the
+  transient error `output is presenting; retry`. HDR follows `set_hdr`'s deferred
+  application path; `pending` reports the requested value until applied.
+- `keyboard`: `{layout,variant,options,active_group,group_names}` with a
+  zero-based active group.
+- `set_keyboard`: `{layout,variant?,options?}`; omitted variant/options are
+  empty. Supports up to four comma-separated layouts. XKB compilation runs in a
+  worker before the seat keymap changes. Invalid input changes nothing.
+
+Mutations are audited like `set_hdr`. The compositor does not write live display
+or keyboard changes back to disk. These controls belong to the existing IPC
+module and are disabled with `[modules] ipc = false`.
+
 ## Now playing (MPRIS)
 
 `[modules] media = true` (the default) discovers session-bus MPRIS players such
@@ -284,3 +390,58 @@ art URLs are ignored; the desktop application's icon is used instead, with a
 music glyph as the final fallback. The existing PNG/SVG icon loader decodes art
 and app icons on the worker thread. No position tracking or polling is used.
 Disable `modules.media` to remove the controls and pass playback keys to clients.
+
+## Complete key reference
+
+The compositor schema is the source for the following keys. A null default means
+unset/inherited; resetting such a row removes the key. `*` denotes a connector
+name such as `eDP-1`. Numeric steps describe the editor increments.
+
+| Key | Type | Default | Live |
+|---|---|---|---|
+| `mod_key` | enum (super, alt) | `"super"` | yes |
+| `terminal` | string | `"foot"` | yes |
+| `launcher` | string | `unset` | yes |
+| `file_manager` | string | `"gavno-files"` | yes |
+| `polkit_agent` | string | `"gavno-polkit-agent"` | after re-login |
+| `autostart` | string_list | `["foot --server"]` | after re-login |
+| `gap` | int (0–64, step 1) | `12` | yes |
+| `output.internal_scale` | float (0.5–4.0, step 0.05) | `1.75` | yes |
+| `output.mode` | string | `unset` | yes |
+| `output.hdr` | bool | `false` | yes |
+| `output.sdr_white_nits` | float (80.0–400.0, step 10.0) | `203.0` | yes |
+| `keyboard.repeat_delay` | int (0–5000, step 1) | `300` | yes |
+| `keyboard.repeat_rate` | int (0–100, step 1) | `30` | yes |
+| `keyboard.layout` | string | `"us,ru"` | yes |
+| `keyboard.variant` | string | `""` | yes |
+| `keyboard.options` | string | `"grp:alt_shift_toggle"` | yes |
+| `modules.dock` | bool | `true` | yes |
+| `modules.bar` | bool | `true` | yes |
+| `modules.overview` | bool | `true` | yes |
+| `modules.tiling` | bool | `true` | yes |
+| `modules.snap` | bool | `true` | yes |
+| `modules.switcher` | bool | `true` | yes |
+| `modules.gestures` | bool | `true` | yes |
+| `modules.window_gestures` | bool | `true` | yes |
+| `modules.resize_mode` | bool | `true` | yes |
+| `modules.animations` | bool | `true` | yes |
+| `modules.decorations` | bool | `true` | yes |
+| `modules.ipc` | bool | `true` | yes |
+| `modules.screencopy` | bool | `true` | yes |
+| `modules.launcher` | bool | `true` | yes |
+| `modules.notifications` | bool | `true` | yes |
+| `modules.media` | bool | `true` | yes |
+| `dock.enabled` | bool | `true` | yes |
+| `dock.pinned` | string_list | `["foot", "firefox"]` | yes |
+| `dock.magnify` | bool | `true` | yes |
+| `dock.autohide` | bool | `false` | yes |
+| `dock.icon_theme` | string | `"Adwaita"` | yes |
+| `bar.enabled` | bool | `true` | yes |
+| `tiling.default` | bool | `false` | yes |
+| `lock.after_idle_secs` | int (0–4294967295, step 1) | `300` | yes |
+| `notifications.timeout_ms` | int (0–9223372036854775807, step 1) | `5000` | yes |
+| `notifications.max_visible` | int (1–3, step 1) | `3` | yes |
+| `outputs.*.mode` | string | `unset` | yes |
+| `outputs.*.scale` | float (0.5–3.0, step 0.05) | `unset` | yes |
+| `outputs.*.hdr` | bool | `unset` | yes |
+| `outputs.*.enabled` | bool | `unset` | after re-login |

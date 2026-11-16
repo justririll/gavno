@@ -146,6 +146,13 @@ impl ColorManagement {
         let global = enabled.load(Ordering::Relaxed).then(|| dh.create_global::<Gavno,WpColorManagerV1,_>(1,GlobalData(enabled.clone())));
         Self { global, enabled, surfaces: Vec::new() }
     }
+    /// Re-advertise the global after a config reload turned the feature back on.
+    pub fn enable(&mut self, dh: &DisplayHandle) {
+        if self.global.is_none() {
+            self.enabled.store(true,Ordering::Relaxed);
+            self.global = Some(dh.create_global::<Gavno,WpColorManagerV1,_>(1,GlobalData(self.enabled.clone())));
+        }
+    }
     pub fn reset(&mut self, dh: &DisplayHandle) {
         self.enabled.store(false,Ordering::Relaxed);
         if let Some(global) = self.global.take() { dh.remove_global::<Gavno>(global); }

@@ -144,10 +144,24 @@ impl Gavno {
             Feature::Animations => self.reset_animations(),
             Feature::Decorations => self.window_decor = Default::default(),
             Feature::Ipc => { self.ipc.close(&self.loop_handle); }
-            Feature::Screencopy => self.protocols.screencopy.fail_pending(),
+            Feature::Screencopy => {
+                self.protocols.screencopy.fail_pending();
+                self.protocols.screencopy=Default::default();
+                if let Some(global) = self.screencopy_global.take() { self.display_handle.remove_global::<Gavno>(global); }
+            },
             Feature::Launcher => self.launcher = Default::default(),
-            Feature::Notifications => self.reset_notifications(),
-            Feature::Media => self.reset_media(),
+            Feature::Notifications => {
+                self.reset_notifications();
+                *self.notifications.borrow_mut() = Default::default();
+            },
+            Feature::Media => {
+                self.media_generation=self.media_generation.wrapping_add(1);
+                self.reset_media();
+                if let Some(worker) = self.now_playing.borrow_mut().worker.take() {
+                    let _ = worker.send(crate::media::mpris::Request::Disconnected);
+                }
+                *self.now_playing.borrow_mut() = Default::default();
+            },
             Feature::ColorManagement => {
                 self.protocols.color_management.reset(&self.display_handle);
                 for output in self.space.outputs() { crate::handlers::color_management::reset_output(output); }
@@ -166,15 +180,63 @@ impl Gavno {
             Feature::Animations => self.window_animations = Default::default(),
             Feature::Decorations => self.window_decor = Default::default(),
             Feature::Ipc => self.ipc.close(&self.loop_handle),
-            Feature::Screencopy => self.protocols.screencopy.fail_pending(),
+            Feature::Screencopy => {
+                self.protocols.screencopy.fail_pending();
+                self.protocols.screencopy=Default::default();
+                if let Some(global) = self.screencopy_global.take() { self.display_handle.remove_global::<Gavno>(global); }
+            },
             Feature::Launcher => self.launcher = Default::default(),
-            Feature::Notifications => self.reset_notifications(),
-            Feature::Media => self.reset_media(),
+            Feature::Notifications => {
+                self.reset_notifications();
+                *self.notifications.borrow_mut() = Default::default();
+            },
+            Feature::Media => {
+                self.media_generation=self.media_generation.wrapping_add(1);
+                self.reset_media();
+                if let Some(worker) = self.now_playing.borrow_mut().worker.take() {
+                    let _ = worker.send(crate::media::mpris::Request::Disconnected);
+                }
+                *self.now_playing.borrow_mut() = Default::default();
+            },
             Feature::ColorManagement => {
                 self.protocols.color_management.reset(&self.display_handle);
                 for output in self.space.outputs() { crate::handlers::color_management::reset_output(output); }
             },
             Feature::Snap | Feature::Tiling => (),
         }
+    }
+}
+
+impl Gavno {
+    /// Reconfigure only on an explicit reload; crashed features stay disabled
+    /// until restart. Normal input/render paths do not build another registry.
+    pub(crate) fn reload_features(&mut self) {
+        let wanted = Features::new(&self.config);
+        for id in Feature::ALL {
+            if matches!(*self.features.states[id as usize].borrow(), FeatureState::Crashed { .. }) { continue; }
+            let enabled = wanted.on(id);
+            if self.features.on(id) == enabled { continue; }
+            if id == Feature::Ipc && !enabled {
+                // Deliver this reload's small reply before closing its socket.
+                self.loop_handle.insert_idle(|gv| {
+                    if !gv.config.modules.ipc {
+                        *gv.features.states[Feature::Ipc as usize].borrow_mut() = FeatureState::Disabled;
+                        gv.features.pending[Feature::Ipc as usize].set(true);
+                        gv.run_feature_resets();
+                    }
+                });
+                continue;
+            }
+            *self.features.states[id as usize].borrow_mut() = if enabled { FeatureState::Enabled } else { FeatureState::Disabled };
+            if !enabled { self.features.pending[id as usize].set(true); }
+            if enabled && self.greeter.is_none() {
+                if id == Feature::Screencopy { crate::handlers::screencopy::init(self); }
+                if id == Feature::ColorManagement { self.protocols.color_management.enable(&self.display_handle); }
+                if id == Feature::Ipc {
+                    if let Err(error) = crate::ipc::init(self) { tracing::warn!(%error, "cannot restart IPC"); }
+                }
+            }
+        }
+        self.run_feature_resets();
     }
 }

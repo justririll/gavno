@@ -77,8 +77,9 @@ pub struct FrameData {
 
 /// Advertises the global. Not called in greeter mode.
 pub fn init(gv: &mut Gavno) {
-    gv.display_handle
-        .create_global::<Gavno, ZwlrScreencopyManagerV1, _>(VERSION, ());
+    if gv.screencopy_global.is_none() {
+        gv.screencopy_global = Some(gv.display_handle.create_global::<Gavno, ZwlrScreencopyManagerV1, _>(VERSION, ()));
+    }
 }
 
 /// Physical region of `output` covered by a logical rectangle relative to the
