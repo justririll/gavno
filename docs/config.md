@@ -38,6 +38,7 @@ default": see `terminal` and `launcher` below.
 | `launcher` | string | unset, Mod+D disabled | `GAVNO_LAUNCHER` |
 | `file_manager` | string | `"gavno-files"` | none |
 | `polkit_agent` | string | `"gavno-polkit-agent"`, `""` disables | none |
+| `autostart` | string list | `["foot --server"]` | none |
 | `gap` | integer, logical px | `12` | none |
 | `[tiling] default` | boolean | `false` | none |
 | `[lock] after_idle_secs` | integer, seconds | `300` | none |
@@ -56,6 +57,14 @@ Nested mode defaults to Alt because the host compositor keeps Super for itself.
 The file accepts only the exact lowercase values `"super"` and `"alt"`.
 `GAVNO_MOD` also accepts only those two; any other value falls back to the
 nested/TTY default, and still overrides the file.
+
+`autostart` commands start with a TTY session, each only when its program is
+installed; `autostart = []` starts nothing. With `foot --server` running (the
+default) and `terminal` left at `"foot"`, Mod+Return and the pinned foot icon
+use `footclient --app-id foot`: a window in milliseconds instead of a new
+process, and one shared process for all terminals. Add `"gavno-files --daemon"`
+to keep a windowless file manager resident, so Mod+E opens instantly at the
+cost of a few tens of MB of RAM.
 
 `terminal` is started by Mod+Return, `launcher` by Mod+D and `file_manager` by
 Mod+E. `polkit_agent` is started with the session when the program is found;
@@ -139,6 +148,7 @@ ipc = true
 screencopy = true
 launcher = true
 notifications = true
+media = true
 ```
 
 `dock.enabled` and `bar.enabled` still work: a feature is off if either its legacy
@@ -305,3 +315,23 @@ contain `id` and either `result` or `error`. All methods reject locked sessions.
 Mutations are audited like `set_hdr`. The compositor does not write live display
 or keyboard changes back to disk. These controls belong to the existing IPC
 module and are disabled with `[modules] ipc = false`.
+
+## Now playing (MPRIS)
+
+`[modules] media = true` (the default) discovers session-bus MPRIS players such
+as Firefox, Spotify and mpv. A playing or paused player appears in a capsule
+between the clock and status area. Click it to toggle playback. Quick settings
+shows its title, artist, 48 px art and previous / play-pause / next controls.
+Unavailable actions are dimmed and ignored. The built-in lock screen shows the
+same track and controls beneath its clock; media keys work while locked too.
+
+The most recently started playing player is active. If none is playing, the
+most recently updated paused player is active. Stopped and vanished players do
+not appear. Startup cannot recover historical playback order, so simultaneous
+already-playing players use a deterministic discovery order.
+
+Only local `file://` album art is loaded, with percent escapes decoded. Remote
+art URLs are ignored; the desktop application's icon is used instead, with a
+music glyph as the final fallback. The existing PNG/SVG icon loader decodes art
+and app icons on the worker thread. No position tracking or polling is used.
+Disable `modules.media` to remove the controls and pass playback keys to clients.

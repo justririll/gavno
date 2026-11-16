@@ -19,6 +19,11 @@ mod window;
 use adw::prelude::*;
 
 fn main() -> glib::ExitCode {
+    // `--daemon` keeps a windowless instance resident so later launches only
+    // ask it over D-Bus for a window instead of starting GTK again.
+    let mut args: Vec<String> = std::env::args().collect();
+    let daemon = args.iter().any(|a| a == "--daemon");
+    args.retain(|a| a != "--daemon");
     let app = adw::Application::builder()
         .application_id("org.gavno.Files")
         .flags(gio::ApplicationFlags::HANDLES_OPEN | gio::ApplicationFlags::CAN_OVERRIDE_APP_ID)
@@ -37,7 +42,13 @@ fn main() -> glib::ExitCode {
         }
         dbus::install(app);
     });
-    app.connect_activate(|app| {
+    let skip_first = std::cell::Cell::new(daemon);
+    let resident = std::cell::RefCell::new(None);
+    app.connect_activate(move |app| {
+        if skip_first.replace(false) {
+            resident.replace(Some(app.hold()));
+            return;
+        }
         window::open(app, gio::File::for_path(glib::home_dir()), Vec::new());
     });
     app.connect_open(|app, files, _| {
@@ -70,5 +81,5 @@ fn main() -> glib::ExitCode {
             });
         }
     });
-    app.run()
+    app.run_with_args(&args)
 }

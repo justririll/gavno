@@ -83,6 +83,8 @@ pub struct Notifications {
     /// when needed instead of on every input event.
     history_rev: u64,
     synced_rev: Option<u64>,
+    /// Lowest battery threshold already announced while discharging.
+    battery_warned: Option<u8>,
     enabled: Arc<AtomicBool>,
     registry: dbus::Live,
     active: bool,
@@ -347,6 +349,28 @@ impl Notifications {
     }
 }
 
+/// Ids for GAVNO's own notifications. D-Bus ids count up from 1 and never
+/// get near these, and the registry does not know them, so their close and
+/// action signals are dropped.
+const BATTERY_ID: u32 = u32::MAX - 1;
+
+/// Battery thresholds: the warning to show when a discharging battery drops
+/// to `percent` or below, as (threshold, urgency).
+const BATTERY_STEPS: [(u8, u8); 2] = [(5, 2), (15, 1)];
+
+/// The warning to show for this reading, if it crosses a threshold that was
+/// not announced yet. `None` from `warned` means nothing was shown.
+pub(crate) fn battery_warning(
+    battery: Option<&crate::topbar::Battery>,
+    warned: Option<u8>,
+) -> Option<(u8, u8)> {
+    let battery = battery.filter(|b| !b.charging)?;
+    BATTERY_STEPS
+        .into_iter()
+        .find(|(threshold, _)| battery.percent <= *threshold)
+        .filter(|(threshold, _)| warned.is_none_or(|w| *threshold < w))
+}
+
 /// Also used by the harness: the production path has exactly this channel.
 pub fn channel(
     handle: &smithay::reexports::calloop::LoopHandle<'static, Gavno>,
@@ -459,6 +483,45 @@ impl Gavno {
         if changed || moved {
             self.queue_redraw_all();
         }
+    }
+    /// Warns once per threshold while the battery discharges, and takes the
+    /// warning down when a charger is plugged in.
+    pub fn battery_notification(&mut self, battery: Option<&crate::topbar::Battery>) {
+        self.guard(Feature::Notifications, (), |gv| {
+            let now = gv.start_time.elapsed();
+            let mut state = gv.notifications.borrow_mut();
+            if battery.is_none_or(|b| b.charging) {
+                if state.battery_warned.take().is_some() {
+                    state.close(BATTERY_ID, None);
+                }
+                return;
+            }
+            let Some((threshold, urgency)) = battery_warning(battery, state.battery_warned) else {
+                return;
+            };
+            state.battery_warned = Some(threshold);
+            let percent = battery.map_or(threshold, |b| b.percent);
+            let notice = Notice {
+                id: BATTERY_ID,
+                gen: 0,
+                app: "Battery".into(),
+                icon: format!("battery-level-{}-symbolic", (percent / 10) * 10),
+                desktop: String::new(),
+                summary: if urgency == 2 { "Battery critically low".into() } else { "Battery low".into() },
+                body: if urgency == 2 {
+                    format!("{percent}% left. Plug in the charger now.")
+                } else {
+                    format!("{percent}% left.")
+                },
+                actions: Vec::new(),
+                urgency,
+                timeout: -1,
+            };
+            state.receive(notice, now, gv.config.notifications.timeout_ms);
+            drop(state);
+            gv.refresh_notifications();
+            gv.queue_redraw_all();
+        });
     }
     pub fn notification_motion(&mut self, pos: Point<f64, Logical>) {
         self.guard(Feature::Notifications, (), |gv| {

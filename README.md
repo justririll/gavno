@@ -76,6 +76,15 @@ What works today:
   Mod+Shift+H toggle and runtime SDR white control
   (`crates/gavno/src/hdr/`, `crates/gavno/src/backend/udev.rs`).
 - Built-in session D-Bus notifications, popup actions, calendar history and Do not disturb.
+- Low battery notifications at 15% and 5% while discharging.
+- Screen sharing (browsers, OBS) through `xdg-desktop-portal-wlr` on top of
+  wlr-screencopy. GAVNO exports its display variables to D-Bus activation; install
+  the portal preference and the xdpw config (output chosen with `slurp`):
+
+  ```sh
+  install -Dm644 dist/xdg-desktop-portal/gavno-portals.conf /usr/share/xdg-desktop-portal/gavno-portals.conf
+  install -Dm644 dist/xdg-desktop-portal-wlr/config ~/.config/xdg-desktop-portal-wlr/config
+  ```
 - Idle means no redraw.
 
 Keyboard binds: [docs/keybinds.md](docs/keybinds.md)
@@ -132,3 +141,14 @@ It connects via `GAVNO_SOCK`, falling back to `$XDG_RUNTIME_DIR/gavno/ipc.sock`,
 and exposes the same five tools. Window tool arguments use numeric ids;
 compact screen output labels them `w3`, `w4`, etc. If GAVNO is unavailable,
 tool calls return an error while the MCP server stays running.
+
+## License
+
+Copyright (C) 2026 kirill and the GAVNO contributors.
+
+GAVNO is free software: you can redistribute it and/or modify it under the
+terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version. It is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See [COPYING](COPYING) for the full text.

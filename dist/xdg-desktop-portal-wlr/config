@@ -1,0 +1,7 @@
+# xdg-desktop-portal-wlr settings for GAVNO. Install to
+# ~/.config/xdg-desktop-portal-wlr/config (or /etc/xdg/xdg-desktop-portal-wlr/config).
+[screencast]
+# Click the output to share; Escape cancels the share.
+chooser_type=simple
+chooser_cmd=slurp -f %o -or
+max_fps=60

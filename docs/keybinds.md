@@ -320,6 +320,8 @@ an application inhibits shortcuts. Held keys use `[keyboard] repeat_delay`
 | XF86AudioRaiseVolume / XF86AudioLowerVolume | Increase / decrease the default PipeWire sink by 5%, capped at 100%. |
 | XF86AudioMute | Toggle default sink mute. |
 | XF86AudioMicMute | Toggle default source mute. |
+| XF86AudioPlay / XF86AudioPause | Toggle the active MPRIS player's playback, including while locked. |
+| XF86AudioNext / XF86AudioPrev | Next / previous track on the active MPRIS player, including while locked. |
 | XF86MonBrightnessUp / XF86MonBrightnessDown | Adjust backlight by 5% through logind, never below 1. Unavailable in the nested backend. |
 
 Audio control uses `wpctl`. A glass OSD shows the level/mute state for about
@@ -332,3 +334,9 @@ button. Hover pauses its timeout. Click the clock for notification history and
 **Clear**; quick settings includes **Do not disturb** (critical alerts bypass
 it). The clock dot marks unread history. These controls belong to the optional
 `Notifications` feature (`[modules] notifications = true` by default).
+
+Playback keys belong to `Media` (`[modules] media = true` by default), are handled
+before shortcut inhibitors and the lock gate, and send once per physical press.
+The bar's now-playing capsule also toggles playback. Quick settings and the
+built-in lock screen offer previous / play-pause / next buttons. Track text on
+the lock screen is read-only; these buttons do not change authentication state.

@@ -14,7 +14,8 @@ use smithay::{
         },
         wayland_server::{
             protocol::{wl_buffer::WlBuffer, wl_shm},
-            Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
+            backend::ClientId, Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New,
+            Resource,
         },
     },
     utils::{Physical, Rectangle},
@@ -30,6 +31,11 @@ pub struct Screencopy {
     /// Outputs that presented new content since their last completed
     /// capture; a `copy_with_damage` for them is answered at once.
     dirty: Vec<Output>,
+    /// Clients that already received a damage-tracked frame of an output.
+    /// Their first `copy_with_damage` has nothing to compare against, so it
+    /// is answered at once (as wlroots does); otherwise a recorder started on
+    /// a still screen would wait for its first frame forever.
+    tracked: Vec<(ClientId, Output)>,
 }
 
 impl Screencopy {
@@ -39,6 +45,7 @@ impl Screencopy {
     /// Fails captures waiting on an output that is going away.
     pub(crate) fn output_removed(&mut self, output: &Output) {
         self.dirty.retain(|o| o != output);
+        self.tracked.retain(|(_, o)| o != output);
         self.pending.retain(|p| {
             let ours = p.frame.data::<FrameData>().and_then(|d| d.output.as_ref()) == Some(output);
             if ours && p.frame.is_alive() {
@@ -209,11 +216,11 @@ impl Dispatch<ZwlrScreencopyManagerV1, ()> for Gavno {
 impl Dispatch<ZwlrScreencopyFrameV1, FrameData> for Gavno {
     fn request(
         state: &mut Self,
-        _client: &Client,
+        client: &Client,
         frame: &ZwlrScreencopyFrameV1,
         request: zwlr_screencopy_frame_v1::Request,
         data: &FrameData,
-        _dh: &DisplayHandle,
+        dh: &DisplayHandle,
         _data_init: &mut DataInit<'_, Self>,
     ) {
         let (buffer, with_damage) = match request {
@@ -244,7 +251,16 @@ impl Dispatch<ZwlrScreencopyFrameV1, FrameData> for Gavno {
         }
         let pending = Pending { frame: frame.clone(), buffer };
         let output = frame.data::<FrameData>().and_then(|d| d.output.clone());
-        let dirty = output.as_ref().is_some_and(|o| state.protocols.screencopy.dirty.contains(o));
+        let mut dirty = output.as_ref().is_some_and(|o| state.protocols.screencopy.dirty.contains(o));
+        if let (true, Some(output)) = (with_damage, output.as_ref()) {
+            let tracked = &mut state.protocols.screencopy.tracked;
+            tracked.retain(|(id, _)| dh.backend_handle().get_client_data(id.clone()).is_ok());
+            let key = (client.id(), output.clone());
+            if !tracked.contains(&key) {
+                tracked.push(key);
+                dirty = true;
+            }
+        }
         if with_damage && !dirty {
             state.protocols.screencopy.pending.push(pending);
             state.queue_redraw_all();

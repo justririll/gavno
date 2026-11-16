@@ -462,3 +462,16 @@ fn reset_disables_server_closes_outstanding_cards_and_retains_active() {
     h.gv.refresh_notifications();
     assert!(h.gv.notifications.borrow().enabled.load(Ordering::Acquire));
 }
+
+#[test]
+fn battery_warns_once_per_threshold_and_only_while_discharging() {
+    let b = |percent, charging| crate::topbar::Battery { percent, charging };
+    assert_eq!(battery_warning(Some(&b(40, false)), None), None);
+    assert_eq!(battery_warning(Some(&b(15, false)), None), Some((15, 1)));
+    assert_eq!(battery_warning(Some(&b(12, false)), Some(15)), None);
+    assert_eq!(battery_warning(Some(&b(5, false)), Some(15)), Some((5, 2)));
+    assert_eq!(battery_warning(Some(&b(3, false)), Some(5)), None);
+    assert_eq!(battery_warning(Some(&b(4, false)), None), Some((5, 2)));
+    assert_eq!(battery_warning(Some(&b(4, true)), None), None);
+    assert_eq!(battery_warning(None, None), None);
+}

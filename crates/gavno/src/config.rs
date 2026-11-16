@@ -24,6 +24,9 @@ pub struct Config {
     pub file_manager: String,
     /// Session polkit agent started with the session; empty disables it.
     pub polkit_agent: String,
+    /// Commands started with a TTY session (when their program is installed),
+    /// by default resident servers that make apps open instantly.
+    pub autostart: Vec<String>,
     /// Output scale for built-in panels (eDP). External outputs use 1.0.
     pub internal_scale: f64,
     pub output_mode: Option<crate::hdr::mode::ModeRequest>,
@@ -117,6 +120,13 @@ impl ModKey {
     }
 }
 
+/// A foot server makes `footclient` windows open in a few milliseconds, and
+/// all terminal windows share one process and glyph cache, which also saves
+/// memory. Heavier resident helpers (`gavno-files --daemon`) are opt-in.
+pub fn default_autostart() -> Vec<String> {
+    vec!["foot --server".into()]
+}
+
 #[derive(Default, Deserialize)]
 #[serde(default)]
 struct FileConfig {
@@ -125,6 +135,7 @@ struct FileConfig {
     launcher: Option<String>,
     file_manager: Option<String>,
     polkit_agent: Option<String>,
+    autostart: Option<Vec<String>>,
     gap: Option<i64>,
     output: Output,
     outputs: BTreeMap<String, OutputConfig>,
@@ -281,6 +292,7 @@ impl Config {
                     .polkit_agent
                     .map(|s| s.trim().to_owned())
                     .unwrap_or_else(|| "gavno-polkit-agent".into()),
+                autostart: file.autostart.unwrap_or_else(default_autostart),
                 internal_scale: scale_clamped,
                 output_mode,
                 output_hdr,
@@ -356,6 +368,7 @@ options = "caps:escape"
             launcher: None,
             file_manager: "gavno-files".into(),
             polkit_agent: "gavno-polkit-agent".into(),
+            autostart: default_autostart(),
             internal_scale: 1.75,
             output_mode: None,
             output_hdr: false,
@@ -396,6 +409,7 @@ options = "caps:escape"
             launcher: Some("rofi".into()),
             file_manager: "gavno-files".into(),
             polkit_agent: "gavno-polkit-agent".into(),
+            autostart: default_autostart(),
             internal_scale: 2.0,
             output_mode: None,
             output_hdr: false,
@@ -590,12 +604,13 @@ pub struct ModulesConfig {
     pub screencopy: bool,
     pub launcher: bool,
     pub notifications: bool,
+    pub media: bool,
     #[serde(flatten)]
     unknown: toml::Table,
 }
 impl Default for ModulesConfig {
     fn default() -> Self {
-        Self { dock: true, bar: true, overview: true, tiling: true, snap: true, switcher: true, gestures: true, window_gestures: true, resize_mode: true, animations: true, decorations: true, ipc: true, screencopy: true, launcher: true, notifications: true, unknown: Default::default() }
+        Self { dock: true, bar: true, overview: true, tiling: true, snap: true, switcher: true, gestures: true, window_gestures: true, resize_mode: true, animations: true, decorations: true, ipc: true, screencopy: true, launcher: true, notifications: true, media: true, unknown: Default::default() }
     }
 }
 
