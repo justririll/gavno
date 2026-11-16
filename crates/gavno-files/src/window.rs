@@ -138,6 +138,9 @@ impl FileWindow {
         search.set_placeholder_text(Some("Filter this folder"));
         search.set_visible(false);
         search.set_width_chars(22);
+        let terminal_button = icon_button("utilities-terminal-symbolic", "Terminal (F4)");
+        terminal_button.set_action_name(Some("win.dock"));
+        header_end.push(terminal_button.upcast());
         header_end.push(search.clone().upcast());
         let search_button = gtk::ToggleButton::builder()
             .icon_name("system-search-symbolic")
