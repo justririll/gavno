@@ -17,6 +17,7 @@ struct Client {
     pointer_positions: Vec<(f64, f64)>,
     pointer_buttons: Vec<u32>,
     keyboard_keys: Vec<u32>,
+    frame_callbacks: u32,
 }
 impl Dispatch<wl_registry::WlRegistry, ()> for Client {
     fn event(
@@ -48,6 +49,9 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Client {
             }
         }
     }
+}
+impl Dispatch<wayland_client::protocol::wl_callback::WlCallback, ()> for Client {
+    fn event(state: &mut Self, _: &wayland_client::protocol::wl_callback::WlCallback, _: wayland_client::protocol::wl_callback::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) { state.frame_callbacks += 1; }
 }
 wayland_client::delegate_noop!(Client: ignore wl_seat::WlSeat);
 impl Dispatch<wl_pointer::WlPointer, ()> for Client {
@@ -172,6 +176,17 @@ impl Harness {
         let window = self.gv.unmapped.pop().unwrap();
         self.surfaces.push((window.clone(), surface));
         window
+    }
+    pub(crate) fn request_frame(&mut self, window: &Window) {
+        let surface = &self.surfaces.iter().find(|(w, _)| w == window).unwrap().1;
+        surface.frame(&self.queue.handle(), ());
+        surface.commit();
+        self.exchange();
+        self.exchange();
+    }
+    pub(crate) fn frame_callbacks(&mut self) -> u32 {
+        self.exchange(); self.exchange();
+        std::mem::take(&mut self.client.frame_callbacks)
     }
     pub(crate) fn keyboard_keys(&mut self) -> Vec<u32> {
         self.exchange(); self.exchange();

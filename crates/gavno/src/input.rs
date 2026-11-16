@@ -72,6 +72,17 @@ impl Gavno {
             static FIRST_INPUT: std::sync::Once = std::sync::Once::new();
             FIRST_INPUT.call_once(|| crate::perf::startup("input.first_event"));
             self.protocols.idle_policy.activity();
+            let waking = self.power.is_off();
+            self.power_on_monitors("input");
+            match &event {
+                InputEvent::Keyboard { event, .. } => {
+                    if self.power.consume_key(event.key_code().raw(), event.state() == KeyState::Pressed, waking) { return; }
+                }
+                InputEvent::PointerButton { event, .. } => {
+                    if self.power.consume_button(event.button_code(), event.state() == ButtonState::Pressed, waking) { return; }
+                }
+                _ => {}
+            }
         }
         if self.lock.internal() && !matches!(&event, InputEvent::Keyboard { .. } | InputEvent::PointerMotion { .. }
             | InputEvent::PointerMotionAbsolute { .. } | InputEvent::PointerButton { .. }) { return; }

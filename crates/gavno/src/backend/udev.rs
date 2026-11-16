@@ -629,6 +629,7 @@ fn connector_connected(gv: &mut Gavno, connector: connector::Info, crtc: crtc::H
         },
     );
     crate::perf::startup_output("udev.output.hook.begin", &name);
+    if gv.power.is_off() { set_power(gv, false); }
     gv.output_added_hook();
     crate::perf::startup_output("udev.output.ready", &name);
     queue_redraw(gv, crtc);
@@ -719,13 +720,26 @@ pub fn set_mode(gv: &mut Gavno, output: &Output, mode: WlMode) -> Result<(), Str
     }
     let timing = surface.modes.iter().find(|m| WlMode::from(**m) == mode).copied().ok_or("mode unavailable")?;
     let previous = output.current_mode().and_then(|old| surface.modes.iter().find(|m| WlMode::from(**m) == old)).copied();
-    if let Err(error) = surface.drm_output.use_mode::<_, GavnoRenderElement>(timing, &mut gpu.renderer, &DrmOutputRenderElements::default()) {
-        if let Some(previous) = previous {
-            surface.drm_output.use_mode::<_, GavnoRenderElement>(previous, &mut gpu.renderer, &DrmOutputRenderElements::default())
-                .map_err(|restore| format!("modeset failed: {error:?}; restore failed: {restore:?}"))?;
+    let off = gv.power.is_off();
+    if off { gv.power.secured_outputs.retain(|o| o != output); }
+    let result = match surface.drm_output.use_mode::<_, GavnoRenderElement>(timing, &mut gpu.renderer, &DrmOutputRenderElements::default()) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let rollback = if let Some(previous) = previous {
+                surface.drm_output.use_mode::<_, GavnoRenderElement>(previous, &mut gpu.renderer, &DrmOutputRenderElements::default())
+                    .map_err(|restore| format!("modeset failed: {error:?}; restore failed: {restore:?}"))
+            } else { Ok(()) };
+            rollback.and(Err(format!("modeset failed: {error:?}")))
         }
-        return Err(format!("modeset failed: {error:?}"));
+    };
+    // Mode negotiation (including rollback) may commit a frame. Clear it even
+    // on an error, before returning to the event loop in the sleeping state.
+    if off {
+        surface.drm_output.with_compositor(|compositor| compositor.clear())
+            .map_err(|e| format!("power off after modeset: {e}"))?;
+        gv.power.secured_outputs.push(output.clone());
     }
+    result?;
     output.change_current_state(Some(mode), None, None, None);
     surface.drm_output.reset_buffers();
     Ok(())
@@ -859,6 +873,35 @@ fn draw_frame(surface: &mut Surface, renderer: &mut GlesRenderer,
     }
 }
 
+/// Clear through DrmCompositor, rather than just DrmSurface, so queued and
+/// pending frames cannot re-enable a sleeping CRTC. The next full frame modesets.
+pub fn set_power(gv: &mut Gavno, on: bool) {
+    gv.power.secured_outputs.clear();
+    let Backend::Udev(data) = &mut gv.backend else { return };
+    let Some(gpu) = data.gpu.as_mut() else { return };
+    for surface in gpu.surfaces.values_mut() {
+        if let RedrawState::WaitingForTimer { token, .. } = surface.redraw {
+            gv.loop_handle.remove(token);
+        }
+        surface.redraw = RedrawState::Idle;
+        if data.session.is_active() {
+            let result = surface.drm_output.with_compositor(|compositor| {
+                if on { compositor.reset_state() } else { compositor.clear() }
+            });
+            if let Err(error) = result {
+                warn!(output = surface.output.name(), %error, on, "output power change failed");
+            } else if !on {
+                gv.power.secured_outputs.push(surface.output.clone());
+            }
+        }
+        surface.drm_output.reset_buffers();
+        if on {
+            if let Ok(color) = &mut surface.color { color.invalidate(); }
+            surface.hdr_requested = Some(surface.hdr_requested.unwrap_or(surface.hdr.is_some()));
+        }
+    }
+}
+
 pub fn queue_redraw_all(gv: &mut Gavno) {
     let crtcs: Vec<crtc::Handle> = udev(gv)
         .and_then(|d| d.gpu.as_ref())
@@ -870,6 +913,7 @@ pub fn queue_redraw_all(gv: &mut Gavno) {
 }
 
 fn queue_redraw(gv: &mut Gavno, crtc: crtc::Handle) {
+    if gv.power.is_off() { gv.schedule_power_frames(); return; }
     let Some(surface) = surface_mut(&mut gv.backend, crtc) else {
         return;
     };
@@ -892,6 +936,7 @@ fn queue_redraw(gv: &mut Gavno, crtc: crtc::Handle) {
 const SCANOUT_FLAGS: FrameFlags = FrameFlags::empty();
 
 fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
+    if gv.power.is_off() { return; }
     let started = std::time::Instant::now();
     let session_active = udev(gv).is_some_and(|d| d.session.is_active());
     let pointer_pos = gv.pointer_location();
@@ -910,6 +955,7 @@ fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
         surface.redraw = RedrawState::Idle;
         return;
     }
+    gv.power.rendered_frames += 1;
     if let Some(enabled) = surface.hdr_requested.take() {
         if let Err(error) = change_hdr(surface, &mut gpu.renderer, &gpu.allocator, enabled) {
             warn!(output = surface.output.name(), %error, "HDR change failed; retaining SDR or last working mode");
@@ -1071,6 +1117,7 @@ fn on_timer(gv: &mut Gavno, crtc: crtc::Handle) {
 
 fn on_vblank(gv: &mut Gavno, crtc: crtc::Handle, metadata: &mut Option<DrmEventMetadata>) {
     let _stall = crate::perf::Stall::new("drm.vblank");
+    if gv.power.is_off() { return; }
     let Some(surface) = surface_mut(&mut gv.backend, crtc) else {
         return;
     };
@@ -1159,6 +1206,7 @@ fn on_session_activate(gv: &mut Gavno) {
             error!("the primary GPU could not be initialized");
             gv.quit();
         }
+        gv.power_on_monitors("session activation");
         gv.queue_redraw_all();
         return;
     }
@@ -1179,6 +1227,7 @@ fn on_session_activate(gv: &mut Gavno) {
         // Connectors may have changed while we were away.
         device_changed(gv, node);
     }
+    gv.power_on_monitors("session activation");
     gv.queue_redraw_all();
 }
 

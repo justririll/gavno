@@ -27,6 +27,10 @@ impl WinitData {
         &self.output
     }
 
+    pub fn reset_damage(&mut self) {
+        self.damage_tracker = OutputDamageTracker::from_output(&self.output);
+    }
+
     pub fn queue_redraw(&mut self) {
         if !self.redraw_queued {
             self.redraw_queued = true;
@@ -116,6 +120,8 @@ fn render(gv: &mut Gavno) {
         return;
     };
     data.redraw_queued = false;
+    if gv.power.is_off() { return; }
+    gv.power.rendered_frames += 1;
     let output = data.output.clone();
 
     let age = data.backend.buffer_age().unwrap_or(0);

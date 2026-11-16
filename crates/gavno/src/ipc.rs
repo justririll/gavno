@@ -220,6 +220,14 @@ fn screen(gv: &Gavno) -> Value {
 }
 
 fn dispatch(gv: &mut Gavno, method: &str, params: &Value) -> Result<Value, String> {
+    if method == "power_off_monitors" {
+        gv.power_off_monitors("IPC");
+        return Ok(json!({"outputs_powered_on": false}));
+    }
+    if method == "power_on_monitors" {
+        gv.power_on_monitors("IPC");
+        return Ok(json!({"outputs_powered_on": true}));
+    }
     if gv.protocols.locks.locked && method != "screen" { return Err("session locked".into()); }
     if debug_input::handles(method) { return debug_input::dispatch(gv, method, params); }
     if method == "screen" {
@@ -739,5 +747,25 @@ fn request_reload(line: &[u8], gv: &mut Gavno, reply: transport::Reply<Gavno>) {
     if std::thread::Builder::new().name("gavno-config".into()).spawn(move || { let _=tx.send(crate::config_reload::Prepared::read(nested,&previous)); }).is_err() {
         gv.ipc.reload_pending = false;
         if let Some(reply)=reply.borrow_mut().take() { reply.send(format!("{}\n",json!({"id":error_id,"error":"cannot start config worker"})).into_bytes()); }
+    }
+}
+
+#[cfg(test)]
+mod power_tests {
+    use super::*;
+    #[test]
+    fn normal_power_methods_work_without_debug_input_and_while_locked() {
+        let mut h = crate::state::tests::Harness::new();
+        for locked in [false, true] {
+            h.gv.protocols.locks.locked = locked;
+            assert_eq!(dispatch(&mut h.gv, "power_off_monitors", &json!({})).unwrap(), json!({"outputs_powered_on": false}));
+            assert!(h.gv.power.is_off());
+            // Idempotent requests do not change the transition state.
+            dispatch(&mut h.gv, "power_off_monitors", &json!({})).unwrap();
+            assert!(h.gv.power.is_off());
+            assert_eq!(dispatch(&mut h.gv, "power_on_monitors", &json!({})).unwrap(), json!({"outputs_powered_on": true}));
+            assert!(!h.gv.power.is_off());
+            assert_eq!(h.gv.protocols.locks.locked, locked);
+        }
     }
 }

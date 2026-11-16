@@ -478,7 +478,7 @@ impl Gavno {
         }
     }
     pub fn reconcile_classic_widgets(&mut self) {
-        let active = self.classic_widget_gate().active();
+        let active = !self.power.is_off() && self.classic_widget_gate().active();
         let w = &mut self.classic.desktop.widgets;
         if !active {
             if let Some(t) = w.clock_timer.take() {
@@ -685,6 +685,13 @@ mod tests {
         assert!(h.gv.classic.desktop.widgets.clock_timer.is_some());
         assert!(h.gv.classic.desktop.widgets.system_timer.is_some());
         assert_eq!(h.gv.classic.desktop.widgets.enabled, ["clock", "system", "media"]);
+        h.gv.power_off_monitors("test");
+        assert!(h.gv.classic.desktop.widgets.clock_timer.is_none());
+        assert!(h.gv.classic.desktop.widgets.system_timer.is_none());
+        h.gv.power_on_monitors("test");
+        h.gv.reconcile_classic_widgets();
+        assert!(h.gv.classic.desktop.widgets.clock_timer.is_some());
+        assert!(h.gv.classic.desktop.widgets.system_timer.is_some());
         let w = h.window();
         h.gv.map_new_window(w.clone());
         h.gv.set_window_mode(&w, crate::window_mode::WindowMode::Maximized, None);

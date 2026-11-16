@@ -50,26 +50,26 @@ impl InputBackend for TestBackend {
     type PointerButtonEvent = Button;
     type PointerAxisEvent = Scroll;
     type KeyboardKeyEvent = Key;
-    type PointerMotionEvent = UnusedEvent;
-    type PointerMotionAbsoluteEvent = UnusedEvent;
-    type GestureSwipeBeginEvent = UnusedEvent;
-    type GestureSwipeUpdateEvent = UnusedEvent;
-    type GestureSwipeEndEvent = UnusedEvent;
-    type GesturePinchBeginEvent = UnusedEvent;
-    type GesturePinchUpdateEvent = UnusedEvent;
-    type GesturePinchEndEvent = UnusedEvent;
-    type GestureHoldBeginEvent = UnusedEvent;
-    type GestureHoldEndEvent = UnusedEvent;
-    type TouchDownEvent = UnusedEvent;
-    type TouchUpEvent = UnusedEvent;
-    type TouchMotionEvent = UnusedEvent;
-    type TouchCancelEvent = UnusedEvent;
-    type TouchFrameEvent = UnusedEvent;
+    type PointerMotionEvent = WakeEvent;
+    type PointerMotionAbsoluteEvent = WakeEvent;
+    type GestureSwipeBeginEvent = WakeEvent;
+    type GestureSwipeUpdateEvent = WakeEvent;
+    type GestureSwipeEndEvent = WakeEvent;
+    type GesturePinchBeginEvent = WakeEvent;
+    type GesturePinchUpdateEvent = WakeEvent;
+    type GesturePinchEndEvent = WakeEvent;
+    type GestureHoldBeginEvent = WakeEvent;
+    type GestureHoldEndEvent = WakeEvent;
+    type TouchDownEvent = WakeEvent;
+    type TouchUpEvent = WakeEvent;
+    type TouchMotionEvent = WakeEvent;
+    type TouchCancelEvent = WakeEvent;
+    type TouchFrameEvent = WakeEvent;
     type TabletToolAxisEvent = UnusedEvent;
     type TabletToolProximityEvent = UnusedEvent;
     type TabletToolTipEvent = UnusedEvent;
     type TabletToolButtonEvent = UnusedEvent;
-    type SwitchToggleEvent = UnusedEvent;
+    type SwitchToggleEvent = WakeEvent;
     type SpecialEvent = UnusedEvent;
 }
 fn setup() -> (crate::state::tests::Harness, Output) {
@@ -362,4 +362,156 @@ fn music_panel_captures_xkb_keys_and_outside_clicks_then_releases_input() {
     h.gv.on_keyboard::<TestBackend>(Key(38, KeyState::Pressed));
     h.gv.on_keyboard::<TestBackend>(Key(38, KeyState::Released));
     assert_eq!(h.keyboard_keys(), vec![30, 30]);
+}
+
+// One synthetic event implements the input kinds whose wake path precedes
+// shell dispatch (touch and switch currently have no client forwarding path).
+#[derive(Clone, Copy)]
+struct WakeEvent;
+use smithay::{backend::input as backend_input, wayland::seat::WaylandFocus};
+impl Event<TestBackend> for WakeEvent {
+    fn time(&self) -> u64 { 1000 }
+    fn device(&self) -> TestDevice { TestDevice }
+}
+impl PointerMotionEvent<TestBackend> for WakeEvent {
+    fn delta_x(&self) -> f64 { 2.0 }
+    fn delta_y(&self) -> f64 { 3.0 }
+    fn delta_x_unaccel(&self) -> f64 { 2.0 }
+    fn delta_y_unaccel(&self) -> f64 { 3.0 }
+}
+impl AbsolutePositionEvent<TestBackend> for WakeEvent {
+    fn x(&self) -> f64 { 0.5 }
+    fn y(&self) -> f64 { 0.5 }
+    fn x_transformed(&self, width: i32) -> f64 { f64::from(width) / 2.0 }
+    fn y_transformed(&self, height: i32) -> f64 { f64::from(height) / 2.0 }
+}
+impl backend_input::GestureBeginEvent<TestBackend> for WakeEvent { fn fingers(&self) -> u32 { 3 } }
+impl backend_input::GestureEndEvent<TestBackend> for WakeEvent { fn cancelled(&self) -> bool { false } }
+impl backend_input::GestureSwipeUpdateEvent<TestBackend> for WakeEvent {
+    fn delta_x(&self) -> f64 { 0.0 }
+    fn delta_y(&self) -> f64 { 0.0 }
+}
+impl backend_input::GesturePinchUpdateEvent<TestBackend> for WakeEvent {
+    fn delta_x(&self) -> f64 { 0.0 }
+    fn delta_y(&self) -> f64 { 0.0 }
+    fn scale(&self) -> f64 { 1.0 }
+    fn rotation(&self) -> f64 { 0.0 }
+}
+impl backend_input::TouchEvent<TestBackend> for WakeEvent {
+    fn slot(&self) -> backend_input::TouchSlot { Some(0).into() }
+}
+impl backend_input::SwitchToggleEvent<TestBackend> for WakeEvent {
+    fn switch(&self) -> Option<backend_input::Switch> { Some(backend_input::Switch::Lid) }
+    fn state(&self) -> backend_input::SwitchState { backend_input::SwitchState::Off }
+}
+macro_rules! wake_event_traits {
+    ($($kind:ident),*) => { $(impl backend_input::$kind<TestBackend> for WakeEvent {})* };
+}
+wake_event_traits!(PointerMotionAbsoluteEvent, GestureSwipeBeginEvent, GestureSwipeEndEvent,
+    GesturePinchBeginEvent, GesturePinchEndEvent, GestureHoldBeginEvent, GestureHoldEndEvent,
+    TouchDownEvent, TouchUpEvent, TouchMotionEvent, TouchCancelEvent, TouchFrameEvent);
+
+#[test]
+fn every_input_kind_wakes_and_records_idle_activity() {
+    let events: Vec<InputEvent<TestBackend>> = vec![
+        InputEvent::Keyboard { event: Key(38, KeyState::Pressed) },
+        InputEvent::PointerButton { event: Button(BTN_LEFT, ButtonState::Pressed) },
+        InputEvent::PointerMotion { event: WakeEvent },
+        InputEvent::PointerMotionAbsolute { event: WakeEvent },
+        InputEvent::PointerAxis { event: Scroll },
+        InputEvent::GestureSwipeBegin { event: WakeEvent },
+        InputEvent::GestureSwipeUpdate { event: WakeEvent },
+        InputEvent::GestureSwipeEnd { event: WakeEvent },
+        InputEvent::GesturePinchBegin { event: WakeEvent },
+        InputEvent::GesturePinchUpdate { event: WakeEvent },
+        InputEvent::GesturePinchEnd { event: WakeEvent },
+        InputEvent::GestureHoldBegin { event: WakeEvent },
+        InputEvent::GestureHoldEnd { event: WakeEvent },
+        InputEvent::TouchDown { event: WakeEvent },
+        InputEvent::TouchMotion { event: WakeEvent },
+        InputEvent::TouchUp { event: WakeEvent },
+        InputEvent::TouchCancel { event: WakeEvent },
+        InputEvent::TouchFrame { event: WakeEvent },
+        InputEvent::SwitchToggle { event: WakeEvent },
+    ];
+    for event in events {
+        let (mut h, _) = setup();
+        h.gv.power_off_monitors("test");
+        h.gv.process_input_event(event);
+        assert!(!h.gv.power.is_off());
+        assert!(h.gv.protocols.idle_policy.take_activity());
+    }
+    let (mut h, _) = setup();
+    h.gv.power_off_monitors("test");
+    h.gv.process_input_event::<TestBackend>(InputEvent::DeviceAdded { device: TestDevice });
+    h.gv.process_input_event::<TestBackend>(InputEvent::DeviceRemoved { device: TestDevice });
+    assert!(h.gv.power.is_off());
+}
+
+#[test]
+fn wake_key_and_button_pairs_are_consumed_before_clients_or_shell() {
+    let (mut h, _) = setup();
+    let window = h.window(); h.gv.map_new_window(window.clone());
+    h.commit_size(&window, 800, 600);
+    h.gv.focus_window(Some(&window));
+    motion(&mut h.gv, Some((window.wl_surface().unwrap().into_owned(), (0.0, 0.0).into())), (500.0, 400.0).into());
+    h.keyboard_keys(); h.pointer_buttons();
+    h.gv.power_off_monitors("test");
+    for state in [KeyState::Pressed, KeyState::Pressed, KeyState::Released] {
+        h.gv.process_input_event::<TestBackend>(InputEvent::Keyboard { event: Key(38, state) });
+    }
+    assert!(!h.gv.power.is_off());
+    assert!(h.keyboard_keys().is_empty());
+    for state in [KeyState::Pressed, KeyState::Released] {
+        h.gv.process_input_event::<TestBackend>(InputEvent::Keyboard { event: Key(38, state) });
+    }
+    assert_eq!(h.keyboard_keys(), [30, 30]);
+    h.gv.power_off_monitors("test");
+    for state in [ButtonState::Pressed, ButtonState::Pressed, ButtonState::Released] {
+        h.gv.process_input_event::<TestBackend>(InputEvent::PointerButton { event: Button(BTN_LEFT, state) });
+    }
+    assert!(!h.gv.power.is_off());
+    assert!(h.pointer_buttons().is_empty());
+    assert!(!h.gv.seat.get_pointer().unwrap().is_grabbed());
+    for state in [ButtonState::Pressed, ButtonState::Released] {
+        h.gv.process_input_event::<TestBackend>(InputEvent::PointerButton { event: Button(BTN_LEFT, state) });
+    }
+    assert_eq!(h.pointer_buttons(), [BTN_LEFT, BTN_LEFT]);
+    // Release of a press delivered before power-off still balances the client.
+    h.gv.focus_window(Some(&window)); h.keyboard_keys();
+    h.gv.process_input_event::<TestBackend>(InputEvent::Keyboard { event: Key(38, KeyState::Pressed) });
+    h.gv.power_off_monitors("test");
+    h.gv.process_input_event::<TestBackend>(InputEvent::Keyboard { event: Key(38, KeyState::Released) });
+    assert_eq!(h.keyboard_keys(), [30, 30]);
+    // A wake modifier must not trigger Super-tap or leave XKB modifiers stuck.
+    h.gv.power_off_monitors("test");
+    h.gv.process_input_event::<TestBackend>(InputEvent::Keyboard { event: Key(133, KeyState::Pressed) });
+    h.gv.process_input_event::<TestBackend>(InputEvent::Keyboard { event: Key(133, KeyState::Released) });
+    assert!(!h.gv.seat.get_keyboard().unwrap().modifier_state().logo);
+    assert!(!h.gv.launcher.open);
+}
+
+#[test]
+fn wake_pointer_motion_reaches_client_and_lock_keeps_its_gate() {
+    let (mut h, _) = setup();
+    let window = h.window(); h.gv.map_new_window(window.clone());
+    h.commit_size(&window, 800, 600);
+    h.gv.space.map_element(window.clone(), (0, 0), false);
+    motion(&mut h.gv, Some((window.wl_surface().unwrap().into_owned(), (0.0, 0.0).into())), (500.0, 400.0).into());
+    h.pointer_positions();
+    h.gv.power_off_monitors("test");
+    h.gv.process_input_event::<TestBackend>(InputEvent::PointerMotion { event: WakeEvent });
+    assert!(!h.gv.power.is_off());
+    assert!(!h.pointer_positions().is_empty());
+    assert_eq!(h.gv.pointer_location(), (502.0, 403.0).into());
+    h.gv.power_off_monitors("test");
+    h.gv.lock_session();
+    assert!(h.gv.power.is_off());
+    h.gv.process_input_event::<TestBackend>(InputEvent::TouchDown { event: WakeEvent });
+    assert!(!h.gv.power.is_off());
+    assert!(h.gv.protocols.locks.locked);
+    h.gv.power_off_monitors("test");
+    h.gv.process_input_event::<TestBackend>(InputEvent::Keyboard { event: Key(38, KeyState::Pressed) });
+    h.gv.process_input_event::<TestBackend>(InputEvent::Keyboard { event: Key(38, KeyState::Released) });
+    assert!(h.keyboard_keys().is_empty());
 }

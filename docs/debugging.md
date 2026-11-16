@@ -141,3 +141,30 @@ Classic. It opens foot or zenity if installed so the horizontal swipe has an
 occupied workspace to leave; `GAVNO_DEMO_CLIENT` can supply another command.
 A host Wayland or X display and Python 3 (only for safe path encoding in
 the script) are required. Debug input adds no recurring idle timers or workers.
+
+# Output power
+
+These normal IPC methods work without `GAVNO_DEBUG_INPUT`, including while locked:
+
+```sh
+gavno msg power_off_monitors
+gavno msg power_on_monitors
+```
+
+They return `{"outputs_powered_on":false}` or `true` inside `result`. Power-off
+lasts until input, explicit power-on, session resume/VT activation, or reloading with
+`display.off_after_idle_secs = 0`. The wake key/button press, repeats and its
+matching release are consumed; pointer motion is forwarded. Locking while off
+keeps outputs off. Visible idle inhibitors prevent automatic power-off, but do
+not prevent an explicit IPC request.
+
+On TTY, power-off disables the CRTCs and their planes. Pending client frame
+callbacks on visible surfaces are delivered at most once per second, with no
+rendering and no periodic timer when no callbacks are pending. Nested mode keeps
+the host window and its last image, and stops rendering. Debug `state` reports
+`outputs_powered_on`, cumulative `rendered_frames`, and
+`power_frame_timer_firings`. To check sleeping behavior, power off, record these
+counters, wait, and read state again: rendered frames must remain constant;
+callback timer firings increase only when clients request callbacks. Injecting
+any supported input wakes the outputs and rendering resumes. INFO records
+`outputs powered off` and `outputs powered on` include the transition reason.

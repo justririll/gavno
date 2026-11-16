@@ -312,6 +312,9 @@ impl Gavno {
         self.queue_redraw_all();
     }
     pub(crate) fn refresh_internal_lock(&mut self) {
+        if self.power.is_off() {
+            for output in &self.power.secured_outputs { self.protocols.locks.powered_off(output); }
+        }
         if self.lock.internal && std::mem::take(&mut self.lock.recover_ui) {
             self.lock.failed = false;
             self.restart_lock_ui();
@@ -348,7 +351,12 @@ impl Gavno {
             self.queue_redraw_all();
         }
     }
+    pub(crate) fn power_lock_clock(&mut self, on: bool) {
+        if let Some(token) = self.lock.minute_timer.take() { self.loop_handle.remove(token); }
+        if on && self.lock.internal && !self.lock.failed { self.schedule_lock_minute(); }
+    }
     fn schedule_lock_minute(&mut self) {
+        if self.power.is_off() { return; }
         if let Some(token) = self.lock.minute_timer.take() {
             self.loop_handle.remove(token);
         }
@@ -435,6 +443,7 @@ impl Gavno {
                 self.lock.sleeping = false;
                 self.lock.released = false;
                 self.lock.command(logind::Command::Resume);
+                self.power_on_monitors("session resume");
             }
         }
     }
@@ -642,6 +651,30 @@ mod tests {
         assert!(h.gv.protocols.locks.locked);
         assert!(h.gv.lock.desktop_visible());
     }
+    #[test]
+    fn powered_off_lock_confirms_only_successful_drm_power_down_and_resume_wakes() {
+        let mut h = crate::state::tests::Harness::new();
+        let output = output();
+        h.gv.space.map_output(&output, (0, 0));
+        let (tx, rx) = mpsc::channel();
+        h.gv.lock.logind = Some(tx);
+        h.gv.power_off_monitors("test");
+        h.gv.logind_signal(logind::Signal::Sleep(true));
+        assert!(h.gv.power.is_off());
+        assert!(h.gv.lock.minute_timer.is_none());
+        assert_eq!(rx.try_recv().unwrap(), logind::Command::Hint(true));
+        assert!(rx.try_recv().is_err(), "a failed/unknown power-off cannot confirm security");
+        // Simulate the successful clear recorded by the DRM backend.
+        h.gv.power.secured_outputs.push(output);
+        h.gv.refresh_internal_lock();
+        assert_eq!(rx.try_recv().unwrap(), logind::Command::Secured);
+        h.gv.logind_signal(logind::Signal::Sleep(false));
+        assert_eq!(rx.try_recv().unwrap(), logind::Command::Resume);
+        assert!(!h.gv.power.is_off());
+        assert!(h.gv.lock.minute_timer.is_some());
+        assert!(h.gv.protocols.locks.locked);
+    }
+
 }
 
 #[cfg(test)]

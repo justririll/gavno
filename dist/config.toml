@@ -66,6 +66,9 @@
 # [tiling]
 # default = false
 
+# [display]
+# off_after_idle_secs = 600 # 0 disables automatic output power-off, independently of locking.
+
 # [lock]
 # after_idle_secs = 300 # 0 disables automatic locking; idle inhibitors are respected.
 

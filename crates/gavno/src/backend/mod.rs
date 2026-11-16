@@ -16,6 +16,10 @@ pub enum Backend {
 }
 
 pub fn queue_redraw_all(gv: &mut Gavno) {
+    if gv.power.is_off() {
+        gv.schedule_power_frames();
+        return;
+    }
     match &mut gv.backend {
         Backend::None => {}
         Backend::Winit(data) => data.queue_redraw(),

@@ -26,6 +26,7 @@ mod cursor;
 mod debug;
 mod greeter;
 mod lock;
+mod power;
 mod launcher;
 mod notify;
 mod media;

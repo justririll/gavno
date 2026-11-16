@@ -33,6 +33,7 @@ pub struct Key {
     pub live: bool,
 }
 pub const SCHEMA: &[Key] = &[
+    Key { path: "display.off_after_idle_secs", kind: Kind::Int { min: 0, max: 4294967295, step: 1 }, default: Default::Int(600), description: "Power off all outputs after this many idle seconds; zero disables automatic power-off.", section: "Display", live: true },
     Key { path: "display.brightness_control", kind: Kind::Enum { values: &["auto", "backlight", "software"] }, default: Default::String("auto"), description: "Use a backlight when available (auto), require a backlight, or dim all outputs in software.", section: "Display", live: true },
     Key { path: "media.music_panel", kind: Kind::Bool, default: Default::Bool(true), description: "Open the built-in Spotify panel from the bar media information area.", section: "Media", live: true },
     Key {

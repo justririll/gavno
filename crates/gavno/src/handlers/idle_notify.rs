@@ -65,6 +65,7 @@ impl Gavno {
         self.protocols.idle.set_is_inhibited(inhibited);
         let activity = self.protocols.idle_policy.take_activity();
         self.refresh_lock_idle(activity, inhibited);
+        self.refresh_power_idle(activity, inhibited);
         if activity {
             self.protocols.idle.notify_activity(&self.seat);
         }

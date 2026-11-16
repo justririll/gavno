@@ -42,6 +42,7 @@ default": see `terminal` and `launcher` below.
 | `gap` | integer, logical px | `12` | none |
 | `[tiling] default` | boolean | `false` | none |
 | `[lock] after_idle_secs` | integer, seconds | `300` | none |
+| `[display] off_after_idle_secs` | u32 seconds, `0` = never | `600` | none |
 | `[display] brightness_control` | string, `"auto"`, `"backlight"` or `"software"` | `"auto"` | none |
 | `[output] internal_scale` | float | `1.75` | `GAVNO_SCALE` |
 | `[output] mode` | string, `WIDTHxHEIGHT[@HZ]` | preferred mode, highest refresh among preferred modes | `GAVNO_OUTPUT_MODE` |
@@ -550,3 +551,15 @@ name such as `eDP-1`. Numeric steps describe the editor increments.
 | `outputs.*.scale` | float (0.5–3.0, step 0.05) | `unset` | yes |
 | `outputs.*.hdr` | bool | `unset` | yes |
 | `outputs.*.enabled` | bool | `unset` | after re-login |
+
+## Idle output power
+
+`[display] off_after_idle_secs = 600` powers off every output after ten minutes
+of inactivity. Set it to `0` to disable automatic power-off. It is independent
+of `[lock] after_idle_secs`: either timeout can be disabled while the other
+remains active. Keyboard, pointer, touch, gesture and switch activity reset the
+timeout; active idle inhibitors on visible surfaces prevent automatic power-off,
+using the same policy as idle locking. The timeout also applies on the lock
+screen and greeter. Changes apply on reload; reloading with the value `0` wakes
+sleeping outputs. See [Output power](debugging.md#output-power) for IPC controls
+and wake behavior.

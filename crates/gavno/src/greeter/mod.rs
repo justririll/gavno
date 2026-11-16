@@ -18,7 +18,7 @@ use smithay::{
     input::keyboard::{keysyms, Keysym, ModifiersState},
     reexports::calloop::{
         timer::{TimeoutAction, Timer},
-        LoopHandle,
+        LoopHandle, RegistrationToken,
     },
     utils::{Logical, Physical, Point, Rectangle, Size},
 };
@@ -70,6 +70,7 @@ const WHITE: [f32; 3] = [1.0, 1.0, 1.0];
 const MAX_DOTS: usize = 14;
 
 pub struct Greeter {
+    clock_timer: Option<RegistrationToken>,
     ui_failures: u8,
     users: Vec<User>,
     selected: usize,
@@ -156,6 +157,7 @@ impl Greeter {
             tracing::warn!("no GREETD_SOCK: demo mode, the password is \"gavno\"");
         }
         Self {
+            clock_timer: None,
             ui_failures: 0,
             users,
             selected: 0,
@@ -813,19 +815,44 @@ fn load_users() -> Vec<User> {
 /// every minute boundary for the clock.
 pub fn start(gv: &mut Gavno) {
     gv.greeter = Some(Greeter::new(&gv.loop_handle));
-    let until_next_minute = |t: LocalTime| Duration::from_secs(60 - t.second as u64 % 60) + Duration::from_millis(20);
-    let first = until_next_minute(LocalTime::now());
-    let _ = gv.loop_handle.insert_source(Timer::from_duration(first), move |_, _, gv| {
-        let _stall = crate::perf::Stall::new("timer.greeter_clock");
-        if gv.greeter.as_ref().is_none_or(|g| g.ui_failures >= 2) { return TimeoutAction::Drop; }
-        gv.queue_redraw_all();
-        TimeoutAction::ToDuration(until_next_minute(LocalTime::now()))
-    });
+    gv.refresh_greeter_clock();
+}
+impl Gavno {
+    pub(crate) fn refresh_greeter_clock(&mut self) {
+        let off = self.power.is_off();
+        let Some(greeter) = self.greeter.as_mut() else { return };
+        if off || greeter.ui_failures >= 2 {
+            if let Some(token) = greeter.clock_timer.take() { self.loop_handle.remove(token); }
+            return;
+        }
+        if greeter.clock_timer.is_some() { return; }
+        let time = LocalTime::now();
+        let delay = Duration::from_secs(60 - u64::from(time.second) % 60) + Duration::from_millis(20);
+        greeter.clock_timer = self.loop_handle.insert_source(Timer::from_duration(delay), |_, _, gv| {
+            let _stall = crate::perf::Stall::new("timer.greeter_clock");
+            if let Some(greeter) = gv.greeter.as_mut() { greeter.clock_timer = None; }
+            gv.queue_redraw_all();
+            gv.refresh_greeter_clock();
+            TimeoutAction::Drop
+        }).ok();
+    }
 }
 
 #[cfg(test)]
 mod lock_ui_tests {
     use super::*;
+    #[test]
+    fn greeter_clock_stops_while_powered_off_and_restarts_on_wake() {
+        let mut h = crate::state::tests::Harness::new();
+        let (tx, _rx) = std::sync::mpsc::channel();
+        h.gv.greeter = Some(Greeter::for_lock(tx, User { name: "test".into(), display: "Test".into() }));
+        h.gv.refresh_greeter_clock();
+        assert!(h.gv.greeter.as_ref().unwrap().clock_timer.is_some());
+        h.gv.power_off_monitors("test");
+        assert!(h.gv.greeter.as_ref().unwrap().clock_timer.is_none());
+        h.gv.power_on_monitors("test");
+        assert!(h.gv.greeter.as_ref().unwrap().clock_timer.is_some());
+    }
     #[test]
     fn lock_ui_has_one_user_and_no_greetd_or_demo_backend() {
         let (tx, rx) = std::sync::mpsc::channel();

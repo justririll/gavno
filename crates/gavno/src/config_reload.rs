@@ -167,6 +167,7 @@ pub(crate) fn apply(gv: &mut Gavno, prepared: Prepared) -> Result<Value, String>
         }
     }
     let lock_changed = gv.config.lock.after_idle_secs != config.lock.after_idle_secs;
+    let power_changed = gv.config.display.off_after_idle_secs != config.display.off_after_idle_secs;
     let icons_changed = gv.config.dock.icon_theme != config.dock.icon_theme;
     let white_changed = gv.config.sdr_white_nits != config.sdr_white_nits;
     let pins_changed = gv.config.dock.pinned != config.dock.pinned;
@@ -215,6 +216,11 @@ pub(crate) fn apply(gv: &mut Gavno, prepared: Prepared) -> Result<Value, String>
     }
     if white_changed {
         crate::backend::udev::set_sdr_white(gv, gv.config.sdr_white_nits);
+    }
+    if gv.config.display.off_after_idle_secs == 0 { gv.power_on_monitors("config reload"); }
+    if power_changed {
+        let inhibited = gv.protocols.idle.is_inhibited();
+        gv.refresh_power_idle(true, inhibited);
     }
     if lock_changed {
         let inhibited = gv.protocols.idle.is_inhibited();

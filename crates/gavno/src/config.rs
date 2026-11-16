@@ -50,12 +50,19 @@ pub struct Config {
     pub display: DisplayConfig,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct DisplayConfig {
+    pub off_after_idle_secs: u32,
     pub brightness_control: crate::brightness::Control,
     #[serde(flatten)]
     unknown: toml::Table,
+}
+
+impl Default for DisplayConfig {
+    fn default() -> Self {
+        Self { off_after_idle_secs: 600, brightness_control: Default::default(), unknown: Default::default() }
+    }
 }
 
 /// Connector overrides; absent values inherit the global output settings.
@@ -609,6 +616,26 @@ options = "caps:escape"
         assert_eq!(c.output_mode.unwrap().width, 1920);
         assert_eq!(c.sdr_white_nits, 80.0);
         assert_eq!(warnings.len(), 1);
+    }
+
+    #[test]
+    fn display_power_configuration() {
+        assert_eq!(build(false, None, &[]).0.display.off_after_idle_secs, 600);
+        for seconds in [0, 1, 600, u32::MAX] {
+            let text = format!("[display]\noff_after_idle_secs = {seconds}\n[lock]\nafter_idle_secs = 0");
+            let (config, warnings) = build(false, Some(&text), &[]);
+            assert_eq!(config.display.off_after_idle_secs, seconds);
+            assert_eq!(config.lock.after_idle_secs, 0);
+            assert!(warnings.is_empty());
+            assert!(Config::parse_checked(false, &text, |_| None).is_ok());
+        }
+        for raw in ["-1", "4294967296", "1.5", "true", "'never'"] {
+            let text = format!("[display]\noff_after_idle_secs = {raw}");
+            let (config, warnings) = build(false, Some(&text), &[]);
+            assert_eq!(config.display.off_after_idle_secs, 600);
+            assert_eq!(warnings.len(), 1);
+            assert!(Config::parse_checked(false, &text, |_| None).is_err());
+        }
     }
 
     #[test]

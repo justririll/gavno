@@ -70,6 +70,15 @@ impl Locks {
             self.confirm();
         }
     }
+    /// A successful power-off commit is secure without a presented frame.
+    pub(crate) fn powered_off(&mut self, output: &Output) {
+        if self.locked && self.pending.contains(output) {
+            self.pending.retain(|o| o != output);
+            self.submitted.retain(|o| o != output);
+            self.secured.push(output.clone());
+            self.confirm();
+        }
+    }
     pub fn outputs_added(&mut self, outputs: impl Iterator<Item = Output>) {
         if !self.locked {
             return;

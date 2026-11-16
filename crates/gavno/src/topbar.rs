@@ -1134,7 +1134,7 @@ impl Gavno {
                 gv.classic.taskbar.release(); gv.classic.start.release();
             }
         });
-        self.refresh_bar_status(outputs.iter().any(|o| self.shell_visible(o)) && self.features.on(crate::module::Feature::Bar));
+        self.refresh_bar_status(!self.power.is_off() && outputs.iter().any(|o| self.shell_visible(o)) && self.features.on(crate::module::Feature::Bar));
         self.guard(crate::module::Feature::Bar, (), |gv| gv.refresh_bar(&outputs));
     }
     fn refresh_bar(&mut self, outputs: &[Output]) {
@@ -1190,7 +1190,7 @@ impl Gavno {
             self.topbar.opening.jump(0.0);
             self.guard(crate::module::Feature::Dock, (), |gv| gv.dock.close_menu());
         }
-        if visible && self.config.bar.enabled {
+        if visible && self.config.bar.enabled && !self.power.is_off() {
             if self.topbar.clock_timer.is_none() {
                 self.topbar.update_clock();
                 self.schedule_bar_clock();
@@ -1217,7 +1217,7 @@ impl Gavno {
                     gv.topbar.clock_timer = None;
                     gv.topbar.update_clock();
                     gv.queue_redraw_all();
-                    if gv.space.outputs().any(|o| gv.shell_visible(o)) {
+                    if !gv.power.is_off() && gv.space.outputs().any(|o| gv.shell_visible(o)) {
                         gv.schedule_bar_clock();
                     }
 
@@ -1468,5 +1468,27 @@ mod music_panel_tests {
         assert_eq!(h.gv.topbar.action(&output, (area.loc.x as f64 + 40.0, 15.0).into()), Some(BarAction::Media(crate::media::Command::PlayPause)));
         h.gv.media_update(Default::default());
         assert!(media_layout(&h.gv.now_playing, 1280, 43, false, false, &h.gv.features).0.media.is_none());
+    }
+}
+
+#[cfg(test)]
+mod power_clock_tests {
+    use super::*;
+    #[test]
+    fn panel_clock_stops_while_powered_off_and_restarts_on_wake() {
+        let mut h = crate::state::tests::Harness::new();
+        let output = Output::new("test".into(), smithay::output::PhysicalProperties {
+            size: (0, 0).into(), subpixel: smithay::output::Subpixel::Unknown, make: "test".into(), model: "test".into(),
+        });
+        output.change_current_state(Some(smithay::output::Mode { size: (1280, 800).into(), refresh: 60000 }), None, None, None);
+        h.gv.space.map_output(&output, (0, 0));
+        h.gv.refresh_shell();
+        assert!(h.gv.topbar.clock_timer.is_some());
+        h.gv.power_off_monitors("test");
+        h.gv.refresh_shell();
+        assert!(h.gv.topbar.clock_timer.is_none());
+        h.gv.power_on_monitors("test");
+        h.gv.refresh_shell();
+        assert!(h.gv.topbar.clock_timer.is_some());
     }
 }

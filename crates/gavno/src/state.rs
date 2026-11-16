@@ -93,6 +93,7 @@ pub struct Gavno {
     /// Set in `--greeter` mode: GAVNO is the login screen.
     pub greeter: Option<crate::greeter::Greeter>,
     pub lock: crate::lock::Lock,
+    pub power: crate::power::Power,
     pub launcher: crate::launcher::Launcher,
     pub polkit: crate::polkit::Polkit,
     pub notifications: crate::notify::Shared,
@@ -207,6 +208,7 @@ impl Gavno {
             startup_cmd: None,
             greeter: None,
             lock: Default::default(),
+            power: Default::default(),
             launcher: Default::default(),
             polkit: Default::default(),
         }
@@ -273,6 +275,7 @@ impl Gavno {
         self.refresh_media();
         self.finish_dock_launches();
         self.refresh_idle();
+        self.refresh_greeter_clock();
         self.popups.cleanup();
         let _ = self.display_handle.flush_clients();
     }
@@ -285,6 +288,7 @@ impl Gavno {
 
     /// True while something animates and needs the next frame drawn.
     pub fn is_animating(&mut self) -> bool {
+        if self.power.is_off() { return false; }
         if self.media.brightness.active() { return true; }
         if self.protocols.locks.locked { return self.lock.is_animating() || self.media.osd.is_animating(); }
         if let Some(g) = self.greeter.as_mut() { return g.safe_call(false, |g| g.is_animating()) || self.media.osd.is_animating(); }
