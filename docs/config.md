@@ -37,6 +37,7 @@ default": see `terminal` and `launcher` below.
 | `terminal` | string | `"foot"` | `GAVNO_TERMINAL` |
 | `launcher` | string | unset, Mod+D disabled | `GAVNO_LAUNCHER` |
 | `file_manager` | string | `"gavno-files"` | none |
+| `polkit_agent` | string | `"gavno-polkit-agent"`, `""` disables | none |
 | `gap` | integer, logical px | `12` | none |
 | `[tiling] default` | boolean | `false` | none |
 | `[lock] after_idle_secs` | integer, seconds | `300` | none |
@@ -57,7 +58,8 @@ The file accepts only the exact lowercase values `"super"` and `"alt"`.
 nested/TTY default, and still overrides the file.
 
 `terminal` is started by Mod+Return, `launcher` by Mod+D and `file_manager` by
-Mod+E. A file value that
+Mod+E. `polkit_agent` is started with the session when the program is found;
+it asks for passwords for `pkexec` and other polkit actions. A file value that
 is empty (or whitespace only, for `terminal`) falls back to the default, so
 `launcher = ""` disables the bind. `GAVNO_TERMINAL` and `GAVNO_LAUNCHER` are
 used verbatim when non-empty.

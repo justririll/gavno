@@ -106,7 +106,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::env::set_var("XDG_CURRENT_DESKTOP", "GAVNO");
     std::env::set_var("XDG_SESSION_DESKTOP", "GAVNO");
     std::env::set_var("XDG_SESSION_TYPE", "wayland");
-    if !greeter_mode { xwayland::start(&mut state); }
+    if !greeter_mode {
+        xwayland::start(&mut state);
+        start_polkit_agent(&state.config.polkit_agent);
+    }
     tracing::info!(socket = ?state.socket_name, "gavno is listening");
 
     // Clients such as foot quit when there is no output yet, so the startup
@@ -131,4 +134,24 @@ fn init_logging() {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
     tracing_subscriber::fmt().with_env_filter(filter).init();
+}
+
+/// Starts the session polkit agent when it is installed, so pkexec and other
+/// polkit prompts work. It registers for the session and waits for requests.
+fn start_polkit_agent(command: &str) {
+    let Some(program) = command.split_whitespace().next() else {
+        return;
+    };
+    let found = if program.contains('/') {
+        std::path::Path::new(program).is_file()
+    } else {
+        std::env::var_os("PATH").is_some_and(|paths| {
+            std::env::split_paths(&paths).any(|dir| dir.join(program).is_file())
+        })
+    };
+    if found {
+        state::spawn_shell(command);
+    } else {
+        tracing::info!(%program, "polkit agent not installed; polkit prompts are unavailable");
+    }
 }
