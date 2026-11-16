@@ -325,10 +325,11 @@ fn open_gpu(gv: &mut Gavno, node: DrmNode, path: &Path) -> Result<(), Box<dyn st
     let fd = DrmDeviceFd::new(DeviceFd::from(fd));
 
     crate::perf::startup("udev.gpu.fd_opened");
-    // Keep the CRTC state the greeter or console left: resetting it powers the
-    // panel down, and the next modeset then waits about a second for the
-    // eDP link to train again. Surfaces we create reset their own planes.
-    let (drm, notifier) = DrmDevice::new(fd.clone(), false)?;
+    // Keeping the previous master's CRTC state (false) saves about a second
+    // of eDP link training at startup, but on the laptop it left the cursor
+    // composited in software and every pointer move redrew the output, so
+    // reset it until planes are handed over explicitly.
+    let (drm, notifier) = DrmDevice::new(fd.clone(), true)?;
     crate::perf::startup("udev.drm.ready");
     let gbm = GbmDevice::new(fd)?;
 
