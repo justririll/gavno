@@ -929,6 +929,7 @@ fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
         crate::perf::startup_output("udev.first_frame.render.begin", &output.name());
     }
 
+    gv.cursor.dimmed = gv.media.brightness.dimmed();
     let mut elements = render::output_elements(
         &mut gpu.renderer,
         &gv.space,
@@ -957,6 +958,7 @@ fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
     if !surface.first_frame_queued {
         crate::perf::startup_output("udev.first_frame.elements.ready", &output.name());
     }
+    render::dim_output(&mut elements, &mut gv.media.brightness, &output, time);
     let mut result = draw_frame(surface, &mut gpu.renderer, &elements);
     if result.is_err() && surface.hdr.is_some() {
         warn!(output = output.name(), error = ?result.as_ref().err(), "HDR render failed; falling back to SDR");

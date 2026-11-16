@@ -111,6 +111,7 @@ pub fn init(event_loop: &mut EventLoop<'static, Gavno>, gv: &mut Gavno) -> Resul
 fn render(gv: &mut Gavno) {
     let pointer_pos = gv.pointer_location();
     let time = gv.start_time.elapsed();
+    gv.cursor.dimmed = gv.media.brightness.dimmed();
     let Backend::Winit(data) = &mut gv.backend else {
         return;
     };
@@ -122,7 +123,7 @@ fn render(gv: &mut Gavno) {
         let Ok((renderer, mut framebuffer)) = data.backend.bind() else {
             return;
         };
-        let elements = render::output_elements(
+        let mut elements = render::output_elements(
             renderer,
             &gv.space,
             &output,
@@ -147,6 +148,7 @@ fn render(gv: &mut Gavno) {
         &mut gv.classic,
         &mut gv.polkit,
         );
+        render::dim_output(&mut elements, &mut gv.media.brightness, &output, time);
         data.damage_tracker
             .render_output(renderer, &mut framebuffer, age, &elements, render::CLEAR_COLOR)
             .map(|r| (r.damage.cloned(), r.states))

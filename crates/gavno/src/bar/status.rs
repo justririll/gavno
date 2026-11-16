@@ -259,17 +259,15 @@ fn fallback_network() -> Network {
         Network::Offline
     }
 }
-fn refresh(snapshot: &mut Snapshot, hardware: bool, fallback: bool) {
+fn refresh(snapshot: &mut Snapshot, fallback: bool) {
     snapshot.volume = read_volume(false);
-    if hardware {
-        snapshot.brightness = read_brightness(Path::new("/sys/class/backlight"));
-    }
+    snapshot.brightness = read_brightness(Path::new("/sys/class/backlight"));
     snapshot.battery = super::read_battery(Path::new("/sys/class/power_supply"));
     if fallback {
         snapshot.network = fallback_network();
     }
 }
-pub fn spawn(handle: &LoopHandle<'static, Gavno>, hardware: bool) -> Option<Sender<Command>> {
+pub fn spawn(handle: &LoopHandle<'static, Gavno>) -> Option<Sender<Command>> {
     let _startup = crate::perf::Startup::new("dbus.status.spawn.begin", "dbus.status.spawn.end");
     let (events, source) = channel::channel();
     if let Err(error) = handle.insert_source(source, |event, _, gv| {
@@ -307,7 +305,7 @@ pub fn spawn(handle: &LoopHandle<'static, Gavno>, hardware: bool) -> Option<Send
             let mut battery_at = Instant::now() + Duration::from_secs(60);
             let mut throttle = VolumeThrottle::default();
             let mut mic = None;
-            refresh(&mut snapshot, hardware, false);
+            refresh(&mut snapshot, false);
             if snapshot != previous {
                 let _ = events.send(Event::Status(snapshot.clone()));
                 previous = snapshot.clone();
@@ -333,7 +331,7 @@ pub fn spawn(handle: &LoopHandle<'static, Gavno>, hardware: bool) -> Option<Send
                     }
                 }
                 if visible && refresh_at.is_some_and(|t| Instant::now() >= t) {
-                    refresh(&mut snapshot, hardware, fallback);
+                    refresh(&mut snapshot, fallback);
                     refresh_at = Some(Instant::now() + Duration::from_secs(30));
                 }
                 // Low battery warnings must also fire while the bar is hidden
@@ -374,7 +372,7 @@ pub fn spawn(handle: &LoopHandle<'static, Gavno>, hardware: bool) -> Option<Send
                         visible = v;
                         refresh_at = v.then(|| Instant::now() + Duration::from_secs(30));
                         if v {
-                            refresh(&mut snapshot, hardware, fallback);
+                            refresh(&mut snapshot, fallback);
                         }
                     }
                     Command::Network(n) => {

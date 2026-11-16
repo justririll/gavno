@@ -16,6 +16,7 @@ mod backend;
 mod config;
 mod config_schema;
 mod config_reload;
+mod brightness;
 #[cfg(test)]
 mod config_schema_tests;
 mod crash_log;

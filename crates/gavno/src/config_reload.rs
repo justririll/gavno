@@ -183,6 +183,7 @@ pub(crate) fn apply(gv: &mut Gavno, prepared: Prepared) -> Result<Value, String>
         }
     }
     gv.config = config;
+    gv.sync_brightness();
     if let Some(keyboard) = gv.seat.get_keyboard() {
         keyboard.change_repeat_info(gv.config.repeat_rate, gv.config.repeat_delay);
     }

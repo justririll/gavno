@@ -49,6 +49,7 @@ render_elements! {
     Space = SpaceRenderElements<GlesRenderer, WaylandSurfaceRenderElement<GlesRenderer>>,
     Surface = WaylandSurfaceRenderElement<GlesRenderer>,
     Memory = MemoryRenderBufferRenderElement<GlesRenderer>,
+    Brightness = smithay::backend::renderer::element::solid::SolidColorRenderElement,
     Desktop = crate::classic::cache::CachedElement,
     Color = crate::hdr::surface::ManagedElement,
     Window = crate::decor::WindowElement,
@@ -67,6 +68,8 @@ pub struct SurfaceDmabufFeedback {
 
 /// The compositor cursor, uploaded once per (frame, scale).
 pub struct CursorCache {
+    /// KMS cursor planes sit above the primary plane, including its dimmer.
+    pub dimmed: bool,
     cursor: Cursor,
     buffers: Vec<(Image, u32, MemoryRenderBuffer)>,
 }
@@ -77,6 +80,7 @@ impl CursorCache {
     }
     pub fn new() -> Self {
         Self {
+            dimmed: false,
             cursor: Cursor::load(),
             buffers: Vec::new(),
         }
@@ -170,6 +174,14 @@ pub fn output_elements(
     }
 }
 
+/// Display-only pass, in front of the cursor and all trusted UI. Captures use
+/// `output_elements` directly and therefore retain the original pixel values.
+pub fn dim_output(elements: &mut Vec<GavnoRenderElement>, brightness: &mut crate::brightness::State, output: &Output, time: Duration) {
+    if let Some(element) = brightness.element(output, time) {
+        elements.insert(0, GavnoRenderElement::Brightness(element));
+    }
+}
+
 fn output_elements_inner(
     renderer: &mut GlesRenderer,
     space: &Space<Window>,
@@ -201,6 +213,7 @@ fn output_elements_inner(
     };
     let scale = Scale::from(output.current_scale().fractional_scale());
     topbar.shell_height = output_geo.size.h;
+    let cursor_kind = if cursor.dimmed { Kind::Unspecified } else { Kind::Cursor };
 
     // Locked sessions expose only locker surfaces; the normal clear color is
     // the fail-closed fallback when the locker has no buffer or has crashed.
@@ -212,7 +225,7 @@ fn output_elements_inner(
                 let (buffer, hotspot) = cursor.get("default", int_scale, time);
                 let loc = (pointer_pos - output_geo.loc.to_f64() - hotspot).to_physical(scale);
                 if let Ok(cursor) = MemoryRenderBufferRenderElement::from_buffer(
-                    renderer, loc, &buffer, None, None, None, Kind::Cursor,
+                    renderer, loc, &buffer, None, None, None, cursor_kind,
                 ) { elements.push(GavnoRenderElement::Memory(cursor)); }
             }
             elements.extend(osd.elements(renderer, output, output_geo.size, time, &config.dock.icon_theme, topbar.accent()));
@@ -262,7 +275,7 @@ fn output_elements_inner(
                         loc,
                         scale,
                         1.0,
-                        Kind::Cursor,
+                        cursor_kind,
                     )
                     .into_iter()
                     .map(GavnoRenderElement::Surface),
@@ -273,7 +286,7 @@ fn output_elements_inner(
                 let (buffer, hotspot) = cursor.get(icon.name(), int_scale, time);
                 let loc = (rel - hotspot).to_physical(scale);
                 if let Ok(elem) =
-                    MemoryRenderBufferRenderElement::from_buffer(renderer, loc, &buffer, None, None, None, Kind::Cursor)
+                    MemoryRenderBufferRenderElement::from_buffer(renderer, loc, &buffer, None, None, None, cursor_kind)
                 {
                     elements.push(GavnoRenderElement::Memory(elem));
                 }

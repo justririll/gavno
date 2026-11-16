@@ -14,6 +14,7 @@ use std::time::Duration;
 #[derive(Default)]
 pub struct MediaState {
     pub status: status::Snapshot,
+    pub brightness: crate::brightness::State,
     pub worker: Option<std::sync::mpsc::Sender<Command>>,
     pub worker_started: bool,
     pub status_visible: bool,
@@ -23,14 +24,17 @@ pub struct MediaState {
     pub core_keys: Vec<u32>,
 }
 impl Gavno {
+    pub(crate) fn sync_brightness(&mut self) {
+        self.media.brightness.configure(self.config.display.brightness_control, self.start_time.elapsed());
+        self.media.status.brightness = self.media.brightness.snapshot();
+        self.topbar.status.brightness = self.media.status.brightness.clone();
+    }
     pub(crate) fn refresh_bar_status(&mut self, visible: bool) {
+        self.sync_brightness();
         if !self.media.worker_started && !matches!(self.backend, crate::backend::Backend::None) {
             self.media.worker_started = true;
             self.media.status_visible = !visible;
-            self.media.worker = status::spawn(
-                &self.loop_handle,
-                matches!(self.backend, crate::backend::Backend::Udev(_)),
-            );
+            self.media.worker = status::spawn(&self.loop_handle);
         }
         if self.media.status_visible != visible {
             self.media.status_visible = visible;
@@ -42,7 +46,10 @@ impl Gavno {
     pub(super) fn bar_status(&mut self, event: Event) {
         match event {
             Event::Mic(v) => self.show_bar_osd(osd::Kind::Microphone, v.level, v.muted),
-            Event::Status(snapshot) => {
+            Event::Status(mut snapshot) => {
+                self.media.brightness.backlight = snapshot.brightness.take();
+                self.media.brightness.configure(self.config.display.brightness_control, self.start_time.elapsed());
+                snapshot.brightness = self.media.brightness.snapshot();
                 let volume_changed = self.media.status.volume != snapshot.volume;
                 let brightness_changed = self.media.status.brightness != snapshot.brightness;
                 self.guard(crate::module::Feature::Bar, (), |gv| gv.topbar.status = snapshot.clone());
@@ -65,7 +72,7 @@ impl Gavno {
                         }
                     }
                 }
-                if self.media.status_visible {
+                if self.media.status_visible || brightness_changed {
                     self.queue_redraw_all();
                 }
             }
@@ -94,6 +101,11 @@ impl Gavno {
     }
     pub fn bar_media(&mut self, action: Media) {
         self.refresh_bar_status(self.media.status_visible);
+        if self.media.brightness.software && matches!(action, Media::BrightnessUp | Media::BrightnessDown) {
+            let step = if action == Media::BrightnessUp { 0.05 } else { -0.05 };
+            self.set_software_brightness(self.media.brightness.level() + step);
+            return;
+        }
         if let Some(worker) = &self.media.worker {
             let _ = worker.send(Command::Media(action));
         }
@@ -253,7 +265,17 @@ impl Gavno {
         let level = ((local.x - r.loc.x - 7.0) / (r.size.w - 14.0)).clamp(0.0, 1.0);
         self.bar_set_slider(action, level);
     }
+    fn set_software_brightness(&mut self, level: f64) {
+        self.media.brightness.set(level, self.start_time.elapsed());
+        self.sync_brightness();
+        self.show_bar_osd(osd::Kind::Brightness, self.media.brightness.level(), false);
+    }
     fn bar_set_slider(&mut self, action: BarAction, level: f64) {
+        self.sync_brightness();
+        if action == BarAction::Brightness && self.media.brightness.software {
+            self.set_software_brightness(level);
+            return;
+        }
         let command = if action == BarAction::Volume {
             let muted = self.media.status.volume.is_some_and(|v| v.muted);
             self.media.status.volume = Some(status::Volume { level, muted });
@@ -266,6 +288,7 @@ impl Gavno {
             } else {
                 level
             };
+            self.media.brightness.backlight = self.media.status.brightness.clone();
             self.show_bar_osd(osd::Kind::Brightness, actual, false);
             Command::Brightness(level)
         };
@@ -461,6 +484,43 @@ mod tests {
                 .advance(base + Duration::from_millis(frame * 8));
         }
         assert!(!h.gv.is_animating());
+    }
+    #[test]
+    fn software_keys_and_slider_never_send_backlight_commands() {
+        let (mut h, _) = setup();
+        let (tx, rx) = mpsc::channel();
+        h.gv.media.worker = Some(tx);
+        h.gv.media.worker_started = true;
+        h.gv.config.display.brightness_control = crate::brightness::Control::Software;
+        let hardware = status::Brightness { name: "test-panel".into(), value: 80, max: 100 };
+        h.gv.bar_status(Event::Status(status::Snapshot { brightness: Some(hardware.clone()), ..Default::default() }));
+        h.gv.bar_set_slider(BarAction::Brightness, 0.5);
+        assert_eq!(h.gv.media.brightness.level(), 0.5);
+        h.gv.protocols.locks.locked = true;
+        assert!(h.gv.bar_key(keysyms::KEY_XF86MonBrightnessDown, 240, true));
+        assert!(h.gv.bar_key(0, 240, false));
+        assert!((h.gv.media.brightness.level() - 0.45).abs() < 1e-10);
+        h.gv.bar_media(Media::BrightnessUp);
+        assert_eq!(h.gv.topbar.status.brightness.as_ref().unwrap().level(), 0.5);
+        h.gv.bar_set_slider(BarAction::Brightness, 0.0);
+        h.gv.bar_media(Media::BrightnessDown);
+        assert_eq!(h.gv.media.brightness.level(), 0.05);
+        h.gv.bar_set_slider(BarAction::Brightness, 2.0);
+        assert_eq!(h.gv.media.brightness.level(), 1.0);
+        // An asynchronous hardware refresh must not replace software feedback.
+        h.gv.bar_status(Event::Status(status::Snapshot { brightness: Some(hardware.clone()), ..Default::default() }));
+        assert_eq!(h.gv.topbar.status.brightness.as_ref().unwrap().level(), 1.0);
+        assert!(rx.try_recv().is_err());
+        let mut next = h.gv.config.clone();
+        next.display.brightness_control = crate::brightness::Control::Backlight;
+        let prepared = crate::config_reload::Prepared::new(next, &h.gv.config).unwrap();
+        let report = crate::config_reload::apply(&mut h.gv, prepared).unwrap();
+        assert!(report["applied"].as_array().unwrap().contains(&serde_json::json!("display.brightness_control")));
+        assert_eq!(h.gv.topbar.status.brightness, Some(hardware));
+        assert!(!h.gv.media.brightness.software);
+        assert!(!h.gv.media.brightness.active());
+        h.gv.bar_set_slider(BarAction::Brightness, 0.3);
+        assert!(matches!(rx.try_recv(), Ok(Command::Brightness(level)) if level == 0.3));
     }
     #[test]
     fn visibility_commands_only_follow_transitions() {

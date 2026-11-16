@@ -151,6 +151,7 @@ impl Gavno {
         topbar.now_playing = now_playing.clone();
         crate::perf::startup("gavno.topbar.ready");
 
+        let brightness = crate::brightness::State::load(config.display.brightness_control);
         Self {
             protocols,
             satellite: None,
@@ -176,7 +177,7 @@ impl Gavno {
             notifications,
             now_playing,
             media_generation: 0,
-            media: Default::default(),
+            media: crate::topbar::control::MediaState { brightness, ..Default::default() },
             gestures: Default::default(),
             window_gestures: Default::default(),
             pointer_gestures: smithay::wayland::pointer_gestures::PointerGesturesState::new::<Self>(&dh),
@@ -284,6 +285,7 @@ impl Gavno {
 
     /// True while something animates and needs the next frame drawn.
     pub fn is_animating(&mut self) -> bool {
+        if self.media.brightness.active() { return true; }
         if self.protocols.locks.locked { return self.lock.is_animating() || self.media.osd.is_animating(); }
         if let Some(g) = self.greeter.as_mut() { return g.safe_call(false, |g| g.is_animating()) || self.media.osd.is_animating(); }
         let animations = self.guard(Feature::Animations, false, |gv| gv.window_animations.is_animating());

@@ -33,6 +33,7 @@ pub struct Key {
     pub live: bool,
 }
 pub const SCHEMA: &[Key] = &[
+    Key { path: "display.brightness_control", kind: Kind::Enum { values: &["auto", "backlight", "software"] }, default: Default::String("auto"), description: "Use a backlight when available (auto), require a backlight, or dim all outputs in software.", section: "Display", live: true },
     Key { path: "media.music_panel", kind: Kind::Bool, default: Default::Bool(true), description: "Open the built-in Spotify panel from the bar media information area.", section: "Media", live: true },
     Key {
         path: "mod_key",

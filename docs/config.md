@@ -42,6 +42,7 @@ default": see `terminal` and `launcher` below.
 | `gap` | integer, logical px | `12` | none |
 | `[tiling] default` | boolean | `false` | none |
 | `[lock] after_idle_secs` | integer, seconds | `300` | none |
+| `[display] brightness_control` | string, `"auto"`, `"backlight"` or `"software"` | `"auto"` | none |
 | `[output] internal_scale` | float | `1.75` | `GAVNO_SCALE` |
 | `[output] mode` | string, `WIDTHxHEIGHT[@HZ]` | preferred mode, highest refresh among preferred modes | `GAVNO_OUTPUT_MODE` |
 | `[output] hdr` | boolean | `false` | `GAVNO_HDR` (`true`/`false` or `1`/`0`) |
@@ -94,6 +95,33 @@ timer, and a mapped idle inhibitor postpones the lock. The timer is not armed
 in greeter mode or while the session is already locked. GAVNO also locks
 before suspend and on a logind Lock request. See [the lock screen](lock.md)
 for authentication, backoff and what is blocked while locked.
+
+For OLED panels that ignore backlight writes, select software brightness:
+
+```toml
+[display]
+brightness_control = "software"
+```
+
+`"auto"` uses a backlight device when one exists, otherwise software dimming.
+`"backlight"` requires a backlight device; without one the brightness slider is
+unavailable. `"software"` sends no backlight writes and dims every output,
+including external monitors, in both the TTY and nested backends. Brightness
+keys change the global level in 5% steps; both shell sliders and the OSD use the
+same level. The minimum is 5%, and transitions settle in about 150 ms. The
+setting reloads live; switching to backlight immediately removes software
+dimming and shows the hardware level. Switching back restores the saved
+software level.
+
+Software brightness is restored at startup from
+`$XDG_STATE_HOME/gavno/brightness`, defaulting to
+`~/.local/state/gavno/brightness`. A relative `XDG_STATE_HOME` is ignored.
+Changes are saved atomically by a worker after 200 ms without further changes;
+input never waits for disk writes. The display overlay covers all content,
+including the cursor, lock screen and greeter. HDR composition includes it
+before PQ encoding. Screenshots (including SIGUSR1) and screencopy retain the
+original, undimmed pixels. Once the transition settles, brightness requests no
+frames and causes no idle damage.
 
 `[output] internal_scale` applies to built-in panels (eDP) only; external
 outputs default to a scale of 1.0. Connector-specific `[outputs."name"]`

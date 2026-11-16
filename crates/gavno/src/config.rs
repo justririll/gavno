@@ -47,6 +47,15 @@ pub struct Config {
     pub lock: LockConfig,
     pub notifications: NotificationsConfig,
     pub media: MediaConfig,
+    pub display: DisplayConfig,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct DisplayConfig {
+    pub brightness_control: crate::brightness::Control,
+    #[serde(flatten)]
+    unknown: toml::Table,
 }
 
 /// Connector overrides; absent values inherit the global output settings.
@@ -149,6 +158,7 @@ struct FileConfig {
     lock: LockConfig,
     notifications: NotificationsConfig,
     media: MediaConfig,
+    display: DisplayConfig,
     #[serde(flatten)]
     unknown: toml::Table,
 }
@@ -239,7 +249,7 @@ impl Config {
             "file_manager":self.file_manager,"polkit_agent":self.polkit_agent,"autostart":self.autostart,"gap":self.gap,
             "output":{"internal_scale":self.internal_scale,"mode":mode,"hdr":self.output_hdr,"sdr_white_nits":self.sdr_white_nits},
             "keyboard":{"layout":self.xkb_layout,"variant":self.xkb_variant,"options":self.xkb_options,"repeat_delay":self.repeat_delay,"repeat_rate":self.repeat_rate},
-            "media":self.media,"modules":self.modules,"classic":self.classic,"dock":self.dock,"bar":self.bar,"tiling":self.tiling,"lock":self.lock,"notifications":self.notifications,"outputs":self.outputs})
+            "display":self.display,"media":self.media,"modules":self.modules,"classic":self.classic,"dock":self.dock,"bar":self.bar,"tiling":self.tiling,"lock":self.lock,"notifications":self.notifications,"outputs":self.outputs})
     }
 
     /// Pure merge: defaults < file < environment. Empty environment values are unset.
@@ -256,7 +266,7 @@ impl Config {
         // Capture unknown fields during deserialization, so this list cannot drift from the schema.
         let mut unknown = Vec::new();
         for (prefix, extra) in
-            [("", &file.unknown), ("output.", &file.output.unknown), ("keyboard.", &file.keyboard.unknown), ("classic.", &file.classic.unknown), ("dock.", &file.dock.unknown), ("bar.", &file.bar.unknown), ("tiling.", &file.tiling.unknown), ("media.", &file.media.unknown), ("notifications.", &file.notifications.unknown), ("lock.", &file.lock.unknown), ("modules.", &file.modules.unknown)]
+            [("display.", &file.display.unknown), ("", &file.unknown), ("output.", &file.output.unknown), ("keyboard.", &file.keyboard.unknown), ("classic.", &file.classic.unknown), ("dock.", &file.dock.unknown), ("bar.", &file.bar.unknown), ("tiling.", &file.tiling.unknown), ("media.", &file.media.unknown), ("notifications.", &file.notifications.unknown), ("lock.", &file.lock.unknown), ("modules.", &file.modules.unknown)]
         {
             unknown.extend(extra.keys().map(|key| format!("{prefix}{key}")));
         }
@@ -354,6 +364,7 @@ impl Config {
                 lock: file.lock,
                 notifications: file.notifications,
                 media: file.media,
+                display: file.display,
             },
             warnings,
         )
@@ -429,6 +440,7 @@ options = "caps:escape"
             lock: Default::default(),
             notifications: Default::default(),
             media: Default::default(),
+            display: Default::default(),
         };
         assert_eq!(build(false, None, &[]), (expected.clone(), vec![]));
         let example = include_str!("../../../dist/config.toml");
@@ -472,6 +484,7 @@ options = "caps:escape"
             lock: Default::default(),
             notifications: Default::default(),
             media: Default::default(),
+            display: Default::default(),
         };
         assert_eq!(build(false, Some(FULL), &[]), (expected, vec![]));
         let mut partial = build(false, None, &[]).0;
@@ -775,5 +788,23 @@ mod music_config_tests {
         assert!(!config.media.music_panel);
         assert_eq!(config.values()["media"]["music_panel"], false);
         assert_eq!(Config::build(false, Some("[media]\nwrong = true"), |_| None).1, ["unknown config keys ignored: media.wrong"]);
+    }
+}
+
+#[cfg(test)]
+mod brightness_tests {
+    use super::*;
+    use crate::brightness::Control;
+
+    #[test]
+    fn brightness_control_parses_and_rejects_unknown_modes() {
+        assert_eq!(Config::build(false, None, |_| None).0.display.brightness_control, Control::Auto);
+        for (name, expected) in [("auto", Control::Auto), ("backlight", Control::Backlight), ("software", Control::Software)] {
+            let text = format!("[display]\nbrightness_control = '{name}'");
+            let config = Config::parse_checked(false, &text, |_| None).unwrap();
+            assert_eq!(config.display.brightness_control, expected);
+            assert_eq!(config.values()["display"]["brightness_control"], name);
+        }
+        assert!(Config::parse_checked(false, "[display]\nbrightness_control = 'bad'", |_| None).is_err());
     }
 }
