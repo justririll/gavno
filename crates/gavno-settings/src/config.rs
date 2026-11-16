@@ -186,3 +186,230 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
     }
 }
+
+#[derive(Clone, Debug)]
+pub struct Change {
+    pub path: Vec<String>,
+    pub value: Value,
+}
+fn item(value: &Value) -> Result<Item, String> {
+    if let Some(v) = value.as_bool() {
+        Ok(toml_edit::value(v))
+    } else if let Some(v) = value.as_i64() {
+        Ok(toml_edit::value(v))
+    } else if let Some(v) = value.as_f64() {
+        Ok(toml_edit::value(v))
+    } else if let Some(v) = value.as_str() {
+        Ok(toml_edit::value(v))
+    } else if let Some(v) = value.as_array() {
+        let mut array = toml_edit::Array::new();
+        for v in v {
+            array.push(v.as_str().ok_or("List entries must be strings")?);
+        }
+        Ok(Item::Value(toml_edit::Value::Array(array)))
+    } else {
+        Err("Unsupported config value".into())
+    }
+}
+fn set_item(root: &mut Item, parts: &[String], value: &Value) -> Result<(), String> {
+    let (key, rest) = parts.split_first().ok_or("Empty config path")?;
+    let table = root
+        .as_table_like_mut()
+        .ok_or_else(|| format!("{key}: parent is not a table"))?;
+    if rest.is_empty() {
+        if value.is_null() {
+            table.remove(key);
+        } else {
+            let mut next = item(value)?;
+            if let (Some(old), Some(new)) =
+                (table.get(key).and_then(Item::as_value), next.as_value_mut())
+            {
+                *new.decor_mut() = old.decor().clone();
+            }
+            table.insert(key, next);
+        }
+    } else {
+        if !table.contains_key(key) {
+            if value.is_null() {
+                return Ok(());
+            }
+            table.insert(key, Item::Table(Table::new()));
+        }
+        set_item(
+            table.get_mut(key).ok_or("Missing parent table")?,
+            rest,
+            value,
+        )?;
+    }
+    Ok(())
+}
+pub fn update_many(text: &str, changes: &[Change]) -> Result<String, String> {
+    let mut doc = text.parse::<DocumentMut>().map_err(|e| e.to_string())?;
+    let mut header = String::new();
+    if doc.as_table().is_empty() {
+        header = doc.trailing().as_str().unwrap_or_default().to_owned();
+        doc.set_trailing("");
+        if !header.is_empty() && !header.ends_with('\n') {
+            header.push('\n');
+        }
+    }
+    for change in changes {
+        set_item(doc.as_item_mut(), &change.path, &change.value)?;
+    }
+    Ok(format!("{header}{doc}"))
+}
+pub fn read() -> Result<String, String> {
+    read_from(&path()?)
+}
+fn read_from(path: &std::path::Path) -> Result<String, String> {
+    use std::io::Read;
+    match fs::File::open(path) {
+        Ok(file) => {
+            let mut text = String::new();
+            file.take(1024 * 1024 + 1)
+                .read_to_string(&mut text)
+                .map_err(|e| e.to_string())?;
+            if text.len() > 1024 * 1024 {
+                Err("Config exceeds 1 MiB".into())
+            } else {
+                Ok(text)
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+/// Validation happens before either config.toml or its backup is touched.
+pub fn save_raw(text: &str, specs: &[crate::model::Spec]) -> Result<String, String> {
+    save_raw_to(&path()?, text, specs)
+}
+fn save_raw_to(
+    path: &std::path::Path,
+    text: &str,
+    specs: &[crate::model::Spec],
+) -> Result<String, String> {
+    crate::model::validate(text, specs)?;
+    let old = read_from(path)?;
+    atomic_write(&path.with_extension("toml.bak"), &old)?;
+    atomic_write(path, text)?;
+    Ok(old)
+}
+pub fn save_changes(
+    changes: &[Change],
+    specs: &[crate::model::Spec],
+) -> Result<(String, String), String> {
+    let path = path()?;
+    let old = read_from(&path)?;
+    let next = update_many(&old, changes)?;
+    crate::model::validate(&next, specs)?;
+    atomic_write(&path, &next)?;
+    Ok((old, next))
+}
+pub fn restore(text: &str) -> Result<(), String> {
+    atomic_write(&path()?, text)
+}
+fn atomic_write(path: &std::path::Path, text: &str) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    let temp = parent.join(format!(
+        ".settings-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_nanos()
+    ));
+    let result = (|| -> std::io::Result<()> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temp)?;
+        if let Ok(meta) = fs::metadata(path) {
+            file.set_permissions(meta.permissions())?;
+        }
+        file.write_all(text.as_bytes())?;
+        file.sync_all()?;
+        fs::rename(&temp, path)?;
+        fs::File::open(parent)?.sync_all()
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(temp);
+    }
+    result.map_err(|e| e.to_string())
+}
+#[cfg(test)]
+mod editor_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn paths_preserve_comments_unknown_keys_and_inline_tables() {
+        let old="# retained\nunknown=42\n[dock]\npinned=['foot'] # apps\n[outputs.'DP.foo']\nscale=1.0\n";
+        let next = update_many(
+            old,
+            &[
+                Change {
+                    path: vec!["dock".into(), "pinned".into()],
+                    value: json!(["firefox"]),
+                },
+                Change {
+                    path: vec!["outputs".into(), "DP.foo".into(), "scale".into()],
+                    value: json!(1.75),
+                },
+            ],
+        )
+        .unwrap();
+        assert!(next.contains("# retained"));
+        assert!(next.contains("# apps"));
+        assert!(next.contains("unknown=42"));
+        let parsed = next.parse::<DocumentMut>().unwrap();
+        assert_eq!(parsed["outputs"]["DP.foo"]["scale"].as_float(), Some(1.75));
+        assert!(update_many(
+            "dock={magnify=true, other=42}",
+            &[Change {
+                path: vec!["dock".into(), "magnify".into()],
+                value: json!(false)
+            }]
+        )
+        .unwrap()
+        .contains("other=42"));
+        let reset = update_many(
+            &next,
+            &[Change {
+                path: vec!["dock".into(), "pinned".into()],
+                value: Value::Null,
+            }],
+        )
+        .unwrap();
+        assert!(reset.parse::<DocumentMut>().unwrap()["dock"]
+            .get("pinned")
+            .is_none());
+    }
+    #[test]
+    fn invalid_raw_edits_do_not_touch_file_or_backup() {
+        let dir = std::env::temp_dir().join(format!("settings-raw-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let old = "# previous\ngap=12\n";
+        fs::write(&path, old).unwrap();
+        let specs = crate::model::fallback().unwrap();
+        for bad in ["gap=[", "gap='big'", "mod_key='invalid'"] {
+            assert!(save_raw_to(&path, bad, &specs).is_err());
+            assert_eq!(fs::read_to_string(&path).unwrap(), old);
+            assert!(!path.with_extension("toml.bak").exists());
+        }
+        save_raw_to(&path, "gap=20\n", &specs).unwrap();
+        assert_eq!(
+            fs::read_to_string(path.with_extension("toml.bak")).unwrap(),
+            old
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+pub fn set_value(doc: &mut DocumentMut, change: &Change) -> Result<(), String> {
+    set_item(doc.as_item_mut(), &change.path, &change.value)
+}

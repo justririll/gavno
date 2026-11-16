@@ -1,6 +1,6 @@
 //! Local window management IPC. No rendering/backend work runs outside calloop.
 mod protocol;
-mod settings;
+pub(crate) mod settings;
 mod transport;
 
 use std::{
@@ -29,6 +29,7 @@ struct WindowId(u64);
 pub struct IpcState {
     last_id: u64,
     keyboard_pending: bool,
+    reload_pending: bool,
     socket: Option<SocketPath>,
     listener: Option<transport::Listener>,
 }
@@ -202,6 +203,8 @@ fn dispatch(gv: &mut Gavno, method: &str, params: &Value) -> Result<Value, Strin
     if method == "screen" {
         return Ok(screen(gv));
     }
+    if method == "config_schema" { return crate::config_schema::json(!matches!(gv.backend,crate::backend::Backend::Udev(_))); }
+    if method == "reload_config" { return Err("reload_config requires asynchronous IPC".into()); }
     if method == "outputs" {
         return Ok(Value::Array(gv.space.outputs().cloned().chain(crate::backend::udev::disabled_outputs(&gv.backend))
             .map(|o| settings::output_state(gv, &o)).collect()));
@@ -459,11 +462,15 @@ fn request_async(line: &[u8], gv: &mut Gavno, reply: transport::Reply<Gavno>) {
 }
 
 fn request_settings(line: &[u8], gv: &mut Gavno, reply: transport::Reply<Gavno>) {
+    if serde_json::from_slice::<Value>(line).ok().is_some_and(|v|v["method"]=="reload_config") {
+        request_reload(line,gv,reply);
+        return;
+    }
     let mut change = None;
     let response = protocol::reply(line, |method, params| {
         if method != "set_keyboard" { return dispatch(gv, method, params); }
         if gv.protocols.locks.locked { return Err("session locked".into()); }
-        if gv.ipc.keyboard_pending { return Err("keyboard change already pending".into()); }
+        if gv.ipc.keyboard_pending || gv.ipc.reload_pending { return Err("configuration change already pending".into()); }
         let parsed = settings::KeyboardChange::parse(params)?;
         change = Some((parsed, params.clone()));
         Ok(Value::Null)
@@ -536,5 +543,47 @@ mod live_settings_tests {
         for method in ["outputs","keyboard","set_output","set_keyboard"] {
             assert_eq!(dispatch(&mut h.gv,method,&json!({})),Err("session locked".into()));
         }
+    }
+}
+
+fn request_reload(line: &[u8], gv: &mut Gavno, reply: transport::Reply<Gavno>) {
+    let mut accepted = false;
+    let response = protocol::reply(line, |_, params| {
+        if gv.protocols.locks.locked { return Err("session locked".into()); }
+        if gv.ipc.reload_pending || gv.ipc.keyboard_pending { return Err("configuration change already pending".into()); }
+        if params.as_object().is_none_or(|p|!p.is_empty()) { return Err("reload_config takes no parameters".into()); }
+        accepted = true;
+        Ok(Value::Null)
+    });
+    if !accepted { reply.send(response); return; }
+    let id = serde_json::from_slice::<Value>(line).ok().map(|v|v["id"].clone()).unwrap_or(Value::Null);
+    let error_id = id.clone();
+    let previous = gv.config.clone();
+    let nested = !matches!(gv.backend,crate::backend::Backend::Udev(_));
+    let (tx,rx) = smithay::reexports::calloop::channel::channel::<Result<crate::config_reload::Prepared,String>>();
+    let reply = std::rc::Rc::new(std::cell::RefCell::new(Some(reply)));
+    let response = reply.clone();
+    if gv.loop_handle.insert_source(rx, move |event,_,gv| {
+        if response.borrow().is_none() { return; }
+        gv.ipc.reload_pending = false;
+        let result = match event {
+            smithay::reexports::calloop::channel::Event::Msg(result) => gv.guard(crate::module::Feature::Ipc,Err("IPC feature failed".into()),|gv| {
+                if gv.protocols.locks.locked { return Err("session locked".into()); }
+                let prepared = result?;
+                audit("reload_config", &json!({})).map_err(|e|e.to_string())?;
+                crate::config_reload::apply(gv,prepared)
+            }),
+            smithay::reexports::calloop::channel::Event::Closed => Err("configuration worker stopped".into()),
+        };
+        let value = match result {Ok(value)=>json!({"id":id,"result":value}),Err(error)=>json!({"id":id,"error":error})};
+        if let Some(reply) = response.borrow_mut().take() { reply.send(format!("{value}\n").into_bytes()); }
+    }).is_err() {
+        if let Some(reply)=reply.borrow_mut().take() { reply.send(format!("{}\n",json!({"id":error_id,"error":"cannot register config worker"})).into_bytes()); }
+        return;
+    }
+    gv.ipc.reload_pending = true;
+    if std::thread::Builder::new().name("gavno-config".into()).spawn(move || { let _=tx.send(crate::config_reload::Prepared::read(nested,&previous)); }).is_err() {
+        gv.ipc.reload_pending = false;
+        if let Some(reply)=reply.borrow_mut().take() { reply.send(format!("{}\n",json!({"id":error_id,"error":"cannot start config worker"})).into_bytes()); }
     }
 }

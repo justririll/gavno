@@ -10,3 +10,5 @@
 @define-color dialog_bg_color #1e2232;
 window { font-family: "Geist", "Inter", sans-serif; font-size: 13.5px; }
 .settings-page { padding: 24px; }
+
+.relogin-tag { color: #949ab0; background: #262b3d; border-radius: 6px; padding: 2px 6px; font-size: 10px; }

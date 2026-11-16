@@ -1116,3 +1116,12 @@ fn capture_output_with_cursor_state(gv: &mut Gavno, output: &Output) -> Option<(
     let bytes = render::capture_elements(&mut gpu.renderer, &elements, (mode.size.w, mode.size.h), scale)?;
     Some((mode.size.w as u32, mode.size.h as u32, bytes))
 }
+
+pub(crate) fn set_sdr_white(gv: &mut Gavno, nits: f32) {
+    if let Some(gpu) = udev(gv).and_then(|d| d.gpu.as_mut()) {
+        for surface in gpu.surfaces.values_mut() {
+            surface.white_nits = nits;
+            if let Some(hdr) = &mut surface.hdr { hdr.adjust_white(nits - hdr.white_nits); }
+        }
+    }
+}

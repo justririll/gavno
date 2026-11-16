@@ -3,12 +3,11 @@
 //! Values come from, in increasing priority: built-in defaults, a TOML file
 //! (`$GAVNO_CONFIG` if set, else `$XDG_CONFIG_HOME/gavno/config.toml`, else
 //! `$HOME/.config/gavno/config.toml`) and the `GAVNO_*` environment variables.
-//! Live reload of the file is planned but not implemented yet; keep the field
-//! names stable.
+//! Startup tolerates invalid files; explicit reload validates before mutation.
 
 use std::{collections::BTreeMap, ffi::OsString, path::PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use smithay::input::keyboard::ModifiersState;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -49,7 +48,7 @@ pub struct Config {
 }
 
 /// Connector overrides; absent values inherit the global output settings.
-#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct OutputConfig {
     pub mode: Option<String>,
@@ -60,7 +59,7 @@ pub struct OutputConfig {
     unknown: toml::Table,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct LockConfig {
     pub after_idle_secs: u32,
@@ -71,7 +70,7 @@ impl Default for LockConfig {
     fn default() -> Self { Self { after_idle_secs: 300, unknown: Default::default() } }
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct DockConfig {
     pub enabled: bool,
@@ -85,7 +84,7 @@ pub struct DockConfig {
 impl Default for DockConfig {
     fn default() -> Self { Self { enabled: true, pinned: vec!["foot".into(), "firefox".into()], magnify: true, autohide: false, icon_theme: "Adwaita".into(), unknown: Default::default() } }
 }
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct BarConfig {
     pub enabled: bool,
@@ -96,7 +95,7 @@ impl Default for BarConfig {
     fn default() -> Self { Self { enabled: true, unknown: Default::default() } }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct TilingConfig {
     pub default: bool,
@@ -104,7 +103,7 @@ pub struct TilingConfig {
     unknown: toml::Table,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ModKey {
     Super,
@@ -183,23 +182,60 @@ impl Config {
     }
 
     pub fn load(nested: bool) -> Self {
-        let path = config_path(|name| std::env::var_os(name));
-        let text = path.as_ref().and_then(|path| match std::fs::read_to_string(path) {
-            Ok(text) => Some(text),
-            Err(error) => {
-                if error.kind() == std::io::ErrorKind::NotFound {
-                    tracing::debug!(path = %path.display(), "no config file");
-                } else {
-                    tracing::warn!(path = %path.display(), %error, "cannot read config file");
+        Self::load_checked(nested).unwrap_or_else(|error| {
+            tracing::warn!(%error, "cannot load configuration; using defaults and environment");
+            Self::build(nested, None, |name| std::env::var(name).ok()).0
+        })
+    }
+
+    /// Called by a one-shot IPC worker, never by the compositor event loop.
+    pub(crate) fn load_checked(nested: bool) -> Result<Self, String> {
+        let path = config_path(|name|std::env::var_os(name));
+        let text = if let Some(path) = path {
+            use std::io::Read;
+            match std::fs::File::open(&path) {
+                Ok(file) => {
+                    let mut text = String::new();
+                    file.take(1024 * 1024 + 1).read_to_string(&mut text).map_err(|e| format!("{}: {e}", path.display()))?;
+                    if text.len() > 1024 * 1024 { return Err("config file exceeds 1 MiB".into()); }
+                    text
                 }
-                None
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+                Err(e) => return Err(format!("{}: {e}", path.display())),
             }
-        });
-        let (config, warnings) = Self::build(nested, text.as_deref(), |name| std::env::var(name).ok());
-        for warning in warnings {
-            tracing::warn!(?path, "{warning}");
+        } else { String::new() };
+        Self::parse_checked(nested, &text, |name| std::env::var(name).ok())
+    }
+
+    pub(crate) fn parse_checked(nested: bool, text: &str, env: impl Fn(&str) -> Option<String>) -> Result<Self, String> {
+        let file: FileConfig = toml::from_str(text).map_err(|error: toml::de::Error| {
+            let offset = error.span().map_or(0, |span| span.start).min(text.len());
+            let prefix = &text.as_bytes()[..offset];
+            let line = prefix.iter().filter(|b| **b == b'\n').count() + 1;
+            let column = prefix.iter().rposition(|b| *b == b'\n').map_or(offset + 1, |i| offset - i);
+            format!("{error}\nline {line}, column {column}")
+        })?;
+        if file.output.internal_scale.is_some_and(|v| !v.is_finite()) || file.output.sdr_white_nits.is_some_and(|v| !v.is_finite()) {
+            let key=if file.output.internal_scale.is_some_and(|v|!v.is_finite()) {"internal_scale"} else {"sdr_white_nits"};
+            let line=text.lines().position(|line|line.split_once('=').is_some_and(|(name,_)|name.trim()==key)).map_or(1,|i|i+1);
+            return Err(format!("output.{key} must be finite (line {line}, column 1)"));
         }
-        config
+        let (config, warnings) = Self::build(nested, Some(text), env);
+        for warning in warnings { tracing::warn!(%warning, "configuration warning"); }
+        Ok(config)
+    }
+
+    /// Effective configuration in TOML path shape, used only on explicit
+    /// schema/reload requests and by tests, never by the render/idle paths.
+    pub(crate) fn values(&self) -> serde_json::Value {
+        use serde_json::json;
+        let mode = self.output_mode.map(|m| format!("{}x{}{}", m.width, m.height,
+            m.refresh.map(|r| format!("@{}", f64::from(r)/1000.0)).unwrap_or_default()));
+        json!({"mod_key":self.mod_key, "terminal":self.terminal, "launcher":self.launcher,
+            "file_manager":self.file_manager,"polkit_agent":self.polkit_agent,"autostart":self.autostart,"gap":self.gap,
+            "output":{"internal_scale":self.internal_scale,"mode":mode,"hdr":self.output_hdr,"sdr_white_nits":self.sdr_white_nits},
+            "keyboard":{"layout":self.xkb_layout,"variant":self.xkb_variant,"options":self.xkb_options,"repeat_delay":self.repeat_delay,"repeat_rate":self.repeat_rate},
+            "modules":self.modules,"dock":self.dock,"bar":self.bar,"tiling":self.tiling,"lock":self.lock,"notifications":self.notifications,"outputs":self.outputs})
     }
 
     /// Pure merge: defaults < file < environment. Empty environment values are unset.
@@ -586,7 +622,7 @@ options = "caps:escape"
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct ModulesConfig {
     pub dock: bool,
@@ -636,7 +672,7 @@ mod module_tests {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct NotificationsConfig {
     pub timeout_ms: u64,

@@ -1330,3 +1330,13 @@ impl Gavno {
         self.loop_handle.insert_idle(|gv| gv.refit_fixed_windows());
     }
 }
+
+impl Dock {
+    /// Re-read pins and drop theme caches without restoring minimized windows.
+    pub(crate) fn configuration_changed(&mut self) {
+        self.initialized = false;
+        self.icons = Default::default();
+        self.entries = Default::default();
+        self.menu = None;
+    }
+}

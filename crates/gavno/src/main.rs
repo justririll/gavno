@@ -12,6 +12,10 @@ mod icons;
 mod topbar;
 mod backend;
 mod config;
+mod config_schema;
+mod config_reload;
+#[cfg(test)]
+mod config_schema_tests;
 mod crash_log;
 mod color;
 mod hdr;

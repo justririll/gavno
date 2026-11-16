@@ -119,9 +119,10 @@ impl Gavno {
     }
     pub(crate) fn media_events(&self) -> Option<channel::Sender<Snapshot>> {
         let (tx, rx) = channel::channel();
-        match self.loop_handle.insert_source(rx, |event, _, gv| {
+        let generation=self.media_generation;
+        match self.loop_handle.insert_source(rx, move |event, _, gv| {
             if let channel::Event::Msg(snapshot) = event {
-                gv.media_update(snapshot);
+                if gv.media_generation==generation {gv.media_update(snapshot);}
             }
         }) {
             Ok(_) => Some(tx),

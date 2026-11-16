@@ -42,6 +42,7 @@ pub struct Gavno {
     pub loop_signal: LoopSignal,
     pub config: Config,
     pub ipc: crate::ipc::IpcState,
+    pub(crate) screencopy_global: Option<smithay::reexports::wayland_server::backend::GlobalId>,
 
     /// Mapped windows. A toplevel joins the space on its first buffer commit.
     pub space: Space<Window>,
@@ -94,6 +95,7 @@ pub struct Gavno {
     pub launcher: crate::launcher::Launcher,
     pub notifications: crate::notify::Shared,
     pub now_playing: crate::media::Shared,
+    pub(crate) media_generation: u64,
 }
 
 impl Gavno {
@@ -150,6 +152,7 @@ impl Gavno {
             loop_signal: event_loop.get_signal(),
             config,
             ipc: crate::ipc::IpcState::default(),
+            screencopy_global: None,
             space: Space::default(),
             window_animations: Default::default(),
             window_decor: Default::default(),
@@ -161,6 +164,7 @@ impl Gavno {
             topbar,
             notifications,
             now_playing,
+            media_generation: 0,
             media: Default::default(),
             gestures: Default::default(),
             window_gestures: Default::default(),

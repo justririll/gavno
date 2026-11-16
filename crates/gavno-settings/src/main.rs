@@ -1,6 +1,11 @@
 mod config;
+#[path = "../../gavno/src/config_schema.rs"]
+mod config_schema;
+mod editor;
 mod ipc;
+mod model;
 mod transaction;
+mod work;
 mod xkb;
 
 use adw::prelude::*;
@@ -16,6 +21,10 @@ fn main() -> glib::ExitCode {
         .application_id("org.gavno.Settings")
         .build();
     app.connect_startup(|_| {
+        // Static settings pages need no caret-blink redraw timer.
+        if let Some(settings) = gtk::Settings::default() {
+            settings.set_gtk_cursor_blink(false);
+        }
         adw::StyleManager::default().set_color_scheme(adw::ColorScheme::ForceDark);
         let provider = gtk::CssProvider::new();
         provider.load_from_string(include_str!("style.css"));
@@ -32,7 +41,7 @@ fn main() -> glib::ExitCode {
             window.present();
             return;
         }
-        open(app);
+        editor::open(app);
     });
     app.run()
 }
@@ -44,120 +53,9 @@ fn page() -> gtk::Box {
     page.add_css_class("settings-page");
     page
 }
-fn scroll(child: &gtk::Box) -> gtk::ScrolledWindow {
-    gtk::ScrolledWindow::builder()
-        .child(child)
-        .hscrollbar_policy(gtk::PolicyType::Never)
-        .build()
-}
 fn clear(page: &gtk::Box) {
     while let Some(child) = page.first_child() {
         page.remove(&child);
-    }
-}
-fn open(app: &adw::Application) {
-    let window = adw::ApplicationWindow::builder()
-        .application(app)
-        .title("Settings")
-        .default_width(780)
-        .default_height(680)
-        .build();
-    let overlay = adw::ToastOverlay::new();
-    let toolbar = adw::ToolbarView::new();
-    let header = adw::HeaderBar::new();
-    let stack = adw::ViewStack::new();
-    let switcher = adw::ViewSwitcher::builder()
-        .stack(&stack)
-        .policy(adw::ViewSwitcherPolicy::Wide)
-        .build();
-    header.set_title_widget(Some(&switcher));
-    toolbar.add_top_bar(&header);
-    let displays = page();
-    let keyboard = page();
-    stack.add_titled_with_icon(
-        &scroll(&displays),
-        Some("displays"),
-        "Displays",
-        "video-display-symbolic",
-    );
-    stack.add_titled_with_icon(
-        &scroll(&keyboard),
-        Some("keyboard"),
-        "Keyboard",
-        "input-keyboard-symbolic",
-    );
-    toolbar.set_content(Some(&stack));
-    overlay.set_child(Some(&toolbar));
-    window.set_content(Some(&overlay));
-    let busy = Rc::new(Cell::new(false));
-    let refresh = gtk::Button::from_icon_name("view-refresh-symbolic");
-    refresh.set_tooltip_text(Some("Refresh connected devices"));
-    header.pack_start(&refresh);
-    {
-        let window = window.clone();
-        let overlay = overlay.clone();
-        let displays = displays.clone();
-        let keyboard = keyboard.clone();
-        let busy = busy.clone();
-        let stack = stack.clone();
-        refresh.connect_clicked(move |_| {
-            if busy.replace(true) {
-                return;
-            }
-            let window = window.clone();
-            let overlay = overlay.clone();
-            let displays = displays.clone();
-            let keyboard = keyboard.clone();
-            let busy = busy.clone();
-            let stack = stack.clone();
-            glib::spawn_future_local(async move {
-                load(&window, &overlay, &displays, &keyboard, &stack, &busy).await;
-                busy.set(false);
-            });
-        });
-    }
-    refresh.emit_clicked();
-    window.present();
-}
-async fn load(
-    window: &adw::ApplicationWindow,
-    overlay: &adw::ToastOverlay,
-    displays: &gtk::Box,
-    keyboard: &gtk::Box,
-    stack: &adw::ViewStack,
-    busy: &Rc<Cell<bool>>,
-) {
-    clear(displays);
-    clear(keyboard);
-    match ipc::request("outputs", json!({})).await {
-        Ok(outputs) => {
-            if let Some(outputs) = outputs.as_array() {
-                for output in outputs {
-                    display_row(window, overlay, displays, stack, busy, output.clone());
-                }
-                if outputs.is_empty() {
-                    displays.append(&gtk::Label::new(Some("No connected displays")));
-                }
-            }
-        }
-        Err(e) => {
-            displays.append(&gtk::Label::new(Some(&e)));
-            message(overlay, e);
-        }
-    }
-    match ipc::request("keyboard", json!({})).await {
-        Ok(state) => match gio::spawn_blocking(xkb::load).await {
-            Ok(Ok(layouts)) => {
-                keyboard_page(window, overlay, keyboard, stack, busy, state, layouts)
-            }
-            Ok(Err(e)) => {
-                keyboard.append(&gtk::Label::new(Some(&e)));
-            }
-            Err(_) => message(overlay, "Layout reader stopped"),
-        },
-        Err(e) => {
-            keyboard.append(&gtk::Label::new(Some(&e)));
-        }
     }
 }
 fn mode_label(mode: &Value) -> String {
@@ -528,11 +426,18 @@ fn keyboard_page(
         let window = window.clone(); let overlay = overlay.clone(); let stack = stack.clone(); let busy = busy.clone();
         glib::spawn_future_local(async move {
             let _hold = window.application().map(|app| app.hold()); stack.set_sensitive(false);
-            let result = match ipc::request("set_keyboard", params.clone()).await {
-                Ok(_) => gio::spawn_blocking(move || config::save("set_keyboard", &params)).await.map_err(|_| "Config worker stopped".to_string()).and_then(|r| r),
-                Err(e) => Err(e),
-            };
-            match result { Ok(())=>message(&overlay, "Keyboard settings saved"), Err(e)=>message(&overlay, e) }
+            let result = work::run(move || {
+                match ipc::call("set_keyboard", &params) {
+                    Ok(_) => config::save("set_keyboard", &params).map(|_| false),
+                    Err(error) if ipc::unavailable(&error) => config::save("set_keyboard", &params).map(|_| true),
+                    Err(error) => Err(error),
+                }
+            }).await.and_then(|result|result);
+            match result {
+                Ok(false) => message(&overlay,"Keyboard settings saved"),
+                Ok(true) => message(&overlay,"Takes effect after re-login"),
+                Err(error) => message(&overlay,error),
+            }
             stack.set_sensitive(true); busy.set(false);
         });
     });

@@ -57,7 +57,9 @@ pub fn call(method: &str, params: &Value) -> Result<Value, String> {
     }
 }
 pub async fn request(method: &'static str, params: Value) -> Result<Value, String> {
-    gio::spawn_blocking(move || call(method, &params))
-        .await
-        .map_err(|_| "IPC worker stopped".to_string())?
+    crate::work::run(move || call(method, &params)).await?
+}
+
+pub fn unavailable(error: &str) -> bool {
+    error.starts_with("Cannot connect to GAVNO:") || error == "XDG_RUNTIME_DIR is not set"
 }
