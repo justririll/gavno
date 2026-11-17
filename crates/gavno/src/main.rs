@@ -171,13 +171,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::env::set_var("XDG_CURRENT_DESKTOP", "GAVNO");
     std::env::set_var("XDG_SESSION_DESKTOP", "GAVNO");
     std::env::set_var("XDG_SESSION_TYPE", "wayland");
+    // Before any client or autostart command is spawned, so all inherit it.
+    if !greeter_mode && backend_choice == BackendChoice::Tty {
+        disable_accessibility_bus(&state.config);
+    }
     if !greeter_mode {
         xwayland::start(&mut state);
         launch::init(&mut state);
         start_polkit_agent(&mut state, backend_choice == BackendChoice::Tty);
         // A nested compositor must not repoint the host session's services.
         if backend_choice == BackendChoice::Tty {
-            export_session_environment();
+            export_session_environment(state.config.display.accessibility);
             screensaver::start(&mut state);
             autostart(&mut state);
         }
@@ -229,11 +233,25 @@ fn init_logging() {
         .init();
 }
 
+/// Stops GTK and Qt apps from starting the AT-SPI bus (about 25 MB of RSS)
+/// unless `[display] accessibility` is on.
+const ACCESSIBILITY_VARS: [(&str, &str); 2] = [("GTK_A11Y", "none"), ("NO_AT_BRIDGE", "1")];
+fn disable_accessibility_bus(config: &config::Config) {
+    if !config.display.accessibility {
+        for (name, value) in ACCESSIBILITY_VARS {
+            std::env::set_var(name, value);
+        }
+    }
+}
+
 /// D-Bus activated and systemd user services (xdg-desktop-portal and its
 /// wlr backend for screen sharing, for example) need our display variables.
-fn export_session_environment() {
+fn export_session_environment(accessibility: bool) {
     let _startup = perf::Startup::new("session_environment.begin", "session_environment.end");
     let mut names = vec!["WAYLAND_DISPLAY", "XDG_CURRENT_DESKTOP", "XDG_SESSION_TYPE"];
+    if !accessibility {
+        names.extend(ACCESSIBILITY_VARS.iter().map(|(name, _)| *name));
+    }
     if std::env::var_os("DISPLAY").is_some() {
         names.push("DISPLAY");
     }

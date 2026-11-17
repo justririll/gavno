@@ -67,7 +67,10 @@ What works today:
   data-control, primary selection, relative pointer, pointer constraints,
   idle notify with idle inhibit, ext-session-lock, keyboard-shortcuts-inhibit
   and layer-shell (`crates/gavno/src/handlers/`).
-- Optional XWayland through `xwayland-satellite` when it is in `PATH`.
+- Optional XWayland through `xwayland-satellite` when it is in `PATH`. GAVNO owns
+  the X display and starts the satellite (and Xwayland) only when the first X11
+  client connects; if it exits, the next client starts it again, and three exits
+  within 60 s disable X11 for the session ([docs/config.md](docs/config.md#x11)).
 - greetd greeter mode: `gavno --greeter`, see `design/login.md`.
 - Built-in lock screen with PAM authentication, idle and pre-suspend locking,
   failed-attempt backoff, and gated IPC while locked

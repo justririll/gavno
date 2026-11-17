@@ -44,6 +44,7 @@ default": see `terminal` and `launcher` below.
 | `[lock] after_idle_secs` | integer, seconds | `300` | none |
 | `[display] off_after_idle_secs` | u32 seconds, `0` = never | `600` | none |
 | `[display] direct_scanout` | boolean | `true` | none |
+| `[display] accessibility` | boolean | `false` | none |
 | `[display] brightness_control` | string, `"auto"`, `"backlight"` or `"software"` | `"auto"` | none |
 | `[output] internal_scale` | float | `1.75` | `GAVNO_SCALE` |
 | `[output] mode` | string, `WIDTHxHEIGHT[@HZ]` | preferred mode, highest refresh among preferred modes | `GAVNO_OUTPUT_MODE` |
@@ -97,6 +98,22 @@ timer, and a mapped idle inhibitor postpones the lock. The timer is not armed
 in greeter mode or while the session is already locked. GAVNO also locks
 before suspend and on a logind Lock request. See [the lock screen](lock.md)
 for authentication, backoff and what is blocked while locked.
+
+<a id="x11"></a>
+X11 clients run through `xwayland-satellite` when it is in `PATH`. GAVNO claims
+the X display and sets `DISPLAY` at login, but starts nothing: the satellite and
+Xwayland (about 75 MB) start when the first X11 client connects, which makes
+that first connection a little slower. If the satellite exits, GAVNO watches
+the display again and the next client starts it. After three exits within 60
+seconds it stops retrying, logs a warning and removes `DISPLAY`. There is no
+configuration key; without the satellite in `PATH`, X11 is disabled.
+
+`[display] accessibility = false` (the default) keeps the AT-SPI accessibility
+bus from starting: the TTY session sets `GTK_A11Y=none` and `NO_AT_BRIDGE=1`
+for itself and imports both into the D-Bus and systemd user environments, which
+saves roughly 25 MB of RSS. Set it to `true` if you use a screen reader. It is
+read once at startup, so a change takes effect at the next login and is not
+applied on reload. Nested instances never export anything.
 
 On the TTY backend, `[display] direct_scanout = true` allows client and cursor
 buffers on hardware planes in SDR. This setting reloads live. A rejected page
@@ -580,6 +597,7 @@ name such as `eDP-1`. Numeric steps describe the editor increments.
 | `output.mode` | string | `unset` | yes |
 | `output.hdr` | bool | `false` | yes |
 | `display.direct_scanout` | boolean | `true` | yes |
+| `display.accessibility` | boolean | `false` | after re-login |
 | `output.sdr_white_nits` | float (80.0–400.0, step 10.0) | `203.0` | yes |
 | `keyboard.repeat_delay` | int (0–5000, step 1) | `300` | yes |
 | `keyboard.repeat_rate` | int (0–100, step 1) | `30` | yes |

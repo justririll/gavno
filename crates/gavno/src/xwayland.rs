@@ -2,12 +2,18 @@
 //! then wakes calloop through a channel; there is no polling timer.
 //!
 //! GAVNO owns the X display: it takes the lock file and listens on the
-//! pathname and abstract sockets itself, then hands them to the satellite
-//! with `-listenfd`. Clients that connect before the X server is ready wait
-//! in the listen backlog, so DISPLAY can be published at once, and the
-//! display survives a satellite restart.
+//! pathname and abstract sockets itself, so DISPLAY can be published at once.
+//! The satellite (and the Xwayland behind it) is started lazily: the listening
+//! sockets sit in the event loop, and the first X11 client to connect starts
+//! the satellite, which receives the sockets with `-listenfd` and accepts the
+//! connection that waited in the backlog. When the satellite exits the sockets
+//! are watched again, so the next client starts it anew.
 use crate::Gavno;
-use smithay::reexports::calloop::channel::{self, Event};
+use smithay::reexports::calloop::{
+    channel::{self, Event},
+    generic::Generic,
+    Interest, Mode, PostAction, RegistrationToken,
+};
 use std::{
     io::Write,
     os::{
@@ -15,8 +21,14 @@ use std::{
         unix::{fs::PermissionsExt, process::CommandExt},
     },
     path::{Path, PathBuf},
-    process::{Child, Command},
+    process::{Child, Command, ExitStatus},
+    rc::Rc,
+    time::{Duration, Instant},
 };
+
+/// Satellite exits within `CRASH_WINDOW` after which X11 is given up.
+const CRASH_LIMIT: usize = 3;
+const CRASH_WINDOW: Duration = Duration::from_secs(60);
 
 /// A claimed X display: lock file plus listening sockets.
 struct XDisplay {
@@ -33,20 +45,33 @@ impl Drop for XDisplay {
     }
 }
 
-pub struct Satellite {
+/// A started satellite: its pidfd and the channel that reports its exit.
+struct Launched {
     process: OwnedFd,
+    exit: channel::Channel<std::io::Result<ExitStatus>>,
+}
+/// Starts the satellite for a display; replaced in tests so they never run it.
+type Launcher = Rc<dyn Fn(&Gavno, &Path, &XDisplay) -> Option<Launched>>;
+
+pub struct Satellite {
     executable: PathBuf,
-    restarted: bool,
-    watcher: smithay::reexports::calloop::RegistrationToken,
+    launcher: Launcher,
+    /// The running satellite, if any.
+    process: Option<OwnedFd>,
+    watcher: Option<RegistrationToken>,
+    /// Read sources on the listening sockets while no satellite runs.
+    listeners: Vec<RegistrationToken>,
+    exits: Vec<Instant>,
     display: Option<XDisplay>,
 }
 impl Drop for Satellite {
     fn drop(&mut self) {
+        let Some(process) = &self.process else { return };
         // A pidfd cannot accidentally signal a recycled PID.
         unsafe {
             libc::syscall(
                 libc::SYS_pidfd_send_signal,
-                self.process.as_raw_fd(),
+                process.as_raw_fd(),
                 libc::SIGTERM,
                 std::ptr::null::<libc::siginfo_t>(),
                 0,
@@ -210,12 +235,124 @@ pub fn start(gv: &mut Gavno) {
         return;
     };
     crate::perf::startup("xwayland.display_claimed");
-    spawn(gv, executable, false, display);
+    let name = format!(":{}", display.number);
+    std::env::set_var("DISPLAY", &name);
+    tracing::info!(display = %name, "X11 display ready; xwayland-satellite starts on the first X11 client");
+    gv.satellite = Some(Satellite {
+        executable,
+        launcher: Rc::new(launch),
+        process: None,
+        watcher: None,
+        listeners: Vec::new(),
+        exits: Vec::new(),
+        display: Some(display),
+    });
+    arm(gv);
 }
-fn spawn(gv: &mut Gavno, executable: PathBuf, restarted: bool, display: XDisplay) {
+
+/// Watches the listening sockets; the first readable one starts the satellite.
+/// The sources are level-triggered and never accept, so the connection stays
+/// queued for the satellite.
+fn arm(gv: &mut Gavno) {
+    let Some(satellite) = gv.satellite.as_mut() else { return };
+    let Some(display) = &satellite.display else { return };
+    let mut tokens = Vec::new();
+    for fd in [&display.unix, &display.abstract_] {
+        // A dup shares the open socket; the display keeps the original.
+        let Ok(fd) = fd.try_clone() else { continue };
+        let source = Generic::new(fd, Interest::READ, Mode::Level);
+        match gv.loop_handle.insert_source(source, |_, _, gv| {
+            connected(gv);
+            Ok(PostAction::Continue)
+        }) {
+            Ok(token) => tokens.push(token),
+            Err(err) => tracing::warn!(?err, "could not watch the X display socket"),
+        }
+    }
+    if tokens.is_empty() {
+        tracing::warn!("could not watch the X display; X11 support disabled");
+        give_up(gv);
+        return;
+    }
+    if let Some(satellite) = gv.satellite.as_mut() {
+        satellite.listeners = tokens;
+    }
+}
+fn disarm(gv: &mut Gavno) {
+    if let Some(satellite) = gv.satellite.as_mut() {
+        for token in std::mem::take(&mut satellite.listeners) {
+            gv.loop_handle.remove(token);
+        }
+    }
+}
+/// Stops X11 for the session: no more starts, and no DISPLAY for new clients.
+fn give_up(gv: &mut Gavno) {
+    disarm(gv);
+    gv.satellite = None;
+    std::env::remove_var("DISPLAY");
+}
+
+/// An X11 client connected: start the satellite.
+fn connected(gv: &mut Gavno) {
+    let _stall = crate::perf::Stall::new("xwayland.connect");
+    // Both sockets may be readable in one dispatch; only the first starts it.
+    if gv.satellite.as_ref().is_none_or(|s| s.listeners.is_empty()) {
+        return;
+    }
+    disarm(gv);
+    let Some(satellite) = gv.satellite.as_ref() else { return };
+    let Some(display) = &satellite.display else { return };
+    let Some(Launched { process, exit }) = (satellite.launcher)(gv, &satellite.executable, display) else {
+        // Counts as an exit, so a satellite that cannot start does not spin.
+        exited(gv);
+        return;
+    };
+    let watcher = gv.loop_handle.insert_source(exit, |event, _, gv| {
+        let _stall = crate::perf::Stall::new("xwayland.exit");
+        if let Event::Msg(status) = event {
+            tracing::warn!(?status, "xwayland-satellite exited");
+            if let Some(satellite) = gv.satellite.as_mut() {
+                if let Some(watcher) = satellite.watcher.take() {
+                    gv.loop_handle.remove(watcher);
+                }
+                satellite.process = None;
+            }
+            exited(gv);
+        }
+    });
+    let Some(satellite) = gv.satellite.as_mut() else { return };
+    match watcher {
+        Ok(token) => {
+            satellite.watcher = Some(token);
+            satellite.process = Some(process);
+        }
+        Err(err) => {
+            tracing::warn!(?err, "could not install xwayland-satellite exit watcher");
+            satellite.process = Some(process); // dropped below: SIGTERM
+            gv.satellite = None;
+            std::env::remove_var("DISPLAY");
+        }
+    }
+}
+/// The satellite is gone: watch the sockets again for the next client, unless
+/// it keeps dying.
+fn exited(gv: &mut Gavno) {
+    let Some(satellite) = gv.satellite.as_mut() else { return };
+    let now = Instant::now();
+    satellite.exits.retain(|t| now.duration_since(*t) < CRASH_WINDOW);
+    satellite.exits.push(now);
+    if satellite.exits.len() >= CRASH_LIMIT {
+        tracing::warn!("xwayland-satellite keeps exiting; X11 support disabled");
+        give_up(gv);
+    } else {
+        arm(gv);
+    }
+}
+
+fn launch(gv: &Gavno, executable: &Path, display: &XDisplay) -> Option<Launched> {
     let display_name = format!(":{}", display.number);
     let fds = [display.unix.as_raw_fd(), display.abstract_.as_raw_fd()];
-    let mut command = Command::new(&executable);
+    let mut command = Command::new(executable);
     command
         .arg(&display_name)
         .args(["-listenfd", &fds[0].to_string(), "-listenfd", &fds[1].to_string()])
@@ -235,7 +372,7 @@ fn spawn(gv: &mut Gavno, executable: PathBuf, restarted: bool, display: XDisplay
         Ok(child) => child,
         Err(err) => {
             tracing::warn!(?err, "could not start xwayland-satellite");
-            return;
+            return None;
         }
     };
     crate::perf::startup("xwayland.process_spawned");
@@ -246,51 +383,17 @@ fn spawn(gv: &mut Gavno, executable: PathBuf, restarted: bool, display: XDisplay
         std::thread::spawn(move || {
             let _ = child.wait();
         });
-        return;
+        return None;
     }
     let process = unsafe { OwnedFd::from_raw_fd(raw as _) };
-    let (sender, receiver) = channel::channel();
-    let watcher = match gv.loop_handle.insert_source(receiver, |event, _, gv| {
-        let _stall = crate::perf::Stall::new("xwayland.exit");
-        if let Event::Msg(status) = event {
-            if let Some(mut satellite) = gv.satellite.take() {
-                gv.loop_handle.remove(satellite.watcher);
-                tracing::warn!(?status, "xwayland-satellite exited");
-                let display = satellite.display.take();
-                match display {
-                    // The display stays ours; restart the server behind it once.
-                    Some(display) if !satellite.restarted => {
-                        spawn(gv, satellite.executable.clone(), true, display);
-                    }
-                    _ => std::env::remove_var("DISPLAY"),
-                }
-            }
-        }
-    }) {
-        Ok(watcher) => watcher,
-        Err(err) => {
-            tracing::warn!(?err, "could not install xwayland-satellite exit watcher");
-            let _ = child.kill();
-            std::thread::spawn(move || {
-                let _ = child.wait();
-            });
-            return;
-        }
-    };
-    gv.satellite = Some(Satellite {
-        process,
-        executable,
-        restarted,
-        watcher,
-        display: Some(display),
-    });
-    std::env::set_var("DISPLAY", &display_name);
+    let (sender, exit) = channel::channel();
     tracing::info!(display = %display_name, "started xwayland-satellite");
     crate::perf::startup("xwayland.started");
     std::thread::spawn(move || {
         let status = wait_child(&mut child);
         let _ = sender.send(status);
     });
+    Some(Launched { process, exit })
 }
 fn wait_child(child: &mut Child) -> std::io::Result<std::process::ExitStatus> {
     child.wait()
@@ -299,6 +402,7 @@ fn wait_child(child: &mut Child) -> std::io::Result<std::process::ExitStatus> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::process::ExitStatusExt;
     #[test]
     fn picks_first_free_display_and_handles_exhaustion() {
         assert_eq!(pick_display(|_| false), Some(0));
@@ -357,6 +461,67 @@ mod tests {
         std::fs::write(dir.join(".X0-lock"), "123").unwrap();
         let _socket = std::os::unix::net::UnixListener::bind(dir.join(".X11-unix/X1")).unwrap();
         assert_eq!(pick_display(|n| occupied_in(&dir, n)), Some(2));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    fn test_satellite(gv: &mut Gavno, dir: &Path, launches: Rc<std::cell::Cell<u32>>, senders: Rc<std::cell::RefCell<Vec<channel::Sender<std::io::Result<ExitStatus>>>>>) {
+        let display = claim_display(dir, false).unwrap();
+        let launcher: Launcher = Rc::new(move |_, _, _| {
+            launches.set(launches.get() + 1);
+            let (sender, exit) = channel::channel();
+            senders.borrow_mut().push(sender);
+            // Any valid fd stands in for the pidfd; signalling it just fails.
+            let process = OwnedFd::from(std::fs::File::open("/dev/null").unwrap());
+            Some(Launched { process, exit })
+        });
+        gv.satellite = Some(Satellite {
+            executable: PathBuf::from("xwayland-satellite"),
+            launcher,
+            process: None,
+            watcher: None,
+            listeners: Vec::new(),
+            exits: Vec::new(),
+            display: Some(display),
+        });
+        arm(gv);
+    }
+    #[test]
+    fn satellite_starts_on_first_client_and_is_rearmed_after_exit_until_crash_loop() {
+        let dir = std::env::temp_dir().join(format!("gavno-x-lazy-test-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join(".X11-unix")).unwrap();
+        let mut h = crate::state::tests::Harness::new();
+        let launches = Rc::new(std::cell::Cell::new(0));
+        let senders = Rc::new(std::cell::RefCell::new(Vec::new()));
+        test_satellite(&mut h.gv, &dir, launches.clone(), senders.clone());
+        let socket = dir.join(".X11-unix/X0");
+        let dispatch = |h: &mut crate::state::tests::Harness| {
+            for _ in 0..3 {
+                h.event_loop.dispatch(Duration::ZERO, &mut h.gv).unwrap();
+            }
+        };
+        // Idle: nothing starts without a client.
+        dispatch(&mut h);
+        assert_eq!(launches.get(), 0);
+        // The first client starts the satellite exactly once, even though its
+        // connection stays unaccepted (level-triggered sources were removed).
+        let _client = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+        dispatch(&mut h);
+        assert_eq!(launches.get(), 1);
+        dispatch(&mut h);
+        assert_eq!(launches.get(), 1);
+        assert!(h.gv.satellite.as_ref().unwrap().listeners.is_empty());
+        // An exit re-arms the watch; the still queued connection starts it again.
+        senders.borrow()[0].send(Ok(ExitStatus::from_raw(0))).unwrap();
+        dispatch(&mut h);
+        assert_eq!(launches.get(), 2);
+        // The third exit within the window gives up.
+        senders.borrow()[1].send(Ok(ExitStatus::from_raw(0))).unwrap();
+        dispatch(&mut h);
+        assert_eq!(launches.get(), 3);
+        senders.borrow()[2].send(Ok(ExitStatus::from_raw(0))).unwrap();
+        dispatch(&mut h);
+        assert_eq!(launches.get(), 3);
+        assert!(h.gv.satellite.is_none());
+        assert!(!socket.exists());
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

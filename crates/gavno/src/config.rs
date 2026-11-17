@@ -57,13 +57,15 @@ pub struct DisplayConfig {
     pub off_after_idle_secs: u32,
     pub brightness_control: crate::brightness::Control,
     pub direct_scanout: bool,
+    /// Startup-only: when false the session exports GTK_A11Y=none and NO_AT_BRIDGE=1.
+    pub accessibility: bool,
     #[serde(flatten)]
     unknown: toml::Table,
 }
 
 impl Default for DisplayConfig {
     fn default() -> Self {
-        Self { off_after_idle_secs: 600, brightness_control: Default::default(), direct_scanout: true, unknown: Default::default() }
+        Self { off_after_idle_secs: 600, brightness_control: Default::default(), direct_scanout: true, accessibility: false, unknown: Default::default() }
     }
 }
 
@@ -433,6 +435,20 @@ options = "caps:escape"
         }
         for value in ["'true'", "1", "[]"] {
             assert!(Config::parse_checked(false, &format!("[display]\ndirect_scanout = {value}"), |_| None).is_err());
+        }
+    }
+
+    #[test]
+    fn accessibility_defaults_parses_and_validates() {
+        assert!(!Config::build(false, None, |_| None).0.display.accessibility);
+        for value in [true, false] {
+            let text = format!("[display]\naccessibility = {value}");
+            let config = Config::parse_checked(false, &text, |_| None).unwrap();
+            assert_eq!(config.display.accessibility, value);
+            assert_eq!(config.values()["display"]["accessibility"], value);
+        }
+        for value in ["'true'", "1", "[]"] {
+            assert!(Config::parse_checked(false, &format!("[display]\naccessibility = {value}"), |_| None).is_err());
         }
     }
 

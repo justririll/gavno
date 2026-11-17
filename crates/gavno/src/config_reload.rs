@@ -176,6 +176,7 @@ pub(crate) fn apply(gv: &mut Gavno, prepared: Prepared) -> Result<Value, String>
     // These startup-only settings are not considered effective before re-login.
     config.autostart = gv.config.autostart.clone();
     config.polkit_agent = gv.config.polkit_agent.clone();
+    config.display.accessibility = gv.config.display.accessibility;
     for (name, output) in &mut config.outputs {
         output.enabled = gv.config.outputs.get(name).and_then(|o| o.enabled);
     }
@@ -303,10 +304,10 @@ mod deferred_tests {
     fn reports_startup_keys_and_defers_ipc_shutdown_until_after_reply() {
         let mut h = crate::state::tests::Harness::new();
         let old = h.gv.config.clone();
-        let next=Config::parse_checked(true,"autostart=['false']\npolkit_agent='other-agent'\n[outputs.'eDP-1']\nenabled=false\n[modules]\nipc=false",|_|None).unwrap();
+        let next=Config::parse_checked(true,"autostart=['false']\npolkit_agent='other-agent'\n[display]\naccessibility=true\n[outputs.'eDP-1']\nenabled=false\n[modules]\nipc=false",|_|None).unwrap();
         let prepared = Prepared::new(next, &old).unwrap();
         let result = apply(&mut h.gv, prepared).unwrap();
-        for key in ["autostart", "polkit_agent", "outputs.\"eDP-1\".enabled"] {
+        for key in ["autostart", "polkit_agent", "outputs.\"eDP-1\".enabled", "display.accessibility"] {
             assert!(
                 result["needs_relogin"]
                     .as_array()
@@ -317,6 +318,7 @@ mod deferred_tests {
         }
         assert_eq!(h.gv.config.autostart, old.autostart);
         assert_eq!(h.gv.config.polkit_agent, old.polkit_agent);
+        assert_eq!(h.gv.config.display.accessibility, old.display.accessibility);
         assert!(
             h.gv.features.on(crate::module::Feature::Ipc),
             "reply must be deliverable"
