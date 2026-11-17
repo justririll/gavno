@@ -33,6 +33,12 @@ pub struct ModeState {
     pub tile_floating: bool,
     /// Original floating geometry, independent of maximize/fullscreen restores.
     pub tile_restore: Option<Rectangle<i32, Logical>>,
+    /// The first configure was tiled; there is no natural floating geometry yet.
+    pub initially_tiled: bool,
+    /// Centre only after the client commits the natural-size configure.
+    pub natural_float: Option<smithay::utils::Serial>,
+    /// Explicit geometry input cancels centring, but still completes the ack.
+    pub natural_center: bool,
     /// Floating geometry to go back to. `None` while floating, or when the
     /// window was never floating (it asked for maximize before its first map).
     pub restore: Option<Rectangle<i32, Logical>>,
@@ -82,7 +88,144 @@ pub fn with_mode_state<T>(window: &Window, f: impl FnOnce(&mut ModeState) -> T) 
     f(&mut guard)
 }
 
+/// Per-commit content evidence must be captured before the renderer consumes
+/// SurfaceAttributes::buffer. An ack alone retains the old renderer buffer.
+#[derive(Default)]
+struct FloatingContentCommit {
+    geometry: Option<Rectangle<i32, Logical>>,
+    changed: bool,
+}
+pub(crate) fn track_floating_content(
+    surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+) {
+    use smithay::wayland::{
+        compositor::{add_post_commit_hook, with_states, BufferAssignment, SurfaceAttributes},
+        shell::xdg::SurfaceCachedState,
+    };
+    with_states(surface, |states| {
+        states
+            .data_map
+            .insert_if_missing_threadsafe(|| Mutex::new(FloatingContentCommit::default()));
+    });
+    add_post_commit_hook::<Gavno, _>(surface, |_, _, surface| {
+        with_states(surface, |states| {
+            let attached = matches!(
+                states
+                    .cached_state
+                    .get::<SurfaceAttributes>()
+                    .current()
+                    .buffer,
+                Some(BufferAssignment::NewBuffer(_))
+            );
+            let geometry = states
+                .cached_state
+                .get::<SurfaceCachedState>()
+                .current()
+                .geometry;
+            let mut commit = states
+                .data_map
+                .get::<Mutex<FloatingContentCommit>>()
+                .unwrap()
+                .lock()
+                .unwrap();
+            commit.changed = attached || commit.geometry != geometry;
+            commit.geometry = geometry;
+        });
+    });
+}
+pub(crate) fn cancel_natural_center(window: &Window) {
+    with_mode_state(window, |state| state.natural_center = false);
+}
+
 impl Gavno {
+    pub(crate) fn restore_tile_geometry(
+        &mut self,
+        window: &Window,
+        restore: Option<Rectangle<i32, Logical>>,
+        animate: bool,
+    ) {
+        if let Some(rect) = restore {
+            self.apply_tile_rect(window, rect, animate, false);
+        } else if mode_state(window).initially_tiled {
+            configure_mode(window, WindowMode::Floating, None);
+            if let Some(toplevel) = window.toplevel() {
+                let serial = toplevel.send_configure();
+                with_mode_state(window, |s| {
+                    s.natural_float = Some(serial);
+                    s.natural_center = true;
+                });
+            }
+        }
+    }
+
+    pub(crate) fn finish_natural_float(
+        &mut self,
+        window: &Window,
+        surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+    ) {
+        let mode = mode_state(window);
+        let Some(requested) = mode.natural_float else {
+            return;
+        };
+        if mode.mode != WindowMode::Floating || self.tiled(window) {
+            return;
+        }
+        let committed = smithay::wayland::compositor::with_states(surface, |states| {
+            let changed = states
+                .data_map
+                .get::<Mutex<FloatingContentCommit>>()
+                .is_some_and(|commit| commit.lock().unwrap().changed);
+            changed
+                && states
+                    .data_map
+                    .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()
+                    .unwrap()
+                    .lock()
+                    .unwrap()
+                    .current_serial
+                    .is_some_and(|serial| serial >= requested)
+        });
+        let has_buffer =
+            smithay::backend::renderer::utils::with_renderer_surface_state(surface, |state| {
+                state.buffer().is_some()
+            })
+            .unwrap_or(false);
+        if !committed || !has_buffer {
+            return;
+        }
+        if !mode.natural_center {
+            with_mode_state(window, |s| {
+                s.natural_float = None;
+                s.initially_tiled = false;
+            });
+            return;
+        }
+        let Some(output) = self.output_for_window(window) else {
+            return;
+        };
+        let area = self.work_area(&output);
+        let size = window.geometry().size;
+        let loc = (
+            area.loc.x + ((area.size.w - size.w) / 2).max(0),
+            area.loc.y + ((area.size.h - size.h) / 2).max(0),
+        )
+            .into();
+        self.save_workspace_location(window, loc);
+        if self.space.element_location(window).is_some() {
+            self.space.map_element(window.clone(), loc, false);
+        }
+        self.features
+            .call(crate::module::Feature::Animations, (), || {
+                self.window_animations
+                    .geometry_immediate(window, Rectangle::new(loc, size).to_f64())
+            });
+        with_mode_state(window, |s| {
+            s.natural_float = None;
+            s.natural_center = false;
+            s.initially_tiled = false;
+        });
+    }
+
     /// Greatest output overlap; unmapped windows use the active output.
     pub(crate) fn output_for_window(&self, window: &Window) -> Option<Output> {
         if self.space.element_location(window).is_none() {
@@ -146,7 +289,7 @@ impl Gavno {
         let restore = with_mode_state(window, |s| match mode {
             WindowMode::Floating => s.leave(),
             _ => {
-                s.enter(mode, current);
+                s.enter(mode, if s.initially_tiled { s.tile_restore } else { current });
                 None
             }
         });
@@ -157,6 +300,11 @@ impl Gavno {
             target
         };
         configure_mode(window, mode, geometry.map(|r| r.size));
+        if mode != WindowMode::Floating { with_mode_state(window, |s| s.natural_float = None); }
+        if mode == WindowMode::Floating && geometry.is_none() && mode_state(window).initially_tiled {
+            let serial = toplevel.send_configure();
+            with_mode_state(window, |s| { s.natural_float = Some(serial); s.natural_center = true; });
+        }
         if !mapped {
             if let Some(rect) = geometry { self.save_workspace_location(window, rect.loc); }
         }

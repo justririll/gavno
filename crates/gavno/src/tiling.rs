@@ -548,18 +548,6 @@ impl Gavno {
         let owner = self.workspaces.ensure(output);
         let ws = &mut owner.list.items[owner.list.active];
         ws.tiling = !ws.tiling;
-        if !ws.tiling {
-            let windows: Vec<_> = ws.windows.iter().map(|w| w.window.clone()).collect();
-            for w in windows {
-                if let Some(r) = with_mode_state(&w, |s| s.tile_restore.take()) {
-                    if mode_state(&w).mode == WindowMode::Floating {
-                        self.apply_tile_rect(&w, r, true, false);
-                    } else {
-                        with_mode_state(&w, |s| s.restore = Some(r));
-                    }
-                }
-            }
-        }
         self.reflow_tiling(true);
         self.queue_redraw_all();
     }
@@ -576,9 +564,8 @@ impl Gavno {
             with_mode_state(window, |s| s.restore = s.tile_restore.take().or(s.restore));
         }
         if mode_state(window).tile_floating && mode_state(window).mode == WindowMode::Floating {
-            if let Some(r) = with_mode_state(window, |s| s.tile_restore.take()) {
-                self.apply_tile_rect(window, r, true, false);
-            }
+            let restore = with_mode_state(window, |s| s.tile_restore.take());
+            self.restore_tile_geometry(window, restore, true);
         }
         self.reflow_tiling(true);
         self.raise_tile_overlays();
@@ -630,7 +617,8 @@ impl Gavno {
         self.queue_redraw_all();
 
         }
-    fn apply_tile_rect(&mut self, window: &Window, rect: Rect, animate: bool, tiled: bool) {
+    pub(crate) fn apply_tile_rect(&mut self, window: &Window, rect: Rect, animate: bool, tiled: bool) {
+        if tiled { with_mode_state(window, |s| s.natural_float = None); }
         self.guard(crate::module::Feature::Tiling, Default::default(), |gv| gv.apply_tile_rect_feature(window, rect, animate, tiled))
     }
 
@@ -702,12 +690,13 @@ impl Gavno {
                 }
                 if !ws.tiling {
                     for w in &ws.windows {
-                        if let Some(r) = with_mode_state(&w.window, |s| s.tile_restore.take()) {
-                            if mode_state(&w.window).mode == WindowMode::Floating {
-                                restores.push((w.window.clone(), r));
-                            } else {
-                                with_mode_state(&w.window, |s| s.restore = Some(r));
+                        let restore = with_mode_state(&w.window, |s| s.tile_restore.take());
+                        if mode_state(&w.window).mode == WindowMode::Floating {
+                            if restore.is_some() || (mode_state(&w.window).initially_tiled && mode_state(&w.window).natural_float.is_none()) {
+                                restores.push((w.window.clone(), restore));
                             }
+                        } else if restore.is_some() {
+                            with_mode_state(&w.window, |s| s.restore = restore);
                         }
                     }
                     continue;
@@ -735,7 +724,7 @@ impl Gavno {
                         Rectangle::new(v.location, size)
                     });
                     with_mode_state(&w, |s| {
-                        if s.tile_restore.is_none() {
+                        if s.tile_restore.is_none() && !s.initially_tiled {
                             s.tile_restore = saved;
                         }
                     });
@@ -747,7 +736,7 @@ impl Gavno {
             }
         }
         for (w, r) in restores {
-            self.apply_tile_rect(&w, r, animate, false);
+            self.restore_tile_geometry(&w, r, animate);
         }
         for (w, r) in targets {
             if moving.as_ref() != Some(&w) {
@@ -1115,6 +1104,217 @@ mod tests {
             .with_pending_state(|s| s.size = Some(rect.size));
         h.gv.save_workspace_location(&w, rect.loc);
         w
+    }
+    #[test]
+    fn initially_tiled_float_requests_natural_size_and_centres_its_commit() {
+        use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State;
+        let mut h = crate::state::tests::Harness::new();
+        let output = output(&mut h);
+        h.gv.workspaces.ensure(&output).list.items[0].tiling = true;
+        let w = h.window();
+        crate::handlers::xdg_shell::prepare_initial_configure(&h.gv, &w);
+        let t = w.toplevel().unwrap();
+        let tiled_size = t.with_pending_state(|s| s.size).unwrap();
+        t.send_configure();
+        h.gv.map_new_window(w.clone());
+        h.commit_size(&w, tiled_size.w, tiled_size.h);
+        assert_eq!(mode_state(&w).tile_restore, None);
+        h.gv.toggle_floating(&w);
+        assert_eq!(
+            t.with_pending_state(|s| s.size),
+            None,
+            "None encodes the 0x0 natural-size configure"
+        );
+        assert!(!t.with_pending_state(|s| s.states.contains(State::TiledLeft)));
+        assert!(mode_state(&w).natural_float.is_some());
+        let requested = mode_state(&w).natural_float.unwrap();
+        let tiled_location = h.gv.space.element_location(&w);
+        // A real ack+commit keeps the renderer's old buffer. It must not
+        // finish centring before resized content or geometry is committed.
+        h.commit_state(&w, None);
+        smithay::wayland::compositor::with_states(t.wl_surface(), |states| {
+            assert!(states
+                .data_map
+                .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .current_serial
+                .is_some_and(|serial| serial >= requested));
+        });
+        assert_eq!(w.geometry().size, tiled_size);
+        assert_eq!(h.gv.space.element_location(&w), tiled_location);
+        assert_eq!(mode_state(&w).natural_float, Some(requested));
+        h.commit_size(&w, 640, 400);
+        let area = h.gv.work_area(&output);
+        assert_eq!(
+            h.gv.space.element_location(&w),
+            Some(
+                (
+                    area.loc.x + (area.size.w - 640) / 2,
+                    area.loc.y + (area.size.h - 400) / 2
+                )
+                    .into()
+            )
+        );
+        assert!(!mode_state(&w).initially_tiled);
+        assert!(mode_state(&w).natural_float.is_none());
+        let loc = h.gv.space.element_location(&w);
+        h.commit_size(&w, 600, 350);
+        assert_eq!(
+            h.gv.space.element_location(&w),
+            loc,
+            "centre only the first floating commit"
+        );
+    }
+    #[test]
+    fn natural_float_geometry_change_can_complete_without_a_new_buffer() {
+        let mut h = crate::state::tests::Harness::new();
+        let output = output(&mut h);
+        h.gv.workspaces.ensure(&output).list.items[0].tiling = true;
+        let w = h.window();
+        crate::handlers::xdg_shell::prepare_initial_configure(&h.gv, &w);
+        let t = w.toplevel().unwrap();
+        let size = t.with_pending_state(|s| s.size).unwrap();
+        t.send_configure();
+        h.gv.map_new_window(w.clone());
+        h.commit_size(&w, size.w, size.h);
+        h.gv.toggle_floating(&w);
+        h.commit_state(&w, Some(Rectangle::from_size((640, 400).into())));
+        assert_eq!(w.geometry().size, (640, 400).into());
+        assert!(mode_state(&w).natural_float.is_none());
+        assert!(!mode_state(&w).initially_tiled);
+        let area = h.gv.work_area(&output);
+        assert_eq!(
+            h.gv.space.element_location(&w),
+            Some(
+                (
+                    area.loc.x + (area.size.w - 640) / 2,
+                    area.loc.y + (area.size.h - 400) / 2
+                )
+                    .into()
+            )
+        );
+    }
+
+    #[test]
+    fn delayed_natural_ack_preserves_move_and_resize_grab_trajectory() {
+        use smithay::input::pointer::{ButtonEvent, Focus, GrabStartData, MotionEvent};
+        use smithay::{backend::input::ButtonState, utils::SERIAL_COUNTER};
+        for action in ["move", "maximized-move", "resize"] {
+            let mut h = crate::state::tests::Harness::new();
+            let output = output(&mut h);
+            h.gv.workspaces.ensure(&output).list.items[0].tiling = true;
+            let w = h.window();
+            crate::handlers::xdg_shell::prepare_initial_configure(&h.gv, &w);
+            let t = w.toplevel().unwrap();
+            let tiled_size = t.with_pending_state(|s| s.size).unwrap();
+            t.send_configure();
+            h.gv.map_new_window(w.clone());
+            h.commit_size(&w, tiled_size.w, tiled_size.h);
+            if action == "maximized-move" {
+                h.gv.set_window_mode(&w, WindowMode::Maximized, None);
+            }
+            h.gv.toggle_floating(&w);
+            let initial = h.gv.space.element_location(&w).unwrap();
+            let start = initial.to_f64() + Point::from((30.0, 30.0));
+            let pointer = h.gv.seat.get_pointer().unwrap();
+            let start_data = GrabStartData {
+                focus: None,
+                button: 0x110,
+                location: start,
+            };
+            if action == "resize" {
+                let rect = Rectangle::new(initial, tiled_size);
+                let grab = crate::grabs::ResizeSurfaceGrab::start(
+                    start_data,
+                    w.clone(),
+                    crate::grabs::resize_grab::ResizeEdge::BOTTOM_RIGHT,
+                    rect,
+                );
+                pointer.set_grab(&mut h.gv, grab, SERIAL_COUNTER.next_serial(), Focus::Clear);
+            } else {
+                let grab = crate::grabs::MoveSurfaceGrab::start(start_data, w.clone(), initial);
+                pointer.set_grab(&mut h.gv, grab, SERIAL_COUNTER.next_serial(), Focus::Clear);
+            }
+            pointer.button(
+                &mut h.gv,
+                &ButtonEvent {
+                    button: 0x110,
+                    state: ButtonState::Pressed,
+                    serial: SERIAL_COUNTER.next_serial(),
+                    time: 1,
+                },
+            );
+            pointer.motion(
+                &mut h.gv,
+                None,
+                &MotionEvent {
+                    location: start + Point::from((100.0, 60.0)),
+                    serial: SERIAL_COUNTER.next_serial(),
+                    time: 2,
+                },
+            );
+            assert!(
+                mode_state(&w).natural_float.is_some(),
+                "{action} must retain natural-size bookkeeping"
+            );
+            assert!(!mode_state(&w).natural_center);
+            let dragged = h.gv.space.element_location(&w).unwrap();
+            h.commit_size(&w, 640, 400);
+            assert_eq!(
+                h.gv.space.element_location(&w),
+                Some(dragged),
+                "{action}: delayed ack must not recenter"
+            );
+            assert!(!mode_state(&w).initially_tiled);
+            assert!(mode_state(&w).natural_float.is_none());
+            pointer.motion(
+                &mut h.gv,
+                None,
+                &MotionEvent {
+                    location: start + Point::from((140.0, 90.0)),
+                    serial: SERIAL_COUNTER.next_serial(),
+                    time: 3,
+                },
+            );
+            let expected = if action == "resize" {
+                dragged
+            } else {
+                dragged + Point::from((40, 30))
+            };
+            assert_eq!(
+                h.gv.space.element_location(&w),
+                Some(expected),
+                "{action}: grab trajectory must stay continuous"
+            );
+            pointer.button(
+                &mut h.gv,
+                &ButtonEvent {
+                    button: 0x110,
+                    state: ButtonState::Released,
+                    serial: SERIAL_COUNTER.next_serial(),
+                    time: 4,
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn floating_tiled_floating_restores_previous_geometry() {
+        let mut h = crate::state::tests::Harness::new();
+        let output = output(&mut h);
+        let original = r(100, 120, 640, 400);
+        let w = window(&mut h, original);
+        h.gv.toggle_workspace_tiling(&output);
+        assert_eq!(mode_state(&w).tile_restore, Some(original));
+        h.gv.toggle_floating(&w);
+        assert_eq!(h.gv.space.element_location(&w), Some(original.loc));
+        assert_eq!(
+            w.toplevel().unwrap().with_pending_state(|s| s.size),
+            Some(original.size)
+        );
+        assert!(mode_state(&w).natural_float.is_none());
     }
     #[test]
     fn first_configure_matches_first_and_subsequent_tiles_without_resize() {
@@ -1501,6 +1701,11 @@ impl Gavno {
         }
         for w in windows {
             let s = mode_state(&w);
+            if s.initially_tiled && s.mode == WindowMode::Floating {
+                with_mode_state(&w, |s| s.tile_floating = true);
+                self.restore_tile_geometry(&w, None, false);
+                continue;
+            }
             if s.tile_restore.is_none() { continue; }
             let rect = self.window_animations.motion(&w).map(|m| m.rect(self.tile_rect(&w).unwrap_or_default().to_f64()).to_i32_round())
                 .or_else(|| self.tile_rect(&w));

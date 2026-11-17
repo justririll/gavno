@@ -468,7 +468,7 @@ impl Gavno {
                 }
             })
             .unwrap_or_default();
-        let urgent = crate::handlers::xdg_activation::is_urgent(&window);
+        let urgent = !self.first_map_focus_allowed(&window);
         self.space.map_element(window.clone(), loc, !urgent && !self.protocols.locks.locked);
         if self.greeter.is_none() {
             if let Some(output) = &output {

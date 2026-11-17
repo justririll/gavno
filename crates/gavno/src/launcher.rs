@@ -72,7 +72,7 @@ impl Default for Launcher {
             fade: Spring::new(0.0, SpringParams::SNAPPY),
             output: None,
             canvas: Canvas::default(),
-            icons: Icons::default(),
+            icons: Icons::nonblocking(crate::icons::app_worker::Consumer::Launcher),
             panel: None,
             rows: Vec::new(),
             repeat: None,
@@ -99,6 +99,9 @@ pub(crate) fn score(name: &str, words: &str, query: &str) -> Option<u8> {
 }
 
 impl Launcher {
+    pub(crate) fn icon_ready(&mut self) -> Option<Output> {
+        self.visible().then(|| self.output.clone()).flatten()
+    }
     pub fn is_animating(&self) -> bool {
         self.fade.is_active()
     }
@@ -475,6 +478,78 @@ impl Gavno {
 mod tests {
     use super::*;
 
+    #[test]
+    fn cold_launcher_draws_placeholders_without_icon_io_then_uses_delivery() {
+        use crate::icons::app_worker::{wait_delivery, with_test_worker};
+        use smithay::backend::egl::{native::EGLSurfacelessDisplay, EGLContext, EGLDisplay};
+        let display = unsafe { EGLDisplay::new(EGLSurfacelessDisplay) }.unwrap();
+        let mut renderer =
+            unsafe { GlesRenderer::new(EGLContext::new(&display).unwrap()) }.unwrap();
+        let mut h = crate::state::tests::Harness::new();
+        let output = Output::new(
+            "launcher-icons".into(),
+            smithay::output::PhysicalProperties {
+                size: (0, 0).into(),
+                subpixel: smithay::output::Subpixel::Unknown,
+                make: "test".into(),
+                model: "test".into(),
+            },
+        );
+        h.gv.space.map_output(&output, (0, 0));
+        h.gv.launcher = launcher_with(&[("Fixture", "")]);
+        h.gv.launcher.apps.as_mut().unwrap()[0].entry.icon = "fixture".into();
+        h.gv.launcher.show(Some(output.clone()));
+        h.gv.launcher.fade.jump(1.0);
+        let caller = std::thread::current().id();
+        let (release, gate) = std::sync::mpsc::channel();
+        let mut blocked = false;
+        with_test_worker(
+            move |_, _| {
+                assert_ne!(caller, std::thread::current().id());
+                if !blocked {
+                    gate.recv().unwrap();
+                    blocked = true;
+                }
+                Some("/injected/fixture.svg".into())
+            },
+            crate::icons::app_worker::tests::pixels,
+            |rx| {
+                let before = crate::icons::caller_io();
+                let cold = h.gv.launcher.elements(
+                    &mut renderer,
+                    &output,
+                    (1000, 800).into(),
+                    1.0,
+                    Duration::ZERO,
+                    [1.0; 4],
+                    "test",
+                );
+                assert_eq!(before, crate::icons::caller_io());
+                assert_eq!(h.gv.launcher.rows.len(), 1);
+                let rows = h.gv.launcher.rows.clone();
+                release.send(()).unwrap();
+                // Search, application and fallback icon requests each deliver once.
+                for _ in 0..4 {
+                    wait_delivery(rx).apply(&mut h.gv);
+                }
+                let ready = h.gv.launcher.elements(
+                    &mut renderer,
+                    &output,
+                    (1000, 800).into(),
+                    1.0,
+                    Duration::ZERO,
+                    [1.0; 4],
+                    "test",
+                );
+                assert_eq!(rows, h.gv.launcher.rows);
+                assert!(
+                    ready.len() > cold.len(),
+                    "ready icons must enter the rendered frame"
+                );
+                assert_eq!(before, crate::icons::caller_io());
+            },
+        );
+    }
     #[test]
     fn ranking_prefers_name_prefix_then_word_then_substring_then_keywords() {
         assert_eq!(score("firefox", "web browser", "fire"), Some(0));

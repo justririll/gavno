@@ -516,3 +516,186 @@ fn wake_pointer_motion_reaches_client_and_lock_keeps_its_gate() {
     h.gv.process_input_event::<TestBackend>(InputEvent::Keyboard { event: Key(38, KeyState::Released) });
     assert!(h.keyboard_keys().is_empty());
 }
+
+#[test]
+fn input_focus_change_revokes_consumed_unmapped_activation() {
+    use smithay::wayland::xdg_activation::XdgActivationHandler;
+    let (mut h, _) = setup();
+    let current = h.window();
+    h.gv.map_new_window(current.clone());
+    h.gv.space.map_element(current.clone(), (100, 100), false);
+    h.commit_size(&current, 400, 300);
+    let target = h.window();
+    h.gv.unmapped.push(target.clone());
+    let (token, data) = {
+        let (token, data) = h.gv.protocols.activation.create_external_token(None);
+        (token.clone(), data.clone())
+    };
+    h.gv.request_activation(token, data, target.toplevel().unwrap().wl_surface().clone());
+    let epoch = h.gv.launch_focus_epoch();
+    // Click empty desktop through the production input dispatcher.
+    motion(&mut h.gv, None, (1200.0, 700.0).into());
+    h.gv.process_input_event::<TestBackend>(InputEvent::PointerButton {
+        event: Button(BTN_LEFT, ButtonState::Pressed),
+    });
+    h.gv.process_input_event::<TestBackend>(InputEvent::PointerButton {
+        event: Button(BTN_LEFT, ButtonState::Released),
+    });
+    assert_ne!(h.gv.launch_focus_epoch(), epoch);
+    let focus_before = h.gv.focused_window();
+    h.gv.map_new_window(target.clone());
+    assert!(crate::handlers::xdg_activation::is_urgent(&target));
+    assert_eq!(h.gv.focused_window(), focus_before);
+}
+
+fn dispatch_key(h: &mut crate::state::tests::Harness, code: u32, state: KeyState) {
+    h.gv.process_input_event::<TestBackend>(InputEvent::Keyboard {
+        event: Key(code, state),
+    });
+}
+fn tap_key(h: &mut crate::state::tests::Harness, code: u32) {
+    dispatch_key(h, code, KeyState::Pressed);
+    dispatch_key(h, code, KeyState::Released);
+}
+fn delayed_launch_token(
+    gv: &Gavno,
+) -> (
+    smithay::wayland::xdg_activation::XdgActivationToken,
+    smithay::wayland::xdg_activation::XdgActivationTokenData,
+) {
+    let (token, data) = gv.protocols.activation.tokens().next().unwrap();
+    let mut data = data.clone();
+    data.timestamp -= std::time::Duration::from_secs(6);
+    (token.clone(), data)
+}
+
+#[test]
+fn client_typing_revokes_late_and_consumed_launch_authorizations() {
+    use smithay::wayland::xdg_activation::XdgActivationHandler;
+    for deferred in [false, true] {
+        for typing in [false, true] {
+            let (mut h, _) = setup();
+            let browser = h.window();
+            if deferred {
+                crate::handlers::xdg_shell::prepare_initial_configure(&h.gv, &browser);
+                browser.toplevel().unwrap().send_configure();
+                h.gv.unmapped.push(browser.clone());
+            } else {
+                h.gv.map_new_window(browser.clone());
+            }
+            let terminal = h.window();
+            h.gv.map_new_window(terminal.clone());
+            h.commit_size(&terminal, 400, 300);
+            h.keyboard_keys();
+            h.gv.launch_shell("true", None);
+            let (token, data) = delayed_launch_token(&h.gv);
+            if deferred {
+                h.gv.request_activation(
+                    token.clone(),
+                    data.clone(),
+                    browser.toplevel().unwrap().wl_surface().clone(),
+                );
+            }
+            let keyboard = h.gv.seat.get_keyboard().unwrap();
+            let enter = keyboard.last_enter();
+            let epoch = h.gv.launch_focus_epoch();
+            if typing {
+                tap_key(&mut h, 38); // A, delivered to the terminal.
+                assert!(h.keyboard_keys().contains(&30));
+                assert_ne!(h.gv.launch_focus_epoch(), epoch);
+            }
+            assert_eq!(keyboard.last_enter(), enter, "typing did not move focus");
+            assert_eq!(h.gv.focused_window(), Some(terminal.clone()));
+            if deferred {
+                h.commit_size(&browser, 640, 400);
+            } else {
+                h.gv.request_activation(
+                    token,
+                    data,
+                    browser.toplevel().unwrap().wl_surface().clone(),
+                );
+            }
+            assert_eq!(crate::handlers::xdg_activation::is_urgent(&browser), typing);
+            assert_eq!(
+                h.gv.focused_window(),
+                Some(if typing { terminal } else { browser })
+            );
+        }
+    }
+}
+
+#[test]
+fn releases_modifiers_and_shell_consumed_keys_do_not_revoke_launches() {
+    for kind in ["release", "modifier", "shortcut", "launcher", "start"] {
+        let (mut h, _) = setup();
+        h.gv.config.mod_key = crate::config::ModKey::Alt;
+        let terminal = h.window();
+        h.gv.map_new_window(terminal.clone());
+        h.commit_size(&terminal, 400, 300);
+        if kind == "release" {
+            dispatch_key(&mut h, 38, KeyState::Pressed);
+        }
+        h.keyboard_keys();
+        h.gv.launch_shell("true", None);
+        let (token, _) = delayed_launch_token(&h.gv);
+        let epoch = h.gv.launch_focus_epoch();
+        match kind {
+            "release" => dispatch_key(&mut h, 38, KeyState::Released),
+            "modifier" => tap_key(&mut h, 50), // Shift_L reaches the client.
+            "shortcut" => {
+                dispatch_key(&mut h, 64, KeyState::Pressed); // Alt+D opens the launcher.
+                tap_key(&mut h, 40);
+                dispatch_key(&mut h, 64, KeyState::Released);
+                assert!(h.gv.launcher.open);
+            }
+            "launcher" => {
+                h.gv.toggle_run_launcher();
+                tap_key(&mut h, 38);
+            }
+            "start" => {
+                h.gv.classic.mode = crate::classic::ShellMode::Classic;
+                h.gv.classic.start.open = true;
+                tap_key(&mut h, 38);
+            }
+            _ => unreachable!(),
+        }
+        assert_eq!(h.gv.launch_focus_epoch(), epoch, "{kind}");
+        assert_eq!(h.gv.consume_launch_token(&token), Some(true), "{kind}");
+        let delivered = h.keyboard_keys();
+        match kind {
+            "release" => assert!(delivered.contains(&30)),
+            "modifier" => assert!(delivered.contains(&42)),
+            _ => assert!(delivered.is_empty(), "{kind} was compositor-owned"),
+        }
+    }
+}
+
+#[test]
+fn initiating_launcher_enter_preserves_its_new_authorization() {
+    use smithay::wayland::xdg_activation::XdgActivationHandler;
+    let (mut h, _) = setup();
+    let browser = h.window();
+    h.gv.map_new_window(browser.clone());
+    let terminal = h.window();
+    h.gv.map_new_window(terminal.clone());
+    h.commit_size(&terminal, 400, 300);
+    h.keyboard_keys();
+    let epoch = h.gv.launch_focus_epoch();
+    h.gv.toggle_run_launcher();
+    for code in [28, 27, 30, 26] {
+        tap_key(&mut h, code);
+    } // "true"
+    assert_eq!(h.gv.protocols.activation.tokens().count(), 0);
+    tap_key(&mut h, 36); // Enter launches and closes the launcher.
+    assert!(!h.gv.launcher.open);
+    assert_eq!(h.gv.launch_focus_epoch(), epoch);
+    assert!(h.keyboard_keys().is_empty());
+    let (token, data) = delayed_launch_token(&h.gv);
+    h.gv.request_activation(
+        token,
+        data,
+        browser.toplevel().unwrap().wl_surface().clone(),
+    );
+    assert!(!crate::handlers::xdg_activation::is_urgent(&browser));
+    assert_eq!(h.gv.focused_window(), Some(browser));
+}

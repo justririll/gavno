@@ -11,6 +11,13 @@ use std::{
     sync::{LazyLock, Mutex, MutexGuard},
 };
 
+#[cfg(test)]
+thread_local! {
+    static CALLER_IO: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
+}
+#[cfg(test)]
+pub(crate) fn caller_io() -> (usize, usize) { CALLER_IO.with(std::cell::Cell::get) }
+
 /// Upper bound on SVG bytes handed to the parser.
 const MAX_SVG_BYTES: u64 = 8 * 1024 * 1024;
 
@@ -102,12 +109,15 @@ pub fn lookup(name: &str, theme: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
 #[derive(Default)]
 pub struct Icons {
     cache: HashMap<(String, u32, bool), Option<MemoryRenderBuffer>>,
-    async_apps: bool,
+    async_apps: Option<app_worker::Consumer>,
     paths: HashMap<String, Option<PathBuf>>,
     colored: HashMap<(String, u32, [u8; 3]), Option<MemoryRenderBuffer>>,
 }
 impl Icons {
-    pub(crate) fn nonblocking_apps(&mut self) { self.async_apps = true; }
+    pub(crate) fn nonblocking_apps(&mut self) { self.async_apps = Some(app_worker::Consumer::Chrome); }
+    pub(crate) fn nonblocking(consumer: app_worker::Consumer) -> Self {
+        Self { async_apps: Some(consumer), ..Self::default() }
+    }
     pub fn get(&mut self, name: &str, size: u32, theme: &str) -> Option<MemoryRenderBuffer> {
         self.load(name, size, theme, false)
     }
@@ -119,13 +129,10 @@ impl Icons {
     pub fn get_tinted_color(&mut self, name: &str, size: u32, theme: &str, color: [u8; 3]) -> Option<MemoryRenderBuffer> {
         let size = size.clamp(1, 1024);
         let key = (name.to_owned(), size, color);
-        if let Some(buffer) = self.colored.get(&key) { return buffer.clone(); }
-        if self.async_apps && app_worker::enabled() {
-            let buffer = app_worker::request(name, size, theme, true, Some(color))?;
-            if self.colored.len() > 128 { self.colored.clear(); }
-            self.colored.insert(key, buffer.clone());
-            return buffer;
+        if let Some(consumer) = self.async_apps {
+            return app_worker::request(name, size, theme, true, Some(color), consumer).flatten();
         }
+        if let Some(buffer) = self.colored.get(&key) { return buffer.clone(); }
         self.get_tinted(name, size, theme)?;
         let buffer = self.paths.get(name).and_then(Option::as_ref).and_then(|p| raster_color(p, size, true, Some(color)));
         if self.colored.len() > 128 { self.colored.clear(); }
@@ -141,15 +148,10 @@ impl Icons {
     ) -> Option<MemoryRenderBuffer> {
         let size = size.clamp(1, 1024);
         let key = (name.to_owned(), size, tint);
-        if let Some(buffer) = self.cache.get(&key) {
-            return buffer.clone();
+        if let Some(consumer) = self.async_apps {
+            return app_worker::request(name, size, theme, tint, None, consumer).flatten();
         }
-        if self.async_apps && app_worker::enabled() {
-            let buffer = app_worker::request(name, size, theme, tint, None)?;
-            if self.cache.len() > 512 { self.cache.clear(); }
-            self.cache.insert(key, buffer.clone());
-            return buffer;
-        }
+        if let Some(buffer) = self.cache.get(&key) { return buffer.clone(); }
         let path = self.paths.entry(name.into()).or_insert_with(|| lookup_icon(name, theme));
         let buffer = path.as_ref().and_then(|p| raster(p, size, tint));
         // Magnification uses a stable maximum raster, so this remains small.
@@ -214,6 +216,8 @@ pub fn warm_app_icons(theme: String) {
 }
 
 fn uncached_lookup(name: &str, theme: &str) -> Option<PathBuf> {
+    #[cfg(test)]
+    CALLER_IO.with(|count| { let (lookup, decode) = count.get(); count.set((lookup + 1, decode)); });
     let mut dirs = crate::desktop_entry::data_dirs();
     if let Some(home) = std::env::var_os("HOME") {
         dirs.insert(0, PathBuf::from(home).join(".icons").parent()?.to_owned());
@@ -246,6 +250,8 @@ fn raster(path: &Path, size: u32, tint: bool) -> Option<MemoryRenderBuffer> {
     raster_color(path, size, tint, None)
 }
 fn raster_color(path: &Path, size: u32, tint: bool, color: Option<[u8; 3]>) -> Option<MemoryRenderBuffer> {
+    #[cfg(test)]
+    CALLER_IO.with(|count| { let (lookup, decode) = count.get(); count.set((lookup, decode + 1)); });
     let _startup = crate::perf::Startup::new("image.decode.begin", "image.decode.end");
     if crate::perf::in_startup() { tracing::info!(target: "gavno::startup", stage = "image.decode.path", ms = crate::perf::elapsed_ms(), path = %path.display(), size); }
     let mut pixels = if path

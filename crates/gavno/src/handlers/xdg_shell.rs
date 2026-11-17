@@ -36,6 +36,7 @@ impl XdgShellHandler for Gavno {
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
         // Mapped on the first buffer commit, see `CompositorHandler::commit`.
+        crate::window_mode::track_floating_content(surface.wl_surface());
         let window = Window::new_wayland_window(surface);
         self.guard(crate::module::Feature::Ipc, (), |gv| gv.ipc.assign_id(&window));
         self.unmapped.push(window);
@@ -235,6 +236,9 @@ pub(crate) fn prepare_initial_configure(gv: &Gavno, window: &Window) {
         if state.decoration_mode.is_some() { state.decoration_mode = Some(if ssd { Mode::ServerSide } else { Mode::ClientSide }); }
     });
     let tile = gv.initial_tile_rect(window);
+    if tile.is_some() {
+        crate::window_mode::with_mode_state(window, |s| s.initially_tiled = true);
+    }
     let output = gv.active_output();
     let bounds = output.as_ref().map(|output| gv.work_area(output).size);
     let fixed = output.as_ref().and_then(|output| {
@@ -248,7 +252,7 @@ pub(crate) fn prepare_initial_configure(gv: &Gavno, window: &Window) {
         };
         Some(gv.classic_client_rect(window, rect))
     });
-    let activate = !gv.protocols.locks.locked && gv.greeter.is_none()
+    let activate = !gv.protocols.locks.locked && gv.greeter.is_none() && !gv.polkit_visible()
         && !crate::handlers::xdg_activation::is_urgent(window);
     toplevel.with_pending_state(|state| {
         state.bounds = bounds;
@@ -270,14 +274,14 @@ pub fn handle_commit(gv: &mut Gavno, surface: &WlSurface) {
     // commit, while the window is still unmapped.
     // Windows on hidden workspaces are neither unmapped nor in the Space but
     // still need the configure handshake when they remap.
-    if let Some(window) = gv
+    let window = gv
         .unmapped
         .iter()
         .chain(gv.space.elements())
         .chain(gv.workspaces.all().map(|o| &o.window))
         .find(|w| w.toplevel().is_some_and(|t| t.wl_surface() == surface))
-        .cloned()
-    {
+        .cloned();
+    if let Some(window) = window {
         let initial_configure_sent = with_states(surface, |states| {
             states
                 .data_map
@@ -292,6 +296,7 @@ pub fn handle_commit(gv: &mut Gavno, surface: &WlSurface) {
             prepare_initial_configure(gv, &window);
             window.toplevel().unwrap().send_configure();
         }
+        gv.finish_natural_float(&window, surface);
     }
 
     // Handle popup commits.

@@ -55,9 +55,14 @@ pub struct Start {
     user: String,
     revision: u64,
     cached: Vec<CachedElement>,
-    cache_key: Option<(u64, u64, i32, i32, u64, [u32; 4])>,
+    cache_key: Option<(u64, u64, i32, i32, u64, [u32; 4], u64)>,
 }
 impl Start {
+    pub(crate) fn icon_ready(&mut self) -> Option<Output> {
+        self.cache_key = None;
+        (self.open || self.opening.is_active() || self.opening.value >= 0.001)
+            .then(|| self.output.clone()).flatten()
+    }
     /// Drop render caches after leaving Classic. The app list stays, so the
     /// next Start opens without a rescan.
     pub fn release_caches(&mut self) {
@@ -65,7 +70,6 @@ impl Start {
             return;
         }
         self.canvas = Default::default();
-        self.icons = Default::default();
         self.cached = Vec::new();
         self.cache_key = None;
         self.hits = Vec::new();
@@ -90,7 +94,7 @@ impl Default for Start {
             panel: None,
             hits: Vec::new(),
             canvas: Default::default(),
-            icons: Default::default(),
+            icons: Icons::nonblocking(crate::icons::app_worker::Consumer::Start),
             revision: 0,
             cached: Vec::new(),
             cache_key: None,
@@ -110,7 +114,6 @@ impl Start {
         self.cached = Vec::new();
         self.cache_key = None;
         self.canvas = Canvas::default();
-        self.icons = Icons::default();
         self.loading = false;
     }
     pub fn open_power(&mut self) {
@@ -288,7 +291,6 @@ impl Start {
             if !self.open && !self.opening.is_active() && !self.cached.is_empty() {
                 self.cached = Vec::new();
                 self.canvas = Canvas::default();
-                self.icons = Icons::default();
                 self.cache_key = None;
             }
             return;
@@ -300,6 +302,7 @@ impl Start {
             size.h,
             output.current_scale().fractional_scale().to_bits(),
             accent.map(f32::to_bits),
+            crate::icons::app_worker::generation(),
         );
         if self.cache_key == Some(key) {
             out.extend(self.cached.iter().cloned().map(GavnoRenderElement::Desktop));
@@ -778,6 +781,37 @@ mod containment_tests {
 #[cfg(test)]
 mod cache_tests {
     use super::*;
+    #[test]
+    fn reopen_reuses_decoded_icons_after_render_cache_release() {
+        use crate::icons::app_worker::{wait_delivery, with_test_worker};
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        let decodes = Arc::new(AtomicUsize::new(0));
+        let count = decodes.clone();
+        with_test_worker(
+            |_, _| Some("/injected/start.svg".into()),
+            move |path, size, tint, color| {
+                count.fetch_add(1, Ordering::Relaxed);
+                crate::icons::app_worker::tests::pixels(path, size, tint, color)
+            },
+            |rx| {
+                let mut start = Start::default();
+                start.open = true;
+                assert!(start.icons.get("fixture", 32, "test").is_none());
+                wait_delivery(rx);
+                assert!(start.icons.get("fixture", 32, "test").is_some());
+                start.close();
+                start.opening.jump(0.0);
+                start.release_caches();
+                start.release();
+                start.open = true;
+                assert!(start.icons.get("fixture", 32, "test").is_some());
+                assert_eq!(decodes.load(Ordering::Relaxed), 1);
+            },
+        );
+    }
     #[test]
     fn start_stays_left_and_static_frames_do_not_allocate() {
         use smithay::backend::egl::{native::EGLSurfacelessDisplay, EGLContext, EGLDisplay};

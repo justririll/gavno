@@ -303,6 +303,7 @@ impl Gavno {
             self.features.call(crate::module::Feature::Animations, (), || self.window_animations.cancel(w));
             self.reflow_tiling(false);
         }
+        crate::window_mode::cancel_natural_center(w);
     }
     /// Resize from the visible slot, including snapped/maximized windows.
     pub fn prepare_interactive_resize(&mut self, w: &Window) {
@@ -324,6 +325,7 @@ impl Gavno {
         if !w.alive() || self.space.element_location(w).is_none() {
             return;
         }
+        crate::window_mode::cancel_natural_center(w);
         let Some(t) = w.toplevel() else { return };
         let (min, max) = with_states(t.wl_surface(), |s| {
             let mut c = s.cached_state.get::<SurfaceCachedState>();
@@ -406,6 +408,7 @@ impl Gavno {
         let pointer = self.pointer_location();
         let mut history = MotionHistory::default();
         history.push(time, (0.0, 0.0).into());
+        crate::window_mode::cancel_natural_center(&w);
         self.window_gestures.drag = Some(Drag {
             original_rect: initial,
             original_state: mode_state(&w),
@@ -687,6 +690,7 @@ impl Gavno {
         } else {
             None
         };
+        crate::window_mode::cancel_natural_center(&window);
         self.window_gestures.pinch = Some(Pinch {
             window,
             initial,

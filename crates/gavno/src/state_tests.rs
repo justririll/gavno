@@ -12,6 +12,7 @@ use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_ba
 #[derive(Default)]
 struct Client {
     compositor: Option<wl_compositor::WlCompositor>,
+    subcompositor: Option<wayland_client::protocol::wl_subcompositor::WlSubcompositor>,
     shell: Option<xdg_wm_base::XdgWmBase>,
     layer_shell: Option<wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_shell_v1::ZwlrLayerShellV1>,
     shm: Option<wl_shm::WlShm>,
@@ -39,6 +40,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Client {
                 "wl_compositor" => {
                     state.compositor = Some(registry.bind(name, version.min(6), qh, ()))
                 }
+                "wl_subcompositor" => state.subcompositor = Some(registry.bind(name, 1, qh, ())),
                 "wl_seat" => {
                     let seat: wl_seat::WlSeat = registry.bind(name, version.min(8), qh, ());
                     seat.get_pointer(qh, ());
@@ -87,6 +89,8 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for Client {
     }
 }
 wayland_client::delegate_noop!(Client: ignore wl_compositor::WlCompositor);
+wayland_client::delegate_noop!(Client: ignore wayland_client::protocol::wl_subcompositor::WlSubcompositor);
+wayland_client::delegate_noop!(Client: ignore wayland_client::protocol::wl_subsurface::WlSubsurface);
 wayland_client::delegate_noop!(Client: ignore wl_surface::WlSurface);
 wayland_client::delegate_noop!(Client: ignore xdg_wm_base::XdgWmBase);
 wayland_client::delegate_noop!(Client: ignore wl_shm::WlShm);
@@ -107,6 +111,8 @@ impl Dispatch<xdg_surface::XdgSurface, ()> for Client {
     }
 }
 wayland_client::delegate_noop!(Client: ignore xdg_toplevel::XdgToplevel);
+wayland_client::delegate_noop!(Client: ignore wayland_protocols::xdg::shell::client::xdg_popup::XdgPopup);
+wayland_client::delegate_noop!(Client: ignore wayland_protocols::xdg::shell::client::xdg_positioner::XdgPositioner);
 
 wayland_client::delegate_noop!(Client: ignore wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_shell_v1::ZwlrLayerShellV1);
 impl Dispatch<wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for Client {
@@ -123,6 +129,7 @@ pub(crate) struct Harness {
     queue: EventQueue<Client>,
     client: Client,
     surfaces: Vec<(Window, wl_surface::WlSurface)>,
+    shell_surfaces: Vec<(Window, xdg_surface::XdgSurface)>,
 }
 impl Harness {
     pub fn new() -> Self {
@@ -148,6 +155,7 @@ impl Harness {
             queue,
             client: Client::default(),
             surfaces: Vec::new(),
+            shell_surfaces: Vec::new(),
         };
         h.exchange();
         h.exchange();
@@ -185,7 +193,50 @@ impl Harness {
         self.exchange();
         let window = self.gv.unmapped.pop().unwrap();
         self.surfaces.push((window.clone(), surface));
+        self.shell_surfaces.push((window.clone(), shell_surface));
         window
+    }
+    pub(crate) fn popup(
+        &mut self,
+        window: &Window,
+    ) -> smithay::reexports::wayland_server::protocol::wl_surface::WlSurface {
+        let qh = self.queue.handle();
+        let surface = self
+            .client
+            .compositor
+            .as_ref()
+            .unwrap()
+            .create_surface(&qh, ());
+        let shell = self.client.shell.as_ref().unwrap();
+        let popup = shell.get_xdg_surface(&surface, &qh, ());
+        let positioner = shell.create_positioner(&qh, ());
+        positioner.set_size(80, 40);
+        positioner.set_anchor_rect(0, 0, 1, 1);
+        let parent = &self
+            .shell_surfaces
+            .iter()
+            .find(|(w, _)| w == window)
+            .unwrap()
+            .1;
+        popup.get_popup(Some(parent), &positioner, &qh, ());
+        self.exchange();
+        PopupManager::popups_for_surface(window.toplevel().unwrap().wl_surface())
+            .next()
+            .unwrap()
+            .0
+            .wl_surface()
+            .clone()
+    }
+
+    pub(crate) fn subsurface(&mut self, window: &Window) -> smithay::reexports::wayland_server::protocol::wl_surface::WlSurface {
+        let qh = self.queue.handle();
+        let surface = self.client.compositor.as_ref().unwrap().create_surface(&qh, ());
+        let parent = &self.surfaces.iter().find(|(w, _)| w == window).unwrap().1;
+        self.client.subcompositor.as_ref().unwrap().get_subsurface(&surface, parent, &qh, ());
+        parent.commit();
+        self.exchange();
+        smithay::wayland::compositor::get_children(window.toplevel().unwrap().wl_surface()).into_iter()
+            .find(|child| child != window.toplevel().unwrap().wl_surface()).unwrap()
     }
     pub(crate) fn request_frame(&mut self, window: &Window) {
         let surface = &self.surfaces.iter().find(|(w, _)| w == window).unwrap().1;
@@ -211,6 +262,33 @@ impl Harness {
         self.exchange();
         std::mem::take(&mut self.client.pointer_positions)
     }
+    /// Ack pending configures and commit state without attaching a buffer.
+    pub(crate) fn commit_state(
+        &mut self,
+        window: &Window,
+        geometry: Option<Rectangle<i32, smithay::utils::Logical>>,
+    ) {
+        self.exchange();
+        self.exchange();
+        if let Some(rect) = geometry {
+            let shell = &self
+                .shell_surfaces
+                .iter()
+                .find(|(w, _)| w == window)
+                .unwrap()
+                .1;
+            shell.set_window_geometry(rect.loc.x, rect.loc.y, rect.size.w, rect.size.h);
+        }
+        self.surfaces
+            .iter()
+            .find(|(w, _)| w == window)
+            .unwrap()
+            .1
+            .commit();
+        self.exchange();
+        self.exchange();
+    }
+
     /// Commit a real shm buffer and acknowledge the latest compositor configure.
     pub fn commit_size(&mut self, window: &Window, width: i32, height: i32) {
         use std::os::fd::AsFd;

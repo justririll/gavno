@@ -3,7 +3,7 @@
 use crate::Gavno;
 use smithay::{
     backend::renderer::element::RenderElementStates,
-    desktop::Window,
+    desktop::{utils::with_surfaces_surface_tree, Window},
     output::Output,
     reexports::{
         calloop::{
@@ -24,6 +24,7 @@ use std::{
 };
 
 const LIFETIME: Duration = Duration::from_secs(30);
+const TOKEN_LIFETIME: Duration = Duration::from_secs(60);
 type Spawned = Arc<OnceLock<(Instant, Option<u32>)>>;
 
 struct Request {
@@ -128,7 +129,13 @@ struct Launch {
     spawned: Spawned,
     surface: Option<ObjectId>,
 }
+struct LaunchToken {
+    created: Instant,
+    token: XdgActivationToken,
+    focus_unchanged: bool,
+}
 struct Observed {
+    logged: bool,
     surface: ObjectId,
     commit: Instant,
     mapped: Option<Instant>,
@@ -137,10 +144,12 @@ struct Observed {
 }
 #[derive(Default)]
 pub(crate) struct Launches {
+    // Focus authorization survives expiry of measurement observations.
+    focus_epoch: u64,
     pending: Vec<Launch>,
     observed: Vec<Observed>,
     expiry: Option<(RegistrationToken, Instant)>,
-    tokens: Vec<(Instant, XdgActivationToken)>,
+    tokens: Vec<LaunchToken>,
     reply: Option<channel::Sender<()>>,
 }
 
@@ -187,7 +196,7 @@ impl Launches {
     fn finish(&mut self) {
         self.expire(Instant::now());
         self.pending.retain(|launch| {
-            let Some(window) = self.observed.iter().find(|w| Some(&w.surface) == launch.surface.as_ref()) else { return true };
+            let Some(window) = self.observed.iter_mut().find(|w| !w.logged && Some(&w.surface) == launch.surface.as_ref()) else { return true };
             let (Some((spawned, _)), Some(mapped), Some((presented, presentation))) =
                 (launch.spawned.get(), window.mapped, window.presented) else { return true };
             let ms = |time: Instant| time.saturating_duration_since(launch.action).as_secs_f64() * 1000.0;
@@ -196,6 +205,7 @@ impl Launches {
                 commit_ms = ms(window.commit), mapped_ms = ms(mapped), presented_ms = ms(presented),
                 commit_to_present_ms = presented.saturating_duration_since(window.commit).as_secs_f64() * 1000.0,
                 presentation, "app launch");
+            window.logged = true;
             false
         });
         if self.pending.is_empty() {
@@ -203,7 +213,41 @@ impl Launches {
         }
     }
 }
+fn surface_tree_visible(surface: &WlSurface, states: &RenderElementStates) -> bool {
+    let mut visible = false;
+    with_surfaces_surface_tree(surface, |surface, _| {
+        visible |= states
+            .element_render_state(surface)
+            .is_some_and(|state| state.visible_area > 0);
+    });
+    visible
+}
 impl Gavno {
+    /// Only compositor-owned tokens receive the longer lifetime. Consumption is
+    /// separate from measurement matching, which may already have finished.
+    pub(crate) fn consume_launch_token(&mut self, token: &XdgActivationToken) -> Option<bool> {
+        let index = self
+            .launches
+            .tokens
+            .iter()
+            .position(|owned| &owned.token == token)?;
+        let owned = self.launches.tokens.remove(index);
+        Some(owned.focus_unchanged && owned.created.elapsed() <= TOKEN_LIFETIME)
+    }
+    pub(crate) fn launch_focus_epoch(&self) -> u64 {
+        self.launches.focus_epoch
+    }
+    /// Focus changes and client-directed key presses revoke earlier launches,
+    /// including consumed tokens whose surface is still waiting to map.
+    pub(crate) fn launch_user_activity(&mut self, input_started: Instant) {
+        self.launches.focus_epoch = self.launches.focus_epoch.wrapping_add(1);
+        for owned in &mut self.launches.tokens {
+            // A launch initiated by this very input retains its authorization.
+            if owned.created < input_started {
+                owned.focus_unchanged = false;
+            }
+        }
+    }
     pub(crate) fn launch_shell(&mut self, command: &str, app_id: Option<&str>) {
         self.launch_shell_at(Instant::now(), command, app_id);
     }
@@ -216,7 +260,11 @@ impl Gavno {
             .0
             .clone();
         let token_text = token.as_str().to_owned();
-        self.launches.tokens.push((Instant::now(), token));
+        self.launches.tokens.push(LaunchToken {
+            created: Instant::now(),
+            token,
+            focus_unchanged: true,
+        });
         let spawned = spawn(command, Some(&token_text), self.launches.reply.clone());
         let dispatched = Instant::now();
         self.launches.pending.push(Launch {
@@ -234,11 +282,11 @@ impl Gavno {
     fn expire_launches(&mut self) {
         let now = Instant::now();
         self.launches.expire(now);
-        self.launches.tokens.retain(|(created, token)| {
-            if now.duration_since(*created) < LIFETIME {
+        self.launches.tokens.retain(|owned| {
+            if now.duration_since(owned.created) < TOKEN_LIFETIME {
                 true
             } else {
-                self.protocols.activation.remove_token(token);
+                self.protocols.activation.remove_token(&owned.token);
                 false
             }
         });
@@ -253,7 +301,7 @@ impl Gavno {
                 self.launches
                     .tokens
                     .iter()
-                    .map(|(created, _)| *created + LIFETIME),
+                    .map(|owned| owned.created + TOKEN_LIFETIME),
             )
             .min();
         if self.launches.expiry.as_ref().map(|(_, at)| *at) == deadline {
@@ -326,6 +374,7 @@ impl Gavno {
             }
         }
         self.launches.observed.push(Observed {
+            logged: false,
             surface: surface.id(),
             commit: Instant::now(),
             mapped: None,
@@ -350,7 +399,16 @@ impl Gavno {
         self.expire_launches();
         self.launches
             .tokens
-            .retain(|(_, owned)| owned.as_str() != token);
+            .retain(|owned| owned.token.as_str() != token);
+        // A completed FIFO observation cannot be attributed again by a late token.
+        if self
+            .launches
+            .observed
+            .iter()
+            .any(|w| w.surface == surface.id() && w.logged)
+        {
+            return;
+        }
         if let Some(index) = self.launches.pending.iter().position(|l| l.token == token) {
             // An exact token wins over a tentative app-id match, including
             // concurrent launches with the same app id.
@@ -372,9 +430,7 @@ impl Gavno {
                 continue;
             };
             if self.space.outputs_for_element(window).contains(output)
-                && states
-                    .element_render_state(toplevel.wl_surface())
-                    .is_some_and(|s| s.visible_area > 0)
+                && surface_tree_visible(toplevel.wl_surface(), states)
                 && (!self.features.on(crate::module::Feature::Animations)
                     || self
                         .window_animations
@@ -437,6 +493,395 @@ mod tests {
                 .unwrap()
                 .app_id = Some(app_id.into());
         });
+    }
+
+    fn old_token(
+        h: &mut crate::state::tests::Harness,
+        owned: bool,
+        age: Duration,
+    ) -> (
+        XdgActivationToken,
+        smithay::wayland::xdg_activation::XdgActivationTokenData,
+    ) {
+        let data = smithay::wayland::xdg_activation::XdgActivationTokenData {
+            timestamp: Instant::now() - age,
+            ..Default::default()
+        };
+        let token =
+            h.gv.protocols
+                .activation
+                .create_external_token(data.clone())
+                .0
+                .clone();
+        if owned {
+            h.gv.launches.tokens.push(LaunchToken {
+                created: data.timestamp,
+                token: token.clone(),
+                focus_unchanged: true,
+            });
+        }
+        (token, data)
+    }
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum MeasurementExpiry {
+        Live,
+        BeforeActivation,
+        AfterActivation,
+    }
+
+    fn deferred_first_map(expiry: MeasurementExpiry, revoke: bool) {
+        let expire_measurement = expiry == MeasurementExpiry::BeforeActivation;
+        use smithay::wayland::xdg_activation::XdgActivationHandler;
+        let mut h = crate::state::tests::Harness::new();
+        let previous = h.window();
+        h.gv.map_new_window(previous.clone());
+        let alternative = h.window();
+        h.gv.map_new_window(alternative.clone());
+        h.gv.focus_window(Some(&previous));
+        let target = h.window();
+        crate::handlers::xdg_shell::prepare_initial_configure(&h.gv, &target);
+        target.toplevel().unwrap().send_configure();
+        h.gv.unmapped.push(target.clone());
+        let (token, data) = old_token(
+            &mut h,
+            true,
+            Duration::from_secs(if expire_measurement { 35 } else { 6 }),
+        );
+        let action = if expire_measurement {
+            Instant::now() - Duration::from_secs(35)
+        } else {
+            Instant::now()
+        };
+        h.gv.launches
+            .pending
+            .push(launch(action, Some("fixture"), "fixture", token.as_str()));
+        h.gv.request_activation(
+            token.clone(),
+            data,
+            target.toplevel().unwrap().wl_surface().clone(),
+        );
+        assert!(h.gv.protocols.activation.data_for_token(&token).is_none());
+        assert!(h.gv.launches.tokens.is_empty());
+        assert_eq!(h.gv.launches.pending.is_empty(), expire_measurement);
+        assert!(!crate::handlers::xdg_activation::is_urgent(&target));
+        if expiry == MeasurementExpiry::AfterActivation {
+            for launch in &mut h.gv.launches.pending {
+                launch.action = Instant::now() - LIFETIME;
+            }
+            h.gv.expire_launches();
+            assert!(h.gv.launches.pending.is_empty());
+        }
+        if revoke {
+            let input_started = Instant::now();
+            h.gv.focus_window(Some(&alternative));
+            h.gv.launch_user_activity(input_started);
+        }
+        let focus_before = h.gv.focused_window();
+        h.commit_size(&target, 640, 400);
+        assert!(h.gv.space.element_location(&target).is_some());
+        assert_eq!(crate::handlers::xdg_activation::is_urgent(&target), revoke);
+        assert_eq!(
+            h.gv.focused_window(),
+            if revoke { focus_before } else { Some(target) }
+        );
+    }
+    #[test]
+    fn consumed_activation_remains_revocable_until_first_buffer() {
+        for revoke in [false, true] {
+            deferred_first_map(MeasurementExpiry::Live, revoke);
+        }
+    }
+    #[test]
+    fn deferred_first_map_authorization_survives_measurement_expiry() {
+        for revoke in [false, true] {
+            deferred_first_map(MeasurementExpiry::BeforeActivation, revoke);
+        }
+    }
+    #[test]
+    fn consumed_authorization_survives_later_measurement_expiry() {
+        for revoke in [false, true] {
+            deferred_first_map(MeasurementExpiry::AfterActivation, revoke);
+        }
+    }
+    #[test]
+    fn reversed_fifo_arrival_cannot_deny_fresh_launch_without_activation() {
+        let mut h = crate::state::tests::Harness::new();
+        let previous = h.window();
+        h.gv.map_new_window(previous);
+        let (a, _) = old_token(&mut h, true, Duration::from_secs(6));
+        h.gv.focus_window(None);
+        h.gv.launch_user_activity(Instant::now());
+        let (b, _) = old_token(&mut h, true, Duration::ZERO);
+        let now = Instant::now();
+        h.gv.launches.pending = vec![
+            launch(now, Some("fixture"), "fixture", a.as_str()),
+            launch(now, Some("fixture"), "fixture", b.as_str()),
+        ];
+        let b_window = h.window();
+        set_app_id(&b_window, "fixture");
+        h.gv.launch_commit(&b_window);
+        assert_eq!(
+            h.gv.launches.pending[0].surface,
+            Some(b_window.toplevel().unwrap().wl_surface().id()),
+            "FIFO remains a telemetry hint"
+        );
+        assert!(!h.gv.launches.tokens[0].focus_unchanged);
+        assert!(h.gv.launches.tokens[1].focus_unchanged);
+        assert!(!crate::handlers::xdg_activation::is_urgent(&b_window));
+        h.gv.map_new_window(b_window.clone());
+        assert_eq!(h.gv.focused_window(), Some(b_window));
+    }
+    #[test]
+    fn polkit_blocks_activation_and_first_map_autofocus() {
+        use smithay::wayland::xdg_activation::XdgActivationHandler;
+        for mapped in [false, true] {
+            let mut h = crate::state::tests::Harness::new();
+            let target = h.window();
+            if mapped {
+                h.gv.map_new_window(target.clone());
+            } else {
+                h.gv.unmapped.push(target.clone());
+            }
+            let previous = h.window();
+            h.gv.map_new_window(previous.clone());
+            let (token, data) = old_token(&mut h, true, Duration::from_secs(6));
+            let _outcome = crate::polkit::tests::push_dialog(&mut h.gv, "launch-focus", &["admin"]);
+            assert!(h.gv.polkit_visible());
+            h.gv.request_activation(token, data, target.toplevel().unwrap().wl_surface().clone());
+            assert!(crate::handlers::xdg_activation::is_urgent(&target));
+            assert_eq!(h.gv.focused_window(), Some(previous.clone()));
+            assert_eq!(h.gv.space.elements().last(), Some(&previous));
+            if !mapped {
+                h.gv.map_new_window(target.clone());
+            }
+            assert_eq!(h.gv.focused_window(), Some(previous.clone()));
+            let no_token = h.window();
+            h.gv.map_new_window(no_token.clone());
+            assert!(crate::handlers::xdg_activation::is_urgent(&no_token));
+            assert_eq!(h.gv.focused_window(), Some(previous));
+        }
+    }
+
+    #[test]
+    fn revoked_activation_does_not_mark_the_focused_window_urgent() {
+        use smithay::wayland::xdg_activation::XdgActivationHandler;
+        let mut h = crate::state::tests::Harness::new();
+        let target = h.window();
+        h.gv.map_new_window(target.clone());
+        let previous = h.window();
+        h.gv.map_new_window(previous);
+        let (token, data) = old_token(&mut h, true, Duration::from_secs(6));
+        let input_started = Instant::now();
+        h.gv.focus_window(Some(&target));
+        h.gv.launch_user_activity(input_started);
+        // More typing while this window stays focused also revokes the token.
+        h.gv.launch_user_activity(Instant::now());
+        h.gv.request_activation(
+            token.clone(),
+            data,
+            target.toplevel().unwrap().wl_surface().clone(),
+        );
+        assert_eq!(h.gv.focused_window(), Some(target.clone()));
+        assert!(!crate::handlers::xdg_activation::is_urgent(&target));
+        assert!(h.gv.protocols.activation.data_for_token(&token).is_none());
+        assert_eq!(h.gv.consume_launch_token(&token), None);
+    }
+    #[test]
+    fn modal_states_still_deny_attention_for_the_focused_window() {
+        use smithay::wayland::xdg_activation::XdgActivationHandler;
+        for polkit in [false, true] {
+            let mut h = crate::state::tests::Harness::new();
+            let target = h.window();
+            h.gv.map_new_window(target.clone());
+            let (token, data) = old_token(&mut h, true, Duration::from_secs(6));
+            h.gv.launch_user_activity(Instant::now());
+            let _outcome = if polkit {
+                Some(crate::polkit::tests::push_dialog(
+                    &mut h.gv,
+                    "focused-activation",
+                    &["admin"],
+                ))
+            } else {
+                h.gv.protocols.locks.locked = true;
+                None
+            };
+            h.gv.request_activation(token, data, target.toplevel().unwrap().wl_surface().clone());
+            assert!(crate::handlers::xdg_activation::is_urgent(&target));
+        }
+    }
+    #[test]
+    fn direct_keyboard_focus_gain_clears_urgency_for_all_window_surfaces() {
+        use smithay::wayland::xdg_activation::XdgActivationHandler;
+        for kind in ["root", "popup", "subsurface"] {
+            let mut h = crate::state::tests::Harness::new();
+            let target = h.window();
+            h.gv.map_new_window(target.clone());
+            h.commit_size(&target, 400, 300);
+            let focus = match kind {
+                "root" => target.toplevel().unwrap().wl_surface().clone(),
+                "popup" => h.popup(&target),
+                "subsurface" => h.subsurface(&target),
+                _ => unreachable!(),
+            };
+            let previous = h.window();
+            h.gv.map_new_window(previous);
+            let (token, data) = old_token(&mut h, true, Duration::from_secs(6));
+            crate::handlers::xdg_activation::mark_urgent(&target);
+            assert!(crate::handlers::xdg_activation::is_urgent(&target));
+            let keyboard = h.gv.seat.get_keyboard().unwrap();
+            keyboard.set_focus(
+                &mut h.gv,
+                Some(focus.clone()),
+                smithay::utils::SERIAL_COUNTER.next_serial(),
+            );
+            assert!(
+                !crate::handlers::xdg_activation::is_urgent(&target),
+                "{kind}"
+            );
+            h.gv.launch_user_activity(Instant::now());
+            h.gv.request_activation(token, data, target.toplevel().unwrap().wl_surface().clone());
+            assert_eq!(
+                keyboard.current_focus(),
+                Some(focus),
+                "{kind}: activation must not replace focus"
+            );
+            assert!(
+                !crate::handlers::xdg_activation::is_urgent(&target),
+                "{kind}"
+            );
+        }
+    }
+
+    #[test]
+    fn compositor_launch_tokens_outlive_client_tokens_and_are_single_use() {
+        use smithay::wayland::xdg_activation::XdgActivationHandler;
+        for owned in [false, true] {
+            let mut h = crate::state::tests::Harness::new();
+            let w = h.window();
+            h.gv.map_new_window(w.clone());
+            let other = h.window();
+            h.gv.map_new_window(other.clone());
+            let (token, data) = old_token(&mut h, owned, Duration::from_secs(6));
+            h.gv.request_activation(
+                token.clone(),
+                data,
+                w.toplevel().unwrap().wl_surface().clone(),
+            );
+            assert_eq!(crate::handlers::xdg_activation::is_urgent(&w), !owned);
+            assert_eq!(h.gv.focused_window(), Some(if owned { w } else { other }));
+            assert!(h.gv.protocols.activation.data_for_token(&token).is_none());
+            assert_eq!(h.gv.consume_launch_token(&token), None);
+        }
+    }
+    #[test]
+    fn user_focus_change_invalidates_late_launch_activation_and_expired_launches_fail() {
+        use smithay::wayland::xdg_activation::XdgActivationHandler;
+        for age in [Duration::from_secs(6), Duration::from_secs(61)] {
+            let mut h = crate::state::tests::Harness::new();
+            let w = h.window();
+            h.gv.map_new_window(w.clone());
+            let (token, data) = old_token(&mut h, true, age);
+            let input_started = Instant::now();
+            let other = h.window();
+            h.gv.map_new_window(other.clone());
+            h.gv.launch_user_activity(input_started);
+            h.gv.request_activation(token, data, w.toplevel().unwrap().wl_surface().clone());
+            assert!(crate::handlers::xdg_activation::is_urgent(&w));
+            assert_eq!(h.gv.focused_window(), Some(other));
+        }
+    }
+    #[test]
+    fn covered_root_with_visible_subsurface_is_presented() {
+        use smithay::backend::renderer::element::{
+            Id, RenderElementPresentationState, RenderElementState,
+        };
+        let mut h = crate::state::tests::Harness::new();
+        let w = h.window();
+        h.gv.config.modules.animations = false;
+        h.gv.features = crate::module::Features::new(&h.gv.config);
+        let child = h.subsurface(&w);
+        let root = w.toplevel().unwrap().wl_surface();
+        let output = Output::new(
+            "subsurface-launch".into(),
+            smithay::output::PhysicalProperties {
+                size: (0, 0).into(),
+                subpixel: smithay::output::Subpixel::Unknown,
+                make: "test".into(),
+                model: "test".into(),
+            },
+        );
+        output.change_current_state(
+            Some(smithay::output::Mode {
+                size: (1000, 800).into(),
+                refresh: 60000,
+            }),
+            None,
+            None,
+            None,
+        );
+        h.gv.space.map_output(&output, (0, 0));
+        h.gv.map_new_window(w.clone());
+        h.commit_size(&w, 100, 100);
+        h.gv.space.refresh();
+        set_app_id(&w, "fixture");
+        h.gv.launches
+            .pending
+            .push(launch(Instant::now(), Some("fixture"), "fixture", "a"));
+        h.gv.launch_commit(&w);
+        h.gv.launch_mapped(&w);
+        let mut states = RenderElementStates::default();
+        states.states.insert(
+            Id::from(root),
+            RenderElementState {
+                visible_area: 0,
+                presentation_state: RenderElementPresentationState::Skipped,
+            },
+        );
+        assert!(!surface_tree_visible(root, &states));
+        states.states.insert(
+            Id::from(&child),
+            RenderElementState {
+                visible_area: 10000,
+                presentation_state: RenderElementPresentationState::Rendering { reason: None },
+            },
+        );
+        assert!(surface_tree_visible(root, &states));
+        h.gv.launch_submitted(&output, &states);
+        assert_eq!(h.gv.launches.observed[0].submitted, Some(output.clone()));
+        h.gv.launch_presented(&output, "test");
+        assert!(h.gv.launches.pending.is_empty());
+    }
+
+    #[test]
+    fn late_token_never_reuses_a_logged_fifo_observation() {
+        let mut h = crate::state::tests::Harness::new();
+        let a = h.window();
+        let b = h.window();
+        set_app_id(&a, "zenity");
+        set_app_id(&b, "zenity");
+        let now = Instant::now();
+        h.gv.launches.pending = vec![
+            launch(now, Some("zenity"), "zenity", "a"),
+            launch(now, Some("zenity"), "zenity", "b"),
+        ];
+        h.gv.launch_commit(&b);
+        h.gv.launch_mapped(&b);
+        h.gv.launches.observed[0].presented = Some((Instant::now(), "test"));
+        h.gv.finish_launches();
+        assert!(h.gv.launches.observed[0].logged);
+        assert_eq!(h.gv.launches.pending.len(), 1);
+        h.gv.launch_activation("b", b.toplevel().unwrap().wl_surface());
+        assert!(h.gv.launches.pending[0].surface.is_none());
+        h.gv.launch_commit(&a);
+        h.gv.launch_mapped(&a);
+        assert_eq!(
+            h.gv.launches.pending[0].surface,
+            Some(a.toplevel().unwrap().wl_surface().id())
+        );
+        h.gv.launches.observed[1].presented = Some((Instant::now(), "test"));
+        h.gv.finish_launches();
+        assert!(h.gv.launches.pending.is_empty());
+        assert!(h.gv.launches.observed.is_empty());
     }
 
     #[test]
@@ -564,15 +1009,29 @@ mod tests {
                 .0
                 .clone();
         let now = Instant::now();
-        h.gv.launches.tokens = vec![(now - LIFETIME, old.clone()), (now, fresh.clone())];
+        h.gv.launches.tokens = vec![
+            LaunchToken {
+                created: now - TOKEN_LIFETIME,
+                token: old.clone(),
+                focus_unchanged: true,
+            },
+            LaunchToken {
+                created: now,
+                token: fresh.clone(),
+                focus_unchanged: true,
+            },
+        ];
         h.gv.arm_launch_expiry();
         h.gv.expire_launches();
         h.gv.arm_launch_expiry();
         assert!(h.gv.protocols.activation.data_for_token(&old).is_none());
         assert!(h.gv.protocols.activation.data_for_token(&fresh).is_some());
         assert_eq!(h.gv.launches.tokens.len(), 1);
-        assert_eq!(h.gv.launches.expiry.as_ref().unwrap().1, now + LIFETIME);
-        h.gv.launches.tokens[0].0 = now - LIFETIME;
+        assert_eq!(
+            h.gv.launches.expiry.as_ref().unwrap().1,
+            now + TOKEN_LIFETIME
+        );
+        h.gv.launches.tokens[0].created = now - TOKEN_LIFETIME;
         h.gv.expire_launches();
         h.gv.arm_launch_expiry();
         assert!(h.gv.launches.tokens.is_empty());

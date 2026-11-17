@@ -7,7 +7,10 @@ use smithay::{
     },
 };
 use std::{
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    },
     time::Duration,
 };
 
@@ -15,6 +18,13 @@ use std::{
 #[derive(Default)]
 pub struct Urgent(pub AtomicBool);
 const TOKEN_LIFETIME: Duration = Duration::from_secs(5);
+
+/// A consumed token can authorize a later first map. Keep that decision on
+/// the surface, independently of both the token and launch measurements.
+struct FocusAuthorization {
+    epoch: u64,
+    allowed: bool,
+}
 impl XdgActivationHandler for Gavno {
     fn activation_state(&mut self) -> &mut XdgActivationState {
         &mut self.protocols.activation
@@ -57,6 +67,7 @@ impl XdgActivationHandler for Gavno {
         data: XdgActivationTokenData,
         surface: WlSurface,
     ) {
+        let launch_allowed = self.consume_launch_token(&token);
         self.launch_activation(token.as_str(), &surface);
         self.protocols.activation.remove_token(&token);
         let window = self.window_for_surface(&surface).or_else(|| {
@@ -66,20 +77,49 @@ impl XdgActivationHandler for Gavno {
                 .cloned()
         });
         let Some(window) = window else { return };
-        if data.timestamp.elapsed() <= TOKEN_LIFETIME
+        if !self.protocols.locks.locked
+            && self.greeter.is_none()
+            && !self.polkit_visible()
+            && self
+                .seat
+                .get_keyboard()
+                .and_then(|keyboard| keyboard.current_focus())
+                .and_then(|focused| self.window_for_keyboard_surface(&focused))
+                .as_ref()
+                == Some(&window)
+        {
+            // A late/revoked request cannot demand attention from the window
+            // the user already chose. Token consumption above still applies.
+            clear_urgency(&window);
+            return;
+        }
+        let allowed = launch_allowed.unwrap_or_else(|| data.timestamp.elapsed() <= TOKEN_LIFETIME)
             && !self.protocols.locks.locked
             && self.greeter.is_none()
-        {
+            && !self.polkit_visible();
+        if self.space.element_location(&window).is_none() {
+            smithay::wayland::compositor::with_states(&surface, |states| {
+                states
+                    .data_map
+                    .insert_if_missing_threadsafe(|| Mutex::new(None::<FocusAuthorization>));
+                *states
+                    .data_map
+                    .get::<Mutex<Option<FocusAuthorization>>>()
+                    .unwrap()
+                    .lock()
+                    .unwrap() = Some(FocusAuthorization {
+                    epoch: self.launch_focus_epoch(),
+                    allowed,
+                });
+            });
+        }
+        if allowed {
+            clear_urgency(&window);
             if self.space.element_location(&window).is_some() {
                 self.focus_window(Some(&window));
             }
         } else {
-            window
-                .user_data()
-                .insert_if_missing_threadsafe(Urgent::default);
-            if let Some(urgent) = window.user_data().get::<Urgent>() {
-                urgent.0.store(true, Ordering::Relaxed);
-            }
+            mark_urgent(&window);
             self.queue_redraw_all();
         }
     }
@@ -87,6 +127,46 @@ impl XdgActivationHandler for Gavno {
 smithay::delegate_xdg_activation!(Gavno);
 
 impl Gavno {
+    /// Popup and subsurface focus belongs to the same attention target as the
+    /// toplevel. Do not change general window lookup semantics for other input.
+    pub(crate) fn window_for_keyboard_surface(
+        &self,
+        surface: &WlSurface,
+    ) -> Option<smithay::desktop::Window> {
+        let mut root = surface.clone();
+        while let Some(parent) = smithay::wayland::compositor::get_parent(&root) {
+            root = parent;
+        }
+        if let Some(popup) = self.popups.find_popup(&root) {
+            root = smithay::desktop::find_popup_root_surface(&popup).ok()?;
+        }
+        self.window_for_surface(&root)
+    }
+    pub(crate) fn first_map_focus_allowed(&self, window: &smithay::desktop::Window) -> bool {
+        let authorization = window.toplevel().and_then(|toplevel| {
+            smithay::wayland::compositor::with_states(toplevel.wl_surface(), |states| {
+                states
+                    .data_map
+                    .get::<Mutex<Option<FocusAuthorization>>>()
+                    .and_then(|authorization| authorization.lock().unwrap().take())
+            })
+        });
+        if self.polkit_visible()
+            || authorization.is_some_and(|authorization| {
+                !authorization.allowed || authorization.epoch != self.launch_focus_epoch()
+            })
+        {
+            mark_urgent(window);
+        }
+        let allowed = !is_urgent(window) && !self.protocols.locks.locked && self.greeter.is_none();
+        if !allowed {
+            window.set_activated(false);
+            if let Some(toplevel) = window.toplevel() {
+                toplevel.send_pending_configure();
+            }
+        }
+        allowed
+    }
     pub fn record_activation_serial(
         &mut self,
         surface: Option<WlSurface>,
@@ -116,4 +196,16 @@ pub fn clear_urgency(window: &smithay::desktop::Window) {
     if let Some(urgent) = window.user_data().get::<Urgent>() {
         urgent.0.store(false, Ordering::Relaxed);
     }
+}
+
+pub(crate) fn mark_urgent(window: &smithay::desktop::Window) {
+    window
+        .user_data()
+        .insert_if_missing_threadsafe(Urgent::default);
+    window
+        .user_data()
+        .get::<Urgent>()
+        .unwrap()
+        .0
+        .store(true, Ordering::Relaxed);
 }

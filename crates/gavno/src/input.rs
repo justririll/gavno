@@ -85,6 +85,10 @@ impl Gavno {
         }
         if self.lock.internal() && !matches!(&event, InputEvent::Keyboard { .. } | InputEvent::PointerMotion { .. }
             | InputEvent::PointerMotionAbsolute { .. } | InputEvent::PointerButton { .. }) { return; }
+        let input_started = std::time::Instant::now();
+        let keyboard = self.seat.get_keyboard();
+        let focus_before = keyboard.as_ref().and_then(|keyboard| keyboard.current_focus());
+        let enter_before = keyboard.as_ref().and_then(|keyboard| keyboard.last_enter());
         match event {
             InputEvent::Keyboard { event, .. } => self.on_keyboard::<I>(event),
             InputEvent::PointerMotion { event, .. } => self.on_pointer_motion::<I>(event),
@@ -101,9 +105,16 @@ impl Gavno {
             InputEvent::GestureHoldEnd { event, .. } => self.on_gesture_hold_end::<I>(event),
             _ => {}
         }
+        if keyboard.as_ref().and_then(|keyboard| keyboard.current_focus()) != focus_before
+            || keyboard.as_ref().and_then(|keyboard| keyboard.last_enter()) != enter_before
+        {
+            self.launch_user_activity(input_started);
+        }
     }
 
     fn on_keyboard<I: InputBackend>(&mut self, event: I::KeyboardKeyEvent) {
+        let input_started = std::time::Instant::now();
+        let mut modifier_only = false;
         let serial = SERIAL_COUNTER.next_serial();
         let time = Event::time_msec(&event);
         let keycode = event.key_code();
@@ -118,6 +129,7 @@ impl Gavno {
             serial,
             time,
             |gv, mods, handle| {
+                modifier_only = handle.modified_sym().is_modifier_key();
                 if gv.greeter.is_none() && !gv.protocols.locks.locked
                     && (gv.features.on(crate::module::Feature::Switcher) && gv.overlay.switcher_open())
                     && key_state == KeyState::Released
@@ -297,7 +309,13 @@ impl Gavno {
             KeyState::Released => self.desktop_keys.retain(|k| *k != raw_code),
         }
         if action.is_none() {
-            self.record_activation_serial(keyboard.current_focus(), serial);
+            let focus = keyboard.current_focus();
+            if key_state == KeyState::Pressed && !modifier_only && focus.is_some() {
+                // Only client-directed presses update user time. Shell actions
+                // (including the Enter that launched an app) are intercepted.
+                self.launch_user_activity(input_started);
+            }
+            self.record_activation_serial(focus, serial);
         }
         if let Some(Some(action)) = action {
             self.run_action(action);

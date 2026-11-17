@@ -27,6 +27,7 @@ impl MoveSurfaceGrab {
         window: Window,
         initial_window_location: Point<i32, Logical>,
     ) -> Self {
+        crate::window_mode::cancel_natural_center(&window);
         Self {
             start_data,
             window,
@@ -76,6 +77,7 @@ impl PointerGrab<Gavno> for MoveSurfaceGrab {
                 data.features.call(crate::module::Feature::Animations, (), || data.window_animations.cancel(&self.window));
             }
         }
+        crate::window_mode::cancel_natural_center(&self.window);
         if data.tiled(&self.window) { data.workspaces.moving_tile = Some(self.window.clone()); data.preview_tile_drop(&self.window,event.location); }
         let new_location = self.initial_window_location.to_f64() + delta;
         data.space

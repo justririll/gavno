@@ -55,6 +55,7 @@ impl ResizeSurfaceGrab {
         edges: ResizeEdge,
         initial_window_rect: Rectangle<i32, Logical>,
     ) -> Self {
+        crate::window_mode::cancel_natural_center(&window);
         let initial_rect = initial_window_rect;
 
         if let Some(t)=window.toplevel() {
