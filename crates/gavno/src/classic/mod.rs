@@ -235,8 +235,8 @@ impl Gavno {
         self.guard(Feature::Classic, (), |gv| {
             gv.close_launcher();
             gv.close_overview();
-            // Classic keeps its own behaviour; leave code mode on the way in.
-            if mode == ShellMode::Classic { gv.set_code_mode(false); }
+            // Code mode is left when the transition settles, so its tiles are
+            // still tiles when Classic maximizes them.
             gv.topbar.close();
             gv.dock.close_menu();
             gv.classic.start.close();

@@ -113,7 +113,7 @@ impl Gavno {
 
     pub(crate) fn sync_bar_hints(&mut self) {
         // Gesture-driven shell transitions also leave code mode.
-        if self.code_mode && self.classic_mode() {
+        if self.code_mode && self.classic.settled == crate::classic::ShellMode::Classic {
             self.set_code_mode(false);
         }
         self.dock.code_mode = self.code_mode;

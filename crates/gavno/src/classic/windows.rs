@@ -65,6 +65,11 @@ pub(crate) struct Windows {
     dirty: bool,
     writer: Option<Writer>,
     waiting: Vec<Window>,
+    /// Windows that were snapped before Classic maximized them.
+    snaps: Vec<(Window, crate::snap::Zone)>,
+    /// Code mode was on when Classic was entered; returning turns it back on.
+    code_resume: bool,
+    code_saved: Vec<(Output, u64, bool)>,
 }
 impl Windows {
     pub fn new(active: bool) -> Self {
@@ -77,6 +82,9 @@ impl Windows {
             dirty: false,
             writer: None,
             waiting: Vec::new(),
+            snaps: Vec::new(),
+            code_resume: false,
+            code_saved: Vec::new(),
         }
     }
 }
@@ -341,16 +349,43 @@ impl Gavno {
             return;
         }
         if enable {
-            // Gesture release can enter Classic without set_shell_mode().
-            self.set_code_mode(false);
+            // Code-mode tiles are still tiles here: leave code mode only after
+            // the layouts are saved, and remember to resume it on return.
             let tiles: Vec<_> = self
                 .workspaces
                 .all()
                 .filter(|w| self.tiled(&w.window))
                 .map(|w| w.window.clone())
                 .collect();
+            let snaps: Vec<_> = self
+                .workspaces
+                .all()
+                .filter_map(|w| {
+                    let s = mode_state(&w.window);
+                    match s.mode {
+                        WindowMode::Snapped(zone)
+                            if !s.minimized && normal_window(&w.window) =>
+                        {
+                            Some((w.window.clone(), zone))
+                        }
+                        _ => None,
+                    }
+                })
+                .collect();
             self.classic.windows.active = true;
             self.enforce_classic_floating();
+            if self.code_mode {
+                self.code_mode = false;
+                self.dock.code_mode = false;
+                self.classic.windows.code_resume = true;
+                self.classic.windows.code_saved = std::mem::take(&mut self.code_mode_saved);
+                self.show_pointer();
+                self.sync_bar_hints();
+            }
+            for (w, _) in &snaps {
+                with_mode_state(w, |s| s.mode = WindowMode::Maximized);
+            }
+            self.classic.windows.snaps = snaps;
             for w in &tiles {
                 with_mode_state(w, |s| {
                     s.mode = WindowMode::Maximized;
@@ -375,8 +410,50 @@ impl Gavno {
                     }
                 }
             }
-            for w in std::mem::take(&mut self.classic.windows.tiles) {
-                if !w.alive() || self.workspaces.membership(&w).is_none() {
+            if std::mem::take(&mut self.classic.windows.code_resume) {
+                self.code_mode = true;
+                self.dock.code_mode = true;
+                self.code_mode_saved = std::mem::take(&mut self.classic.windows.code_saved);
+                self.sync_bar_hints();
+            }
+            for (w, zone) in std::mem::take(&mut self.classic.windows.snaps) {
+                if w.alive()
+                    && self.workspaces.membership(&w).is_some()
+                    && mode_state(&w).mode == WindowMode::Maximized
+                {
+                    with_mode_state(&w, |s| s.mode = WindowMode::Snapped(zone));
+                }
+            }
+            let mut leaving = std::mem::take(&mut self.classic.windows.tiles);
+            // Windows that got their Classic maximize in the initial configure
+            // but have not mapped yet never reached `tiles`.
+            for w in self
+                .workspaces
+                .all()
+                .map(|v| &v.window)
+                .chain(self.unmapped.iter())
+            {
+                if mode_state(w).classic_maximized && !leaving.contains(w) {
+                    leaving.push(w.clone());
+                }
+            }
+            for w in leaving {
+                if !w.alive() {
+                    continue;
+                }
+                if self.workspaces.membership(&w).is_none() {
+                    // Not mapped yet: let it map as a normal window of the shell it joins.
+                    if self.unmapped.contains(&w) && mode_state(&w).classic_maximized {
+                        with_mode_state(&w, |s| {
+                            s.mode = WindowMode::Floating;
+                            s.restore = None;
+                            s.classic_maximized = false;
+                        });
+                        configure_mode(&w, WindowMode::Floating, None);
+                        if let Some(t) = w.toplevel().filter(|t| t.is_initial_configure_sent()) {
+                            t.send_pending_configure();
+                        }
+                    }
                     continue;
                 }
                 // Keep fullscreen and minimized flags; minimized tiles rejoin on restore.
@@ -395,21 +472,15 @@ impl Gavno {
         }
     }
 
-    /// One configure per affected window, preserving Space order and focus.
+    /// One configure per non-floating window (tiles, maximized, snapped and
+    /// fullscreen alike: the work area and gap differ between the shells),
+    /// preserving Space order and focus.
     pub(crate) fn refit_classic_transition(&mut self) {
         let order: Vec<_> = self.space.elements().cloned().collect();
         let windows: Vec<_> = self.workspaces.all().map(|v| v.window.clone()).collect();
         for w in windows {
             let s = mode_state(&w);
             if s.mode == WindowMode::Floating || s.minimized {
-                continue;
-            }
-            if !self.classic.windows.tiles.contains(&w) {
-                // Existing floating/fixed states keep their placement. Only
-                // converted tiles need a new slot during the shell transition.
-                if let Some(t) = w.toplevel() {
-                    t.send_pending_configure();
-                }
                 continue;
             }
             let Some(output) = self.workspaces.membership(&w).map(|(o, _)| o) else {
@@ -721,6 +792,233 @@ mod tests {
         }
     }
 
+    fn assert_maximized(h: &Harness, o: &Output, w: &Window) {
+        assert_eq!(mode_state(w).mode, WindowMode::Maximized);
+        let slot = h.gv.classic_client_rect(w, h.gv.work_area(o));
+        assert_eq!(geometry(w), Some(slot.size));
+        assert_eq!(h.gv.space.element_location(w), Some(slot.loc));
+        assert!(w.toplevel().unwrap().with_pending_state(|s| {
+            s.states.contains(State::Maximized) && !s.states.contains(State::TiledLeft)
+        }));
+    }
+
+    fn same_app_tiles_all_maximize_and_return_to_tiles(count: usize, remembered: bool) {
+        let mut h = Harness::new();
+        let o = output(&mut h, "first", 0);
+        h.gv.workspaces.ensure(&o).list.items[0].tiling = true;
+        let mut tiles = Vec::new();
+        for _ in 0..count {
+            // Map through the real protocol: initial commit, configure, buffer.
+            let w = h.window();
+            id(&w, "foot");
+            // foot negotiates xdg-decoration before its first commit and asks
+            // for server-side decorations, which the handler answers client-side.
+            {
+                use smithay::{
+                    reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode,
+                    wayland::shell::xdg::decoration::XdgDecorationHandler,
+                };
+                h.gv.new_decoration(w.toplevel().unwrap().clone());
+                h.gv.request_mode(w.toplevel().unwrap().clone(), Mode::ServerSide);
+            }
+            h.gv.unmapped.push(w.clone());
+            h.commit_state(&w, None);
+            let size = geometry(&w).unwrap_or((800, 600).into());
+            h.commit_size(&w, size.w, size.h);
+            assert!(h.gv.space.element_location(&w).is_some());
+            tiles.push(w);
+        }
+        if remembered {
+            h.gv.classic.windows.entries.push(Entry {
+                app_id: "foot".into(),
+                output: "first".into(),
+                geometry: None,
+            });
+        }
+        for w in &tiles {
+            let size = geometry(w).unwrap();
+            h.commit_size(w, size.w, size.h);
+        }
+        let before = tree(&h, &o);
+        let order: Vec<_> = h.gv.space.elements().cloned().collect();
+        // Like the real loop: the spring runs, idle callbacks tick, then it settles.
+        h.gv.set_shell_mode(ShellMode::Classic);
+        for _ in 0..400 {
+            h.gv.on_loop_idle();
+            if h.gv.classic.settled == ShellMode::Classic {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(h.gv.classic.settled, ShellMode::Classic);
+        for w in &tiles {
+            assert_maximized(&h, &o, w);
+        }
+        // The client re-requests server-side mode; the handler answers client-side
+        // and the next idle pass must refit it again.
+        for w in &tiles {
+            use smithay::{
+                reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode,
+                wayland::shell::xdg::decoration::XdgDecorationHandler,
+            };
+            h.gv.request_mode(w.toplevel().unwrap().clone(), Mode::ServerSide);
+        }
+        // The clients ack and commit the configures, then the loop goes idle.
+        for w in &tiles {
+            let size = geometry(w).unwrap();
+            h.commit_size(w, size.w, size.h);
+        }
+        h.gv.on_loop_idle();
+        for w in &tiles {
+            assert_maximized(&h, &o, w);
+            // The state the client actually acknowledged must be maximized too.
+            let acked = with_states(w.toplevel().unwrap().wl_surface(), |states| {
+                states
+                    .data_map
+                    .get::<XdgToplevelSurfaceData>()
+                    .unwrap()
+                    .lock()
+                    .unwrap()
+                    .current_server_state()
+                    .clone()
+            });
+            assert!(acked.states.contains(State::Maximized));
+            assert_eq!(acked.size, geometry(w));
+        }
+        assert_eq!(h.gv.space.elements().cloned().collect::<Vec<_>>(), order);
+        settle(&mut h, ShellMode::Gavno);
+        assert_eq!(tree(&h, &o), before);
+        for w in &tiles {
+            assert!(h.gv.tiled(w));
+        }
+    }
+
+    #[test]
+    fn window_launched_in_classic_joins_tiling_when_it_maps_after_returning() {
+        let mut h = Harness::new();
+        let o = output(&mut h, "first", 0);
+        h.gv.workspaces.ensure(&o).list.items[0].tiling = true;
+        settle(&mut h, ShellMode::Classic);
+        let w = h.window();
+        crate::handlers::xdg_shell::prepare_initial_configure(&h.gv, &w);
+        w.toplevel().unwrap().send_configure();
+        h.gv.unmapped.push(w.clone());
+        assert_eq!(mode_state(&w).mode, WindowMode::Maximized);
+        settle(&mut h, ShellMode::Gavno);
+        h.gv.unmapped.retain(|u| u != &w);
+        h.gv.map_new_window(w.clone());
+        assert!(!mode_state(&w).classic_maximized);
+        assert!(h.gv.tiled(&w), "{:?}", mode_state(&w));
+        assert!(!w
+            .toplevel()
+            .unwrap()
+            .with_pending_state(|s| s.states.contains(State::Maximized)));
+    }
+
+    #[test]
+    fn maximized_windows_are_refitted_to_the_work_area_of_each_shell() {
+        let mut h = Harness::new();
+        let o = output(&mut h, "first", 0);
+        assert!(h.gv.config.gap > 0);
+        let gavno = mapped(&mut h);
+        h.gv.set_window_mode(&gavno, WindowMode::Maximized, None);
+        let gap = h.gv.config.gap;
+        let size = |h: &Harness, gap| crate::snap::Zone::Maximized.rect(h.gv.work_area(&o), gap).size;
+        assert_eq!(geometry(&gavno), Some(size(&h, gap)));
+        settle(&mut h, ShellMode::Classic);
+        let classic = mapped(&mut h);
+        assert_eq!(geometry(&gavno), Some(size(&h, 0)));
+        assert_eq!(geometry(&classic), Some(size(&h, 0)));
+        settle(&mut h, ShellMode::Gavno);
+        assert_eq!(geometry(&gavno), Some(size(&h, gap)));
+        assert_eq!(geometry(&classic), Some(size(&h, gap)));
+    }
+
+    fn code_mode_tiles_maximize_in_classic_and_return(count: usize, code_on: bool) {
+        let mut h = Harness::new();
+        let o = output(&mut h, "first", 0);
+        // The workspace itself floats; code mode forces the tiling.
+        assert!(!h.gv.workspaces.ensure(&o).list.items[0].tiling);
+        if code_on {
+            h.gv.set_code_mode(true);
+        } else {
+            h.gv.workspaces.ensure(&o).list.items[0].tiling = true;
+        }
+        let tiles: Vec<_> = (0..count).map(|_| mapped(&mut h)).collect();
+        for w in &tiles {
+            assert!(h.gv.tiled(w));
+        }
+        let before = tree(&h, &o);
+        let order: Vec<_> = h.gv.space.elements().cloned().collect();
+        h.gv.set_shell_mode(ShellMode::Classic);
+        // Entering Classic must not release the tiles before the transition.
+        assert!(tiles.iter().all(|w| h.gv.tiled(w)));
+        h.gv.classic.progress.jump(1.0);
+        h.gv.settle_classic();
+        assert!(!h.gv.code_mode);
+        for w in &tiles {
+            assert_maximized(&h, &o, w);
+        }
+        assert_eq!(h.gv.space.elements().cloned().collect::<Vec<_>>(), order);
+        settle(&mut h, ShellMode::Gavno);
+        assert_eq!(h.gv.code_mode, code_on);
+        assert_eq!(tree(&h, &o), before);
+        for w in &tiles {
+            assert!(h.gv.tiled(w));
+        }
+        if code_on {
+            // Code mode keeps its own saved state: leaving it floats the workspace again.
+            h.gv.set_code_mode(false);
+            assert!(!h.gv.workspaces.get(&o).unwrap().list.items[0].tiling);
+        }
+    }
+
+    #[test]
+    fn code_mode_tiles_all_maximize_in_classic_and_code_mode_resumes() {
+        for count in [2, 3] {
+            code_mode_tiles_maximize_in_classic_and_return(count, true);
+            code_mode_tiles_maximize_in_classic_and_return(count, false);
+        }
+    }
+
+    #[test]
+    fn snapped_windows_maximize_in_classic_and_return_to_their_snaps() {
+        use crate::snap::Zone;
+        let mut h = Harness::new();
+        let o = output(&mut h, "first", 0);
+        let zones = [Zone::Left, Zone::Right, Zone::TopLeft, Zone::BottomRight];
+        let windows: Vec<_> = zones
+            .iter()
+            .map(|z| {
+                let w = mapped(&mut h);
+                h.gv.set_window_mode(&w, WindowMode::Snapped(*z), None);
+                w
+            })
+            .collect();
+        let rects: Vec<_> = windows.iter().map(geometry).collect();
+        settle(&mut h, ShellMode::Classic);
+        for w in &windows {
+            assert_maximized(&h, &o, w);
+        }
+        settle(&mut h, ShellMode::Gavno);
+        for ((w, zone), size) in windows.iter().zip(zones).zip(rects) {
+            assert_eq!(mode_state(w).mode, WindowMode::Snapped(zone));
+            assert_eq!(geometry(w), size);
+        }
+    }
+
+    #[test]
+    fn same_app_tiles_all_maximize_with_remembered_state() {
+        same_app_tiles_all_maximize_and_return_to_tiles(2, true);
+        same_app_tiles_all_maximize_and_return_to_tiles(3, true);
+    }
+
+    #[test]
+    fn same_app_tiles_all_maximize_without_remembered_state() {
+        same_app_tiles_all_maximize_and_return_to_tiles(2, false);
+        same_app_tiles_all_maximize_and_return_to_tiles(3, false);
+    }
+
     #[test]
     fn preexisting_overrides_fixed_and_minimized_windows_keep_state_and_geometry() {
         let mut h = Harness::new();
@@ -756,9 +1054,14 @@ mod tests {
         assert_eq!(mode_state(&tile).mode, WindowMode::Maximized);
         for (w, state, location, size) in &preserved {
             assert_eq!(mode_state(w), *state);
-            assert_eq!(h.gv.workspaces.location(w), *location);
-            assert_eq!(geometry(w), *size);
+            // Maximized windows follow the shell's work area and gap.
+            if w != &maximized {
+                assert_eq!(h.gv.workspaces.location(w), *location);
+                assert_eq!(geometry(w), *size);
+            }
         }
+        let slot = crate::snap::Zone::Maximized.rect(h.gv.work_area(&o), 0);
+        assert_eq!(geometry(&maximized), Some(slot.size));
         assert_eq!(h.gv.space.elements().cloned().collect::<Vec<_>>(), order);
         settle(&mut h, ShellMode::Gavno);
         for (w, state, location, size) in &preserved {
