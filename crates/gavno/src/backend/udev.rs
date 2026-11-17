@@ -326,7 +326,7 @@ fn device_added(gv: &mut Gavno, node: DrmNode, path: &Path) {
     }
     match open_gpu(gv, node, path) {
         Ok(()) => {
-            scan_cached_connectors(gv, node);
+            scan_cached_connectors(gv, node, None);
             if udev(gv).and_then(|data| data.gpu.as_ref()).is_some_and(|gpu| gpu.surfaces.is_empty()) {
                 device_changed(gv, node);
             }
@@ -441,18 +441,37 @@ impl CrtcMapper for InternalFirstMapper {
     }
 }
 
-/// DrmScanner always asks for force_probe=true. Override only that ioctl; all
-/// CRTC mapping still goes through Smithay, using the kernel's cached modes.
-struct CachedConnectors<'a, D>(&'a D);
+type ConnectorInfos = HashMap<connector::Handle, connector::Info>;
+
+/// Modes the kernel has cached for a connector, read without probing it.
+/// drm-ffi 0.9 re-queries a connector without cached modes with
+/// count_modes = 0, which the kernel treats as a forced probe; this count
+/// query keeps its one-mode buffer for both ioctls.
+fn cached_mode_count(fd: std::os::fd::BorrowedFd<'_>, handle: connector::Handle) -> std::io::Result<u32> {
+    drm_ffi::mode::get_connector(fd, handle.into(), None, None, None, None, false).map(|raw| raw.count_modes)
+}
+
+/// DrmScanner always asks for force_probe=true. Serve it the probe worker's
+/// results, or the kernel's cached state; never probe on this thread. All CRTC
+/// mapping still goes through Smithay.
+struct CachedConnectors<'a, D>(&'a D, Option<&'a ConnectorInfos>);
 impl<D: std::os::fd::AsFd> std::os::fd::AsFd for CachedConnectors<'_, D> {
     fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> { self.0.as_fd() }
 }
 impl<D: smithay::reexports::drm::Device> smithay::reexports::drm::Device for CachedConnectors<'_, D> {}
 impl<D: smithay::reexports::drm::control::Device> smithay::reexports::drm::control::Device for CachedConnectors<'_, D> {
     fn get_connector(&self, handle: connector::Handle, _: bool) -> std::io::Result<connector::Info> {
+        if let Some(info) = self.1.and_then(|infos| infos.get(&handle)) {
+            return Ok(info.clone());
+        }
         let name = format!("connector-{}", u32::from(handle));
         crate::perf::startup_output("udev.connector.cached.begin", &name);
-        let result = self.0.get_connector(handle, false);
+        // A connector without cached modes is left to the probe worker.
+        let result = match cached_mode_count(std::os::fd::AsFd::as_fd(self), handle) {
+            Ok(0) => Err(std::io::Error::other("connector modes not cached")),
+            Ok(_) => self.0.get_connector(handle, false),
+            Err(error) => Err(error),
+        };
         crate::perf::startup_output("udev.connector.cached.end", &name);
         // Do not let DrmScanner mark a connected output as handled before its
         // modes have been filled in by the probe worker.
@@ -478,39 +497,55 @@ fn device_changed(gv: &mut Gavno, node: DrmNode) {
     }
     let fd = gpu.manager.device().device_fd().clone();
     let identity = fd.downgrade();
-    let (sender, receiver) = channel::channel::<()>();
+    let (sender, receiver) = channel::channel::<ConnectorInfos>();
+    // Each burst registers its own channel; drop it with the first event so
+    // hotplug-heavy sessions do not accumulate dead sources and eventfds.
+    let own_token = std::rc::Rc::new(std::cell::Cell::new(None));
+    let source_token = own_token.clone();
     let token = match gv.loop_handle.insert_source(receiver, move |event, _, gv| {
-        if let channel::Event::Msg(()) = event {
-            let Some(data) = udev(gv) else { return };
-            let Some(gpu) = data.gpu.as_mut().filter(|gpu| identity == *gpu.manager.device().device_fd()) else { return };
-            gpu.probe_running = false;
-            let again = std::mem::take(&mut gpu.probe_again);
-            scan_cached_connectors(gv, node);
-            if again { device_changed(gv, node); }
+        if let Some(token) = source_token.take() { gv.loop_handle.remove(token); }
+        let Some(data) = udev(gv) else { return };
+        let Some(gpu) = data.gpu.as_mut().filter(|gpu| identity == *gpu.manager.device().device_fd()) else { return };
+        gpu.probe_running = false;
+        let again = std::mem::take(&mut gpu.probe_again);
+        if let channel::Event::Msg(infos) = event {
+            scan_cached_connectors(gv, node, Some(&infos));
         }
+        if again { device_changed(gv, node); }
     }) {
         Ok(token) => token,
         Err(error) => { warn!(%error, "could not register connector probe worker"); return; }
     };
+    own_token.set(Some(token));
     if let Some(gpu) = udev(gv).and_then(|data| data.gpu.as_mut()) { gpu.probe_running = true; }
     if let Err(error) = std::thread::Builder::new().name("drm-connectors".into()).spawn(move || {
         crate::perf::startup("udev.connectors.probe.begin");
+        let mut infos = ConnectorInfos::new();
         if let Ok(resources) = fd.resource_handles() {
             for handle in resources.connectors() {
                 // Internal panels already have reliable cached modes. External
                 // ports can block for AUX/link timeouts, exclusively here.
-                if fd.get_connector(*handle, false).is_ok_and(|info| internal_connector(&info)
-                    && info.state() == connector::State::Connected && !info.modes().is_empty()) { continue; }
-                let name = format!("connector-{}", u32::from(*handle));
-                crate::perf::startup_output("udev.connector.probe.begin", &name);
-                if let Err(error) = fd.get_connector(*handle, true) {
-                    warn!(%error, connector = u32::from(*handle), "connector probe failed");
+                let cached = cached_mode_count(std::os::fd::AsFd::as_fd(&fd), *handle).is_ok_and(|count| count > 0)
+                    .then(|| fd.get_connector(*handle, false).ok()).flatten()
+                    .filter(|info| internal_connector(info) && info.state() == connector::State::Connected);
+                let info = match cached {
+                    Some(info) => Ok(info),
+                    None => {
+                        let name = format!("connector-{}", u32::from(*handle));
+                        crate::perf::startup_output("udev.connector.probe.begin", &name);
+                        let probed = fd.get_connector(*handle, true);
+                        crate::perf::startup_output("udev.connector.probe.end", &name);
+                        probed
+                    }
+                };
+                match info {
+                    Ok(info) => { infos.insert(*handle, info); }
+                    Err(error) => warn!(%error, connector = u32::from(*handle), "connector probe failed"),
                 }
-                crate::perf::startup_output("udev.connector.probe.end", &name);
             }
         }
         crate::perf::startup("udev.connectors.probe.end");
-        let _ = sender.send(());
+        let _ = sender.send(infos);
     }) {
         gv.loop_handle.remove(token);
         if let Some(gpu) = udev(gv).and_then(|data| data.gpu.as_mut()) { gpu.probe_running = false; }
@@ -518,7 +553,7 @@ fn device_changed(gv: &mut Gavno, node: DrmNode) {
     }
 }
 
-fn scan_cached_connectors(gv: &mut Gavno, node: DrmNode) {
+fn scan_cached_connectors(gv: &mut Gavno, node: DrmNode, probed: Option<&ConnectorInfos>) {
     // While another VT owns the seat, output setup fails with DeviceInactive
     // but the scanner would still record the connector as handled. Leave the
     // scan to on_session_activate, which calls this again.
@@ -530,7 +565,7 @@ fn scan_cached_connectors(gv: &mut Gavno, node: DrmNode) {
         return;
     }
     crate::perf::startup("udev.connectors.scan.begin");
-    let mut events: Vec<DrmScanEvent> = match gpu.scanner.scan_connectors(&CachedConnectors(gpu.manager.device().device_fd())) {
+    let mut events: Vec<DrmScanEvent> = match gpu.scanner.scan_connectors(&CachedConnectors(gpu.manager.device().device_fd(), probed)) {
         Ok(result) => result.into_iter().collect(),
         Err(err) => {
             warn!(?err, "connector scan failed");
@@ -1280,6 +1315,7 @@ fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
         crate::perf::startup_output("udev.first_frame.drawn", &output.name());
     }
     let mut retry_sdr = false;
+    let mut first_submit_failed = false;
     if !is_empty {
         let feedback = render::take_presentation_feedback(&gv.space, &output, &states);
         if !surface.first_frame_queued {
@@ -1308,6 +1344,8 @@ fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
                         warn!(?error, output = output.name(), "DRM state reset failed");
                     }
                 }
+                // Hotplug must not wait for a first flip that may never happen.
+                first_submit_failed |= !surface.first_frame_queued;
                 surface.flip_failures = surface.flip_failures.saturating_add(1);
                 let failures = surface.flip_failures;
                 if !scanout_rejected && (failures == 1 || failures % 600 == 0) {
@@ -1349,7 +1387,7 @@ fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
         queue_redraw(gv, crtc);
     }
     // A deliberately empty scene may never generate the first page flip.
-    if is_empty { probe_after_first_frame(gv); }
+    if is_empty || first_submit_failed { probe_after_first_frame(gv); }
 }
 
 /// Arms a one-refresh-period timer; `queued` redraws when it fires.
@@ -1624,7 +1662,9 @@ mod scanout_tests {
             }
         }
         let fake = Fake { fd: std::fs::File::open("/dev/null").unwrap().into(), force: Cell::new(None) };
-        assert!(CachedConnectors(&fake).get_connector(std::num::NonZeroU32::new(1).unwrap().into(), true).is_err());
-        assert_eq!(fake.force.get(), Some(false));
+        // /dev/null rejects the count query, so nothing reaches the device;
+        // a real connector would be read with force_probe = false.
+        assert!(CachedConnectors(&fake, None).get_connector(std::num::NonZeroU32::new(1).unwrap().into(), true).is_err());
+        assert_ne!(fake.force.get(), Some(true));
     }
 }
