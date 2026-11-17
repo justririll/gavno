@@ -86,6 +86,7 @@ a window `id`.
 | Mod+Left, Mod+Right, Mod+Up, Mod+Down | Focus the nearest window in that direction. |
 | Mod+Alt+Left/Right/Up/Down | Swap with the nearest window in that direction, keeping both geometry slots. |
 | Mod+Super+Left/Right/Up/Down | Same swap when Mod is Alt (nested default), because Alt is then taken by Mod. |
+| Mod+H/J/K/L | In code mode, focus left/down/up/right. The same aliases work in every Mod+arrow chord below. |
 
 ## Resize
 
@@ -144,8 +145,8 @@ Mod+R enters resize mode for the focused window.
 |---|---|
 | Pointer motion | Move the active edge or edges. |
 | Tab, Shift+Tab | Cycle through the eight edges. |
-| Left/Right/Up/Down | Move the active edge by 10 px. |
-| Shift+arrows | Move it by 50 px. |
+| Left/Right/Up/Down, H/J/K/L in code mode | Move the active edge by 10 px. |
+| Shift+arrows, Shift+H/J/K/L in code mode | Move it by 50 px. |
 | Escape, Return, KP Enter | Leave resize mode. |
 | Any other key | Ignored. |
 | Any pointer button | Leave resize mode; the click does not reach the window. |
@@ -153,6 +154,77 @@ Mod+R enters resize mode for the focused window.
 A small HUD shows the current size and the active edge. Resize mode ends if
 the window closes, loses focus, or the overview or lock screen opens. It works
 on floating windows and on tiles, where it moves the adjacent dividers.
+
+In resize mode, Ctrl+arrows move a floating window by 10 logical pixels;
+Ctrl+Shift+arrows move it by 50. Code mode also accepts Ctrl+H/J/K/L and
+Ctrl+Shift+H/J/K/L. Windows stay within the output work area; tiles ignore
+these movement keys.
+
+## Code mode
+
+Code mode is for keyboard-only window control on the GAVNO shell. Classic never
+enters it. The top bar shows a **CODE** chip while it is on; click the chip or
+press Mod+Shift+C to toggle it. IPC `code_mode` with `{"enable":true|false}`
+sets it and no parameters toggle it. `[keyboard] code_mode = true` starts in
+code mode.
+
+While it is on:
+
+- Every workspace on every output tiles. Each workspace's own floating/tiling
+  mode is saved when code mode turns on and restored when it turns off.
+  Workspaces created during code mode return to the normal default. Explicit
+  per-window floating windows, dialogs, transients and fixed-size windows stay
+  floating, as usual.
+- The pointer hides on the first key press that reaches a client or a bind. It
+  returns on the next motion, button, scroll or gesture. Hiding does not change
+  pointer focus.
+- H, J, K and L act like Left, Down, Up and Right in every Mod+arrow chord
+  (Mod, Mod+Ctrl, Mod+Shift, Mod+Alt and the nested Mod+Super swap) and in
+  resize mode.
+- The dock is hidden, as if autohide were on with no pointer push.
+- The top bar shows a compact strip of the active key hints next to the **CODE**
+  chip, following code mode, resize mode, window hints or overview. The
+  lowest-priority hints disappear first when the bar is narrow. `[keyboard] bar_hints = false` hides
+  the strip and keeps the chip.
+
+Turning code mode off restores every previous behaviour, including the cursor
+and the dock.
+
+### Alias collisions
+
+The aliases win only while code mode is on:
+
+| Chord | Outside code mode | In code mode |
+|---|---|---|
+| Mod+L | Lock. | Focus right. |
+| Mod+Shift+H | Toggle HDR on the active output. | Move the left splitter/resize left (Shift+Left alias). |
+| Ctrl+Alt+L | Lock. | Lock (alias never overrides it). |
+| Mod+Alt+L (Super as Mod), Mod+Super+L (Alt as Mod) | Lock, because the old Mod+L bind also accepts the extra modifier. | Swap with the right neighbour. |
+
+With `mod_key = "alt"` (the nested default), Mod+Ctrl+L is Ctrl+Alt+L and
+therefore still locks instead of moving right; Mod+Super+L performs the
+Mod+Alt+L swap. Ctrl+Alt+L keeps its emergency-lock precedence, including
+when Super is also held. The Shift+H collision also applies with the extra
+swap modifier held. The other aliases do not collide with existing binds.
+
+## Window hints
+
+Mod+F shows accent-coloured letter badges at the centre of each non-minimized
+window on the active output's current workspace, including floating and
+maximized windows. Type its letter to focus and raise it. Letters use the
+Latin layout even when Russian is active, in this order:
+`a s d f g h j k l`, `q w e r t y u i o p`, `z x c v b n m`.
+With more than 26 windows, type the displayed two-letter label (or longer for
+very large window counts). Escape, another key or a pointer button cancels;
+the dismissal key/button does not reach a client.
+
+## Cheat sheet
+
+Mod+Slash or Mod+F1 toggles a centred shortcut overlay in both shells. It groups
+the current GAVNO or Classic binds, code-mode aliases and active modal keys.
+Escape or any other key closes it and is swallowed. The sheet and bar strip
+use the same bind inventory next to the dispatcher in `hints.rs`; tests check
+that its chords are handled. The sheet is available from resize mode and overview.
 
 ## Alt+Tab switcher
 
@@ -201,6 +273,11 @@ sits at the top.
 | Mod+A | Toggle the overview. |
 | Mod tap | Open the launcher in GAVNO mode, or Start in Classic. Overview is the fallback when the built-in launcher is disabled. |
 | Super+Shift+F23 | Toggle the overview. This is what the Copilot key sends on Snapdragon X Elite laptops. |
+| Arrows or H/J/K/L | Select the nearest window in that direction, across workspaces. |
+| Tab / Shift+Tab | Cycle the selection forward / backward. |
+| Enter | Focus the selected window, switching workspace, and close. |
+| Delete | Ask the selected window to close. |
+| 1-9 | Select that workspace. |
 | Escape | Close the overview. |
 
 | Pointer | Action |
@@ -211,7 +288,10 @@ sits at the top.
 | Middle click a window | Ask the window to close. |
 | Scroll over a window | Flick it with a spring. A fast upward flick closes the window. |
 
-Keys that are not compositor binds are swallowed while the overview is open.
+The accent-coloured selection ring starts on the focused window. Arrows and
+Tab preview a selection without changing client focus; Enter commits it and
+Escape restores the active workspace view. Navigation works in both shells and uses the Latin layout. Other keys are swallowed while
+the overview is open; Mod+Slash and Mod+F1 can show its cheat sheet.
 
 ## Dock and top bar
 
@@ -264,7 +344,7 @@ direction; it does not change scrolling delivered to clients.
 
 | Keys | Action |
 |---|---|
-| Mod+L, Ctrl+Alt+L | Lock the session. |
+| Mod+L, Ctrl+Alt+L | Lock the session. In code mode Mod+L focuses right; Ctrl+Alt+L still locks. |
 | Ctrl+Alt+F1 ... F12 | Switch to virtual terminal 1-12 while locked (TTY backend only). |
 
 The top bar power menu also has Lock. GAVNO locks after

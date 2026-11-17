@@ -49,6 +49,9 @@ impl SeatHandler for Gavno {
     }
 
     fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
+        // A hidden code-mode pointer stays hidden even if a client sets an
+        // image for the unchanged pointer focus.
+        if self.pointer_hidden { self.pointer_image = image; return; }
         if self.cursor_status == image { return; }
         self.cursor_status = image;
         self.queue_redraw_all();

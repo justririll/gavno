@@ -53,6 +53,12 @@
 # XKB options; set to "" to disable them. Default: "grp:alt_shift_toggle".
 # options = "grp:alt_shift_toggle"
 
+# Start in keyboard-only code mode (Mod+Shift+C toggles it).
+# code_mode = false
+
+# Show the key hint strip next to the code-mode chip. Default: true.
+# bar_hints = true
+
 # Built-in dock and top bar. Pin changes made in the dock menu last until exit.
 # [dock]
 # enabled = true

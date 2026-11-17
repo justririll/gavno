@@ -366,6 +366,7 @@ pub enum PowerAction {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BarAction {
     Tiling,
+    CodeMode,
     Media(crate::media::Command),
     MusicPanel,
     Workspace(usize),
@@ -410,6 +411,10 @@ pub struct TopBar {
     pub notifications_active: bool,
     views: Vec<BarView>,
     pub enabled: bool,
+    /// Code mode chip and key hint strip state, refreshed on mode changes.
+    pub code_mode: bool,
+    pub hint_context: Option<crate::hints::HintContext>,
+    pub mod_label: &'static str,
     pub title: String,
     pub layout: String,
     app_icon: String,
@@ -442,6 +447,9 @@ impl Default for TopBar {
             notifications_active: false,
             views: Vec::new(),
             enabled: true,
+            code_mode: false,
+            hint_context: None,
+            mod_label: "Super",
             title: String::new(),
             layout: "EN".into(),
             app_icon: String::new(),
@@ -530,6 +538,10 @@ impl TopBar {
         self.opening
             .set(if self.menu.is_some() { 1.0 } else { 0.0 });
         self.opening.advance(now);
+        let code_mode = self.code_mode;
+        let hint_context = self.hint_context;
+        let mod_label = self.mod_label;
+        let accent = self.accent;
         let v = &mut self.views[index];
         v.visible = visible && self.enabled;
         if !v.visible {
@@ -624,6 +636,19 @@ impl TopBar {
             }
         }
         v.hits.push((l.toggle.to_f64(), BarAction::Tiling));
+        // The hint strip lives in the title area and never reaches the clock,
+        // the workspace dots or any other fixed capsule.
+        let strip = draw_hints(
+            c,
+            renderer,
+            &l,
+            code_mode,
+            hint_context,
+            mod_label,
+            accent,
+            v.hover.as_ref(),
+            &mut v.hits,
+        );
         // The focused app keeps its own colours; tinting turned it into a
         // white square that looked like a dead button. No generic fallback.
         c.colored_icon(
@@ -639,7 +664,7 @@ impl TopBar {
             &self.title,
             l.title.loc.x,
             l.title.loc.y,
-            l.title.size.w,
+            (l.title.size.w - strip - if strip > 0 { 8 } else { 0 }).max(0),
             12.5,
         );
         if v.hover == Some(BarAction::Calendar) {
@@ -797,6 +822,106 @@ fn capsule(c: &mut Canvas, r: Rect, hover: bool) {
         0.0,
         LINE,
     );
+}
+
+/// Draws the code-mode chip and its context hint strip inside the title area.
+/// Returns the width used; the title is ellipsized in the remaining space.
+fn draw_hints(
+    c: &mut Canvas,
+    renderer: &mut GlesRenderer,
+    layout: &Layout,
+    code_mode: bool,
+    context: Option<crate::hints::HintContext>,
+    mod_label: &str,
+    accent: [f32; 4],
+    hover: Option<&BarAction>,
+    hits: &mut Vec<(Rectangle<f64, Logical>, BarAction)>,
+) -> i32 {
+    const CHIP: i32 = 44;
+    const CHIP_GAP: i32 = 8;
+    const ITEM_GAP: i32 = 14;
+    if !code_mode {
+        return 0;
+    }
+    let title = layout.title;
+    let end = title.loc.x + title.size.w;
+    if title.size.w < CHIP {
+        return 0;
+    }
+    let mut label = label_style(10.5);
+    label.color = [0.96, 0.95, 0.98, 0.62];
+    label.weight = Weight::Regular;
+    let mut key = label_style(10.5);
+    key.color = [0.96, 0.95, 0.98, 0.95];
+    key.weight = Weight::SemiBold;
+    // `measure` follows the last rendered scale; prime it once per bar frame.
+    let _ = c.text.render(" ", label_style(1.0), c.scale);
+    let mut items: Vec<(&crate::hints::BindHint, String, i32, i32)> = Vec::new();
+    if let Some(context) = context {
+        for hint in crate::hints::items(context) {
+            let keys = match context {
+                crate::hints::HintContext::Code => format!("{mod_label} {}", hint.keys),
+                _ => hint.keys.to_owned(),
+            };
+            let key_width = c.text.measure(&keys, key).ceil() as i32 + 10;
+            let label_width = c.text.measure(hint.label, label).ceil() as i32;
+            items.push((hint, keys, key_width, label_width));
+        }
+    }
+    let budget = (title.size.w - CHIP - CHIP_GAP).max(0);
+    let refs: Vec<&crate::hints::BindHint> = items.iter().map(|(hint, ..)| *hint).collect();
+    let chosen = crate::hints::fit(&refs, budget, ITEM_GAP, |hint| {
+        items
+            .iter()
+            .find(|(candidate, ..)| std::ptr::eq(*candidate, hint))
+            .map(|(_, _, key, label)| key + 6 + label)
+            .unwrap_or(0)
+    });
+    let chosen_width: i32 = chosen
+        .iter()
+        .map(|hint| {
+            items
+                .iter()
+                .find(|(candidate, ..)| std::ptr::eq(*candidate, *hint))
+                .map(|(_, _, key, label)| key + 6 + label)
+                .unwrap_or(0)
+        })
+        .sum::<i32>()
+        + ITEM_GAP * chosen.len().saturating_sub(1) as i32;
+    let mut total = CHIP + if chosen.is_empty() { 0 } else { CHIP_GAP + chosen_width };
+    if total > title.size.w {
+        total = CHIP;
+    }
+    let start = (end - total).max(title.loc.x);
+    let chip = rect(start, 4, CHIP, 24);
+    capsule(c, chip, hover == Some(&BarAction::CodeMode));
+    let mut code = label_style(10.5);
+    code.weight = Weight::SemiBold;
+    code.color = [accent[0], accent[1], accent[2], 1.0];
+    let code_width = c.text.measure("CODE", code).ceil() as i32;
+    c.styled_label(renderer, "CODE", chip.loc.x + (CHIP - code_width) / 2, 9, code_width + 2, code);
+    hits.push((c.mapped(chip).to_f64(), BarAction::CodeMode));
+    if chosen.is_empty() || total == CHIP {
+        return total;
+    }
+    let mut x = start + CHIP + CHIP_GAP;
+    for hint in chosen {
+        let Some((_, keys, key_width, label_width)) =
+            items.iter().find(|(candidate, ..)| std::ptr::eq(*candidate, hint))
+        else {
+            continue;
+        };
+        let code_context = hint.context == crate::hints::HintContext::Code;
+        let label_x = if code_context { x } else { x + *key_width + 6 };
+        let key_x = if code_context { x + *label_width + 6 } else { x };
+        if *label_width > 0 {
+            c.styled_label(renderer, hint.label, label_x, 9, *label_width + 2, label);
+        }
+        c.rect(rect(key_x, 6, *key_width, 20), 5.0, [1.0, 1.0, 1.0, 0.10], 0.0, LINE);
+        c.styled_label(renderer, keys, key_x + 5, 9, *key_width - 10, key);
+        x += *label_width + 6 + *key_width + ITEM_GAP;
+    }
+    total
 }
 fn item_action(item: Item) -> BarAction {
     match item {
@@ -1168,6 +1293,7 @@ impl Gavno {
         self.topbar.enabled = self.config.bar.enabled;
         self.topbar.music_panel = self.config.media.music_panel;
         self.topbar.icon_theme = self.config.dock.icon_theme.clone();
+        self.sync_bar_hints();
         self.topbar.views.retain(|v| outputs.contains(&v.output));
         let visible = outputs.iter().any(|o| self.shell_visible(o));
         if !self.config.bar.enabled
@@ -1196,6 +1322,7 @@ impl Gavno {
     fn bar_action_feature(&mut self, output: &Output, action: BarAction) {
         match action {
             BarAction::Tiling => self.toggle_workspace_tiling(output),
+            BarAction::CodeMode => self.set_code_mode(!self.code_mode),
             BarAction::Media(command) => self.media_command(command),
             BarAction::MusicPanel => self.toggle_music(output),
             BarAction::Workspace(i) => {

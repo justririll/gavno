@@ -233,8 +233,7 @@ fn dispatch(gv: &mut Gavno, method: &str, params: &Value) -> Result<Value, Strin
     if method == "screen" {
         return Ok(screen(gv));
     }
-    if method == "shell_mode" {
-        if let Some(mode) = params.get("mode") {
+    if method == "shell_mode" {        if let Some(mode) = params.get("mode") {
             let mode = match mode.as_str() {
                 Some("gavno") => crate::classic::ShellMode::Gavno,
                 Some("classic") => crate::classic::ShellMode::Classic,
@@ -244,6 +243,16 @@ fn dispatch(gv: &mut Gavno, method: &str, params: &Value) -> Result<Value, Strin
             gv.set_shell_mode(mode);
         }
         return Ok(json!({"mode": gv.classic.mode, "settled": gv.classic.settled, "progress": gv.shell_progress()}));
+    }
+    if method == "code_mode" {
+        let enable = match params.get("enable") {
+            Some(value) => value.as_bool().ok_or("enable must be a boolean")?,
+            None => !gv.code_mode,
+        };
+        if enable && gv.classic_mode() { return Err("code mode is only available in GAVNO".into()); }
+        audit(method, params).map_err(|e| format!("cannot append agent audit log: {e}"))?;
+        gv.set_code_mode(enable);
+        return Ok(json!({"enabled": gv.code_mode}));
     }
     if method == "night_light" {
         if let Some(preview) = params.get("preview") {

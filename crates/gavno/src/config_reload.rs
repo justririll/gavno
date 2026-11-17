@@ -178,6 +178,8 @@ pub(crate) fn apply(gv: &mut Gavno, prepared: Prepared) -> Result<Value, String>
     let pins_changed = gv.config.dock.pinned != config.dock.pinned;
     let scheme_changed = gv.config.theme.app_color_scheme != config.theme.app_color_scheme;
     let classic_changed = gv.config.classic != config.classic;
+    let code_mode_changed = gv.config.code_mode != config.code_mode;
+    let bar_hints_changed = gv.config.bar_hints != config.bar_hints;
     // These startup-only settings are not considered effective before re-login.
     config.autostart = gv.config.autostart.clone();
     config.polkit_agent = gv.config.polkit_agent.clone();
@@ -191,6 +193,9 @@ pub(crate) fn apply(gv: &mut Gavno, prepared: Prepared) -> Result<Value, String>
         }
     }
     gv.config = config;
+    if code_mode_changed { gv.set_code_mode(gv.config.code_mode); }
+    gv.sync_bar_hints();
+    if bar_hints_changed { gv.queue_redraw_all(); }
     if scanout_changed {
         crate::backend::udev::reset_scanout_buffers(gv);
         gv.queue_redraw_all();
@@ -255,6 +260,21 @@ pub(crate) fn apply(gv: &mut Gavno, prepared: Prepared) -> Result<Value, String>
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn keyboard_mode_and_hint_strip_reload_live() {
+        let mut h = crate::state::tests::Harness::new();
+        for (enabled, hints) in [(true, true), (true, false), (false, true)] {
+            let mut config = h.gv.config.clone();
+            config.code_mode = enabled;
+            config.bar_hints = hints;
+            let prepared = Prepared::new(config, &h.gv.config).unwrap();
+            apply(&mut h.gv, prepared).unwrap();
+            assert_eq!(h.gv.code_mode, enabled);
+            assert_eq!(h.gv.topbar.code_mode, enabled);
+            assert_eq!(h.gv.topbar.hint_context.is_some(), enabled && hints);
+        }
+    }
+
     #[test]
     fn night_light_reloads_and_applies_at_once() {
         let mut h = crate::state::tests::Harness::new();

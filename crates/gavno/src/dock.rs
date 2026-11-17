@@ -162,6 +162,8 @@ impl Dock {
 
 pub struct Dock {
     pub shell_progress: f64,
+    /// Code mode hides the dock as if autohide were on, with no pointer push.
+    pub code_mode: bool,
     initialized: bool,
     config: DockConfig,
     pinned: Vec<String>,
@@ -185,6 +187,7 @@ impl Default for Dock {
     fn default() -> Self {
         Self {
             shell_progress: 0.0,
+            code_mode: false,
             initialized: false,
             config: Default::default(),
             pinned: Vec::new(),
@@ -390,7 +393,12 @@ impl Dock {
         let over = v.panel.contains(pointer) || v.hits.iter().any(|(_, r)| r.contains(pointer));
         let menu_open = self.menu.as_ref().is_some_and(|m| &m.output == output);
         if pointer.y < size.h as f64 - DOCK_H as f64 * DOCK_MAG - 20.0 {v.pushed=false;}
-        let reveal = !self.config.autohide || v.pushed || over || menu_open;
+        let reveal = if self.code_mode {
+            // Hidden completely: no edge push and no hover reveal.
+            menu_open
+        } else {
+            !self.config.autohide || v.pushed || over || menu_open
+        };
         v.slide.advance(now);
         v.slide.set(if reveal { 0.0 } else { 1.0 });
         let bottom = size.h as f64 - DOCK_M as f64 + (DOCK_H + 16) as f64 * (v.slide.value + self.shell_progress);
@@ -1300,7 +1308,7 @@ impl Gavno {
     }
 
     fn push_dock_edge_feature(&mut self,output:&Output) {
-        if !self.config.dock.autohide {return;}
+        if self.code_mode || !self.config.dock.autohide {return;}
         if let Some(v)=self.dock.views.iter_mut().find(|v|&v.output==output) {
             if !v.pushed {v.pushed=true;self.queue_redraw_all();}
         }

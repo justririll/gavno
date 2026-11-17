@@ -83,6 +83,16 @@ pub struct Gavno {
     pub seat: Seat<Self>,
     pub cursor_status: CursorImageStatus,
     pub cursor: crate::render::CursorCache,
+    /// Keyboard-only shell mode; see `code_mode.rs`.
+    pub code_mode: bool,
+    /// Saved per (output identity, workspace id) tiling modes, restored when code mode
+    /// turns off.
+    pub(crate) code_mode_saved: Vec<(Output, u64, bool)>,
+    /// The pointer is hidden until the next pointer activity.
+    pub pointer_hidden: bool,
+    pub(crate) pointer_image: CursorImageStatus,
+    #[cfg(test)]
+    pub(crate) redraw_requests: u64,
     /// Keys whose press was a compositor bind; their release is not forwarded.
     pub suppressed_keys: Vec<u32>,
     pub desktop_keys: Vec<u32>,
@@ -110,6 +120,8 @@ impl Gavno {
     pub fn new(event_loop: &mut EventLoop<'static, Self>, display: Display<Self>, config: Config) -> Self {
         let features = Features::new(&config);
         let tiling_default = config.tiling.default && features.on(Feature::Tiling);
+        let config_code_mode = config.code_mode;
+        let start_classic = config.modules.classic && config.classic.start_in_classic;
         let dh = display.handle();
         let clock = Clock::new();
 
@@ -158,7 +170,7 @@ impl Gavno {
         crate::perf::startup("gavno.topbar.ready");
 
         let brightness = crate::brightness::State::load(config.display.brightness_control);
-        Self {
+        let mut state = Self {
             protocols,
             satellite: None,
             start_time: Instant::now(),
@@ -208,6 +220,12 @@ impl Gavno {
             seat,
             cursor_status: CursorImageStatus::default_named(),
             cursor: crate::render::CursorCache::new(),
+            code_mode: config_code_mode && !start_classic,
+            code_mode_saved: Vec::new(),
+            pointer_hidden: false,
+            pointer_image: CursorImageStatus::default_named(),
+            #[cfg(test)]
+            redraw_requests: 0,
             suppressed_keys: Vec::new(),
             desktop_keys: Vec::new(),
             pointer_buttons: Vec::new(),
@@ -221,7 +239,9 @@ impl Gavno {
             launcher: Default::default(),
             launches: Default::default(),
             polkit: Default::default(),
-        }
+        };
+        state.sync_bar_hints();
+        state
     }
 
     fn init_wayland_listener(display: Display<Gavno>, event_loop: &mut EventLoop<'static, Gavno>) -> OsString {
@@ -266,6 +286,7 @@ impl Gavno {
         self.run_feature_resets();
         self.space.refresh();
         self.refresh_workspaces();
+        self.sync_bar_hints();
         self.refresh_desktop_pointer();
         self.refresh_splitter_cursor();
         self.validate_resize_mode();
@@ -293,6 +314,8 @@ impl Gavno {
     /// Something visible changed; draw the affected outputs on their next
     /// vblank. Cheap to call often: repeated calls coalesce.
     pub fn queue_redraw_all(&mut self) {
+        #[cfg(test)]
+        { self.redraw_requests = self.redraw_requests.wrapping_add(1); }
         crate::backend::queue_redraw_all(self);
     }
 
@@ -313,7 +336,7 @@ impl Gavno {
         let launcher = self.guard(Feature::Launcher, false, |gv| gv.launcher.is_animating());
         let notifications = self.guard(Feature::Notifications, false, |gv| gv.notifications.borrow().animating());
         // Animated named cursors (wait, progress) need frames while shown.
-        let cursor = matches!(&self.cursor_status, smithay::input::pointer::CursorImageStatus::Named(icon) if self.cursor.animated(icon.name()));
+        let cursor = !self.pointer_hidden && matches!(&self.cursor_status, smithay::input::pointer::CursorImageStatus::Named(icon) if self.cursor.animated(icon.name()));
         theme || classic || cursor || animations || overlay || self.workspaces.active() || overview || dock || bar || launcher || notifications || self.media.osd.is_animating()
     }
 

@@ -102,7 +102,7 @@ impl Gavno {
         crate::classic::reserve(Rectangle::new(zone.loc + geo.loc, zone.size),
             if self.greeter.is_none() && self.features.on(crate::module::Feature::Classic) { self.classic.settled } else { crate::classic::ShellMode::Gavno },
             self.greeter.is_none() && (self.features.on(crate::module::Feature::Bar) && self.config.bar.enabled),
-            self.greeter.is_none() && (self.features.on(crate::module::Feature::Dock) && self.config.dock.enabled), self.config.dock.autohide)
+            self.greeter.is_none() && (self.features.on(crate::module::Feature::Dock) && self.config.dock.enabled), self.config.dock.autohide || self.code_mode)
     }
 
     /// Re-arranges the layers of every output (outputs changed).

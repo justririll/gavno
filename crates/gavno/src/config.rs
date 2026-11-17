@@ -34,6 +34,10 @@ pub struct Config {
     pub sdr_white_nits: f32,
     pub repeat_delay: i32,
     pub repeat_rate: i32,
+    /// Start in keyboard-only code mode.
+    pub code_mode: bool,
+    /// Show the code-mode key hint strip in the top bar.
+    pub bar_hints: bool,
     pub xkb_layout: String,
     pub xkb_variant: String,
     pub xkb_options: Option<String>,
@@ -198,6 +202,8 @@ struct Keyboard {
     layout: Option<String>,
     variant: Option<String>,
     options: Option<String>,
+    code_mode: Option<bool>,
+    bar_hints: Option<bool>,
     #[serde(flatten)]
     unknown: toml::Table,
 }
@@ -265,7 +271,7 @@ impl Config {
         json!({"theme":self.theme,"mod_key":self.mod_key, "terminal":self.terminal, "launcher":self.launcher,
             "file_manager":self.file_manager,"polkit_agent":self.polkit_agent,"autostart":self.autostart,"gap":self.gap,
             "output":{"internal_scale":self.internal_scale,"mode":mode,"hdr":self.output_hdr,"sdr_white_nits":self.sdr_white_nits},
-            "keyboard":{"layout":self.xkb_layout,"variant":self.xkb_variant,"options":self.xkb_options,"repeat_delay":self.repeat_delay,"repeat_rate":self.repeat_rate},
+            "keyboard":{"layout":self.xkb_layout,"variant":self.xkb_variant,"options":self.xkb_options,"repeat_delay":self.repeat_delay,"repeat_rate":self.repeat_rate,"code_mode":self.code_mode,"bar_hints":self.bar_hints},
             "display":self.display,"media":self.media,"modules":self.modules,"classic":self.classic,"dock":self.dock,"bar":self.bar,"tiling":self.tiling,"lock":self.lock,"notifications":self.notifications,"outputs":self.outputs})
     }
 
@@ -379,6 +385,8 @@ impl Config {
                 sdr_white_nits,
                 repeat_delay: file.keyboard.repeat_delay.unwrap_or(300).clamp(0, 5000),
                 repeat_rate: file.keyboard.repeat_rate.unwrap_or(30).clamp(0, 100),
+                code_mode: file.keyboard.code_mode.unwrap_or(false),
+                bar_hints: file.keyboard.bar_hints.unwrap_or(true),
                 xkb_layout: var("GAVNO_XKB_LAYOUT").or(file.keyboard.layout).unwrap_or_else(|| "us,ru".into()),
                 xkb_variant: var("GAVNO_XKB_VARIANT").or(file.keyboard.variant).unwrap_or_default(),
                 xkb_options: Some(
@@ -489,6 +497,25 @@ options = "caps:escape"
     }
 
     #[test]
+    fn keyboard_code_mode_and_bar_hints() {
+        let defaults = Config::build(false, None, |_| None).0;
+        assert!(!defaults.code_mode);
+        assert!(defaults.bar_hints);
+        let config = Config::parse_checked(false, "[keyboard]\ncode_mode = true\nbar_hints = false", |_| None).unwrap();
+        assert!(config.code_mode);
+        assert!(!config.bar_hints);
+        assert_eq!(config.values()["keyboard"]["code_mode"], true);
+        assert_eq!(config.values()["keyboard"]["bar_hints"], false);
+        for (key, bad) in [("code_mode", "'yes'"), ("bar_hints", "1")] {
+            let text = format!("[keyboard]\n{key} = {bad}");
+            assert!(Config::parse_checked(false, &text, |_| None).is_err(), "{key} = {bad}");
+            let (_, warnings) = Config::build(false, Some(&text), |_| None);
+            assert_eq!(warnings.len(), 1, "{key} = {bad}");
+            assert!(warnings[0].starts_with("invalid config file"), "{warnings:?}");
+        }
+    }
+
+    #[test]
     fn defaults_and_example() {
         let expected = Config {
             theme: Default::default(),
@@ -506,6 +533,8 @@ options = "caps:escape"
             sdr_white_nits: 203.0,
             repeat_delay: 300,
             repeat_rate: 30,
+            code_mode: false,
+            bar_hints: true,
             xkb_layout: "us,ru".into(),
             xkb_variant: "".into(),
             xkb_options: Some("grp:alt_shift_toggle".into()),
@@ -573,6 +602,8 @@ options = "caps:escape"
             sdr_white_nits: 203.0,
             repeat_delay: 300,
             repeat_rate: 30,
+            code_mode: false,
+            bar_hints: true,
             xkb_layout: "de".into(),
             xkb_variant: "nodeadkeys".into(),
             xkb_options: Some("caps:escape".into()),

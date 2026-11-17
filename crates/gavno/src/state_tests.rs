@@ -19,6 +19,9 @@ struct Client {
     pointer_positions: Vec<(f64, f64)>,
     pointer_buttons: Vec<u32>,
     keyboard_keys: Vec<u32>,
+    keyboard_modifiers: Vec<(u32, u32, u32, u32)>,
+    seat: Option<wl_seat::WlSeat>,
+    shortcuts: Option<wayland_protocols::wp::keyboard_shortcuts_inhibit::zv1::client::zwp_keyboard_shortcuts_inhibit_manager_v1::ZwpKeyboardShortcutsInhibitManagerV1>,
     frame_callbacks: u32,
 }
 impl Dispatch<wl_registry::WlRegistry, ()> for Client {
@@ -40,11 +43,13 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Client {
                 "wl_compositor" => {
                     state.compositor = Some(registry.bind(name, version.min(6), qh, ()))
                 }
+                "zwp_keyboard_shortcuts_inhibit_manager_v1" => state.shortcuts = Some(registry.bind(name, 1, qh, ())),
                 "wl_subcompositor" => state.subcompositor = Some(registry.bind(name, 1, qh, ())),
                 "wl_seat" => {
                     let seat: wl_seat::WlSeat = registry.bind(name, version.min(8), qh, ());
                     seat.get_pointer(qh, ());
                     seat.get_keyboard(qh, ());
+                    state.seat = Some(seat);
                 }
                 "zwlr_layer_shell_v1" => state.layer_shell = Some(registry.bind(name, version.min(4), qh, ())),
                 "wl_shm" => state.shm = Some(registry.bind(name, version.min(1), qh, ())),
@@ -85,9 +90,17 @@ impl Dispatch<wl_pointer::WlPointer, ()> for Client {
 }
 impl Dispatch<wl_keyboard::WlKeyboard, ()> for Client {
     fn event(state: &mut Self, _: &wl_keyboard::WlKeyboard, event: wl_keyboard::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
-        if let wl_keyboard::Event::Key { key, .. } = event { state.keyboard_keys.push(key); }
+        match event {
+            wl_keyboard::Event::Key { key, .. } => state.keyboard_keys.push(key),
+            wl_keyboard::Event::Modifiers { mods_depressed, mods_latched, mods_locked, group, .. } => {
+                state.keyboard_modifiers.push((mods_depressed, mods_latched, mods_locked, group));
+            }
+            _ => {}
+        }
     }
 }
+wayland_client::delegate_noop!(Client: ignore wayland_protocols::wp::keyboard_shortcuts_inhibit::zv1::client::zwp_keyboard_shortcuts_inhibit_manager_v1::ZwpKeyboardShortcutsInhibitManagerV1);
+wayland_client::delegate_noop!(Client: ignore wayland_protocols::wp::keyboard_shortcuts_inhibit::zv1::client::zwp_keyboard_shortcuts_inhibitor_v1::ZwpKeyboardShortcutsInhibitorV1);
 wayland_client::delegate_noop!(Client: ignore wl_compositor::WlCompositor);
 wayland_client::delegate_noop!(Client: ignore wayland_client::protocol::wl_subcompositor::WlSubcompositor);
 wayland_client::delegate_noop!(Client: ignore wayland_client::protocol::wl_subsurface::WlSubsurface);
@@ -131,6 +144,13 @@ pub(crate) struct Harness {
     surfaces: Vec<(Window, wl_surface::WlSurface)>,
     shell_surfaces: Vec<(Window, xdg_surface::XdgSurface)>,
 }
+/// Keeps the previous Wayland client alive while the harness drives a new one.
+pub(crate) struct PreviousClient {
+    _connection: Connection,
+    _queue: EventQueue<Client>,
+    _client: Client,
+}
+
 impl Harness {
     pub fn new() -> Self {
         let mut event_loop = EventLoop::try_new().unwrap();
@@ -160,6 +180,31 @@ impl Harness {
         h.exchange();
         h.exchange();
         h
+    }
+
+    pub(crate) fn switch_to_new_client(&mut self) -> PreviousClient {
+        let (server, client) = UnixStream::pair().unwrap();
+        client.set_nonblocking(true).unwrap();
+        self.gv.display_handle.insert_client(server, Arc::new(ClientState::default())).unwrap();
+        let connection = Connection::from_socket(client).unwrap();
+        let queue = connection.new_event_queue();
+        connection.display().get_registry(&queue.handle(), ());
+        let previous = PreviousClient {
+            _connection: std::mem::replace(&mut self.connection, connection),
+            _queue: std::mem::replace(&mut self.queue, queue),
+            _client: std::mem::take(&mut self.client),
+        };
+        self.exchange(); self.exchange();
+        previous
+    }
+
+    pub(crate) fn inhibit_shortcuts(&mut self, window: &Window) -> wayland_protocols::wp::keyboard_shortcuts_inhibit::zv1::client::zwp_keyboard_shortcuts_inhibitor_v1::ZwpKeyboardShortcutsInhibitorV1 {
+        let surface = &self.surfaces.iter().find(|(w, _)| w == window).unwrap().1;
+        let inhibitor = self.client.shortcuts.as_ref().unwrap().inhibit_shortcuts(
+            surface, self.client.seat.as_ref().unwrap(), &self.queue.handle(), (),
+        );
+        self.exchange(); self.exchange();
+        inhibitor
     }
 
     fn exchange(&mut self) {
@@ -252,6 +297,10 @@ impl Harness {
     pub(crate) fn keyboard_keys(&mut self) -> Vec<u32> {
         self.exchange(); self.exchange();
         std::mem::take(&mut self.client.keyboard_keys)
+    }
+    pub(crate) fn keyboard_modifiers(&mut self) -> Vec<(u32, u32, u32, u32)> {
+        self.exchange(); self.exchange();
+        std::mem::take(&mut self.client.keyboard_modifiers)
     }
     pub(crate) fn pointer_buttons(&mut self) -> Vec<u32> {
         self.exchange(); self.exchange();

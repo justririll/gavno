@@ -57,6 +57,8 @@ default": see `terminal` and `launcher` below.
 | `[keyboard] layout` | string | `"us,ru"` | `GAVNO_XKB_LAYOUT` |
 | `[keyboard] variant` | string | `""` | `GAVNO_XKB_VARIANT` |
 | `[keyboard] options` | string | `"grp:alt_shift_toggle"` | `GAVNO_XKB_OPTIONS` |
+| `[keyboard] code_mode` | boolean | `false` | none |
+| `[keyboard] bar_hints` | boolean | `true` | none |
 
 `mod_key` is the modifier for every bind listed in [keybinds.md](keybinds.md).
 Nested mode defaults to Alt because the host compositor keeps Super for itself.
@@ -214,6 +216,13 @@ HDR-tagged pixels may clip in this legacy capture path.
 names such as `"us,ru"`; `variant` takes one variant per layout and is empty by
 default. Set `options = ""` in the file to disable XKB options; an empty
 `GAVNO_XKB_OPTIONS` counts as unset, so the file is the way to turn them off.
+
+`code_mode = true` starts in keyboard-only code mode and applies live on reload.
+It tiles every workspace on every output, makes H/J/K/L alias the arrow keys,
+hides the pointer while typing and hides the dock; Mod+Shift+C toggles it. See
+[keybinds.md](keybinds.md#code-mode). `bar_hints = true` (the default) shows the
+compact key hint strip next to the code-mode chip; set it to `false` to hide the
+strip while keeping the chip. Both are live settings.
 
 
 ## Living theme
@@ -642,6 +651,8 @@ name such as `eDP-1`. Numeric steps describe the editor increments.
 | `keyboard.layout` | string | `"us,ru"` | yes |
 | `keyboard.variant` | string | `""` | yes |
 | `keyboard.options` | string | `"grp:alt_shift_toggle"` | yes |
+| `keyboard.code_mode` | bool | `false` | yes |
+| `keyboard.bar_hints` | bool | `true` | yes |
 | `modules.dock` | bool | `true` | yes |
 | `modules.bar` | bool | `true` | yes |
 | `modules.overview` | bool | `true` | yes |

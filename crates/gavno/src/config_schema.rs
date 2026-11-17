@@ -199,6 +199,22 @@ pub const SCHEMA: &[Key] = &[
         live: true,
     },
     Key {
+        path: "keyboard.code_mode",
+        kind: Kind::Bool,
+        default: Default::Bool(false),
+        description: "Start in keyboard-only code mode: every workspace tiles, H/J/K/L alias the arrows and the pointer hides while typing.",
+        section: "Keyboard options",
+        live: true,
+    },
+    Key {
+        path: "keyboard.bar_hints",
+        kind: Kind::Bool,
+        default: Default::Bool(true),
+        description: "Show the key hint strip in the top bar while code mode is on.",
+        section: "Keyboard options",
+        live: true,
+    },
+    Key {
         path: "modules.dock",
         kind: Kind::Bool,
         default: Default::Bool(true),

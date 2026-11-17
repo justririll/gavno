@@ -233,6 +233,9 @@ impl Gavno {
         for output in &outputs {
             self.workspaces.ensure(output);
         }
+        if self.overlay.keyboard.output().is_some_and(|output| !outputs.contains(output)) {
+            self.close_keyboard_overlay();
+        }
         if self.workspaces.outputs.iter().any(|o| !outputs.contains(&o.output)) {
             self.end_window_grab();
         }
@@ -267,6 +270,9 @@ impl Gavno {
                 false
             }
         });
+        // A recreated output starts new workspace identities, even when its
+        // connector name and local workspace IDs match a removed output.
+        self.code_mode_saved.retain(|(output, _, _)| self.workspaces.outputs.iter().any(|owner| owner.output == *output));
         let refit = !orphaned.is_empty();
         if let Some(output) = outputs.first() {
             for (mut w, origin) in orphaned {

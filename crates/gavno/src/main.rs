@@ -16,6 +16,9 @@ mod backend;
 mod config;
 mod config_schema;
 mod config_reload;
+mod code_mode;
+mod hints;
+mod keyboard_overlay;
 mod brightness;
 #[cfg(test)]
 mod config_schema_tests;

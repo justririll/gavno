@@ -195,6 +195,7 @@ impl Gavno {
     }
 
     fn refresh_resize_cursor_feature(&mut self) {
+        if self.pointer_hidden { return; }
         if self.greeter.is_some() || self.protocols.locks.locked {
             return;
         }
@@ -304,6 +305,7 @@ impl Gavno {
         });
         self.clear_desktop_pointer();
         self.refresh_resize_cursor();
+        self.sync_bar_hints();
         self.queue_redraw_all();
     }
     pub fn exit_resize_mode(&mut self) -> bool {
@@ -316,17 +318,24 @@ impl Gavno {
         };
         self.finish_interactive_resize(&s.window);
         self.refresh_resize_cursor();
+        self.sync_bar_hints();
         self.queue_redraw_all();
         true
     }
+    #[cfg(test)]
     pub fn resize_mode_key(&mut self, sym: u32, shift: bool) -> bool {
-        self.guard(crate::module::Feature::ResizeMode, Default::default(), |gv| gv.resize_mode_key_feature(sym, shift))
+        self.guard(crate::module::Feature::ResizeMode, Default::default(), |gv| gv.resize_mode_key_feature(sym, shift, false))
     }
 
-    fn resize_mode_key_feature(&mut self, sym: u32, shift: bool) -> bool {
+    pub fn resize_mode_key_with_ctrl(&mut self, sym: u32, shift: bool, ctrl: bool) -> bool {
+        self.guard(crate::module::Feature::ResizeMode, false, |gv| gv.resize_mode_key_feature(sym, shift, ctrl))
+    }
+
+    fn resize_mode_key_feature(&mut self, sym: u32, shift: bool, ctrl: bool) -> bool {
         if !(self.features.on(crate::module::Feature::ResizeMode) && self.overlay.resize_mode.active()) {
             return false;
         }
+        let sym = if self.code_mode { crate::input::vim_arrow(sym).unwrap_or(sym) } else { sym };
         if matches!(
             sym,
             keysyms::KEY_Escape | keysyms::KEY_Return | keysyms::KEY_KP_Enter
@@ -341,7 +350,19 @@ impl Gavno {
                 self.queue_redraw_all();
             }
             if let Some(d) = step(sym, shift) {
-                self.resize_edges_by(&s.window, s.edge, d);
+                if ctrl {
+                    if !self.tiled(&s.window) && mode_state(&s.window).mode == WindowMode::Floating {
+                        self.prepare_interactive(&s.window);
+                        if let Some(mut rect) = self.interactive_rect(&s.window) {
+                            let area = self.work_area(&s.output);
+                            rect.loc.x = (rect.loc.x + d.x as i32).clamp(area.loc.x, area.loc.x + (area.size.w - rect.size.w).max(0));
+                            rect.loc.y = (rect.loc.y + d.y as i32).clamp(area.loc.y, area.loc.y + (area.size.h - rect.size.h).max(0));
+                            self.space.map_element(s.window.clone(), rect.loc, false);
+                            self.save_workspace_location(&s.window, rect.loc);
+                            self.queue_redraw_all();
+                        }
+                    }
+                } else { self.resize_edges_by(&s.window, s.edge, d); }
             }
             s.rect = self.interactive_rect(&s.window).unwrap_or(s.rect);
             self.overlay.resize_mode.session = Some(s);

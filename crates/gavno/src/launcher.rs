@@ -99,6 +99,11 @@ pub(crate) fn score(name: &str, words: &str, query: &str) -> Option<u8> {
 }
 
 impl Launcher {
+    #[cfg(test)]
+    pub(crate) fn repeating_key(&self) -> Option<u32> {
+        self.repeat.as_ref().map(|(key, _)| *key)
+    }
+
     pub(crate) fn icon_ready(&mut self) -> Option<Output> {
         self.visible().then(|| self.output.clone()).flatten()
     }

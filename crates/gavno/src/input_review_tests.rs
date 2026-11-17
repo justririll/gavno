@@ -699,3 +699,558 @@ fn initiating_launcher_enter_preserves_its_new_authorization() {
     assert!(!crate::handlers::xdg_activation::is_urgent(&browser));
     assert_eq!(h.gv.focused_window(), Some(browser));
 }
+
+fn second_output(h: &mut crate::state::tests::Harness, name: &str, x: i32) -> Output {
+    let output = Output::new(name.into(), PhysicalProperties {
+        size: (0, 0).into(), subpixel: Subpixel::Unknown, make: "test".into(), model: "test".into(),
+    });
+    output.change_current_state(Some(Mode { size: (1600, 900).into(), refresh: 60000 }), None, None, Some((x, 0).into()));
+    h.gv.space.map_output(&output, (x, 0));
+    h.gv.workspaces.ensure(&output);
+    output
+}
+
+#[test]
+fn code_mode_tiles_every_workspace_and_restores_each_mode() {
+    let (mut h, output) = setup();
+    let other = second_output(&mut h, "second", 1600);
+    let first = h.window();
+    h.gv.map_new_window(first.clone());
+    let second = h.window();
+    h.gv.map_new_window(second.clone());
+    assert!(h.gv.move_to_workspace(&second, 1));
+    let owner = h.gv.workspaces.ensure(&output);
+    owner.list.items[0].tiling = true;
+    owner.list.items[1].tiling = false;
+    h.gv.workspaces.ensure(&other).list.items[0].tiling = true;
+
+    h.gv.set_code_mode(true);
+    for output in [&output, &other] {
+        assert!(h.gv.workspaces.ensure(output).list.items.iter().all(|ws| ws.tiling), "{}", output.name());
+    }
+    // A workspace appended during code mode tiles until the mode is off.
+    let third = h.window();
+    h.gv.map_new_window(third.clone());
+    assert!(h.gv.move_to_workspace(&third, 2));
+    let new_id = h.gv.workspaces.ensure(&output).list.items.last().unwrap().id;
+    h.gv.reflow_tiling(false);
+    assert!(h.gv.workspaces.ensure(&output).list.items.iter().all(|ws| ws.tiling));
+
+    h.gv.set_code_mode(false);
+    let owner = h.gv.workspaces.ensure(&output);
+    assert!(owner.list.items[0].tiling);
+    assert!(!owner.list.items[1].tiling);
+    let created = owner.list.items.iter().find(|ws| ws.id == new_id).unwrap();
+    assert_eq!(created.tiling, owner.list.default_tiling, "workspaces created during code mode get the default");
+    assert!(h.gv.workspaces.ensure(&other).list.items[0].tiling);
+    assert!(h.gv.code_mode_saved.is_empty());
+}
+
+#[test]
+fn code_mode_hides_the_pointer_until_pointer_activity() {
+    use smithay::input::pointer::CursorImageStatus;
+    let (mut h, _) = setup();
+    let window = h.window();
+    h.gv.map_new_window(window.clone());
+    h.commit_size(&window, 800, 600);
+    h.gv.focus_window(Some(&window));
+    h.gv.set_code_mode(true);
+    h.gv.pointer_hidden = false;
+    h.gv.cursor_status = CursorImageStatus::default_named();
+    dispatch_key(&mut h, 38, KeyState::Pressed); // "a" reaches the client
+    dispatch_key(&mut h, 38, KeyState::Released);
+    assert!(h.gv.pointer_hidden);
+    assert_eq!(h.gv.cursor_status, CursorImageStatus::Hidden);
+    assert_eq!(h.gv.focused_window(), Some(window), "hiding must not move pointer or keyboard focus");
+    h.gv.process_input_event::<TestBackend>(InputEvent::PointerMotion { event: WakeEvent });
+    assert!(!h.gv.pointer_hidden);
+    assert_ne!(h.gv.cursor_status, CursorImageStatus::Hidden);
+}
+
+#[test]
+fn code_mode_vim_aliases_focus_the_expected_window() {
+    let (mut h, _) = setup();
+    h.gv.config.mod_key = crate::config::ModKey::Super;
+    let make = |h: &mut crate::state::tests::Harness, loc: (i32, i32)| {
+        let window = h.window();
+        h.gv.map_new_window(window.clone());
+        h.commit_size(&window, 150, 150);
+        h.gv.space.map_element(window.clone(), loc, false);
+        window
+    };
+    let center = make(&mut h, (700, 400));
+    let left = make(&mut h, (100, 400));
+    let right = make(&mut h, (1300, 400));
+    let _up = make(&mut h, (700, 50));
+    let down = make(&mut h, (700, 750));
+    h.gv.workspaces.snapshot(&h.gv.space);
+    h.gv.code_mode = true;
+    h.gv.focus_window(Some(&center));
+    let mods = smithay::input::keyboard::ModifiersState { logo: true, ..Default::default() };
+    for (sym, expected) in [
+        (keysyms::KEY_l, right),
+        (keysyms::KEY_h, center.clone()),
+        (keysyms::KEY_j, down),
+        (keysyms::KEY_k, center),
+        (keysyms::KEY_h, left),
+    ] {
+        let action = h.gv.bind_for(Keysym::from(sym), &mods).expect("alias bind");
+        assert!(matches!(action, Action::FocusDirection(_)), "{action:?}");
+        h.gv.run_action(action);
+        assert_eq!(h.gv.focused_window(), Some(expected), "{sym}");
+    }
+}
+
+#[test]
+fn code_mode_replaces_mod_l_lock_and_restores_it() {
+    let (mut h, _) = setup();
+    h.gv.config.mod_key = crate::config::ModKey::Super;
+    let mods = smithay::input::keyboard::ModifiersState { logo: true, ..Default::default() };
+    h.gv.set_code_mode(true);
+    assert_eq!(h.gv.bind_for(Keysym::from(keysyms::KEY_l), &mods), Some(Action::FocusDirection(crate::snap::Direction::Right)));
+    h.gv.set_code_mode(false);
+    assert_eq!(h.gv.bind_for(Keysym::from(keysyms::KEY_l), &mods), Some(Action::Lock));
+    let ctrl_alt = smithay::input::keyboard::ModifiersState { ctrl: true, alt: true, ..Default::default() };
+    h.gv.set_code_mode(true);
+    assert_eq!(h.gv.bind_for(Keysym::from(keysyms::KEY_l), &ctrl_alt), Some(Action::Lock));
+}
+
+#[test]
+fn bar_hint_context_follows_code_and_resize_modes_and_the_config_switch() {
+    use crate::hints::HintContext;
+    let (mut h, _) = setup();
+    let window = h.window();
+    h.gv.map_new_window(window.clone());
+    h.gv.focus_window(Some(&window));
+    h.gv.set_code_mode(true);
+    h.gv.refresh_shell();
+    assert_eq!(h.gv.topbar.hint_context, Some(HintContext::Code));
+    h.gv.enter_resize_mode();
+    assert_eq!(h.gv.topbar.hint_context, Some(HintContext::Resize));
+    h.gv.exit_resize_mode();
+    assert_eq!(h.gv.topbar.hint_context, Some(HintContext::Code));
+    h.gv.config.bar_hints = false;
+    h.gv.refresh_shell();
+    assert_eq!(h.gv.topbar.hint_context, None);
+    h.gv.config.bar_hints = true;
+    h.gv.refresh_shell();
+    assert_eq!(h.gv.topbar.hint_context, Some(HintContext::Code));
+    h.gv.set_code_mode(false);
+    assert_eq!(h.gv.topbar.hint_context, None);
+}
+
+#[test]
+fn typing_in_a_client_does_not_request_bar_redraws_in_code_mode() {
+    let (mut h, _) = setup();
+    let window = h.window();
+    h.gv.map_new_window(window.clone());
+    h.commit_size(&window, 800, 600);
+    h.gv.focus_window(Some(&window));
+    h.gv.set_code_mode(true);
+    h.gv.window_animations.entries.clear();
+    h.gv.hide_pointer();
+    h.gv.on_loop_idle();
+    h.gv.window_animations.entries.clear();
+    h.gv.redraw_requests = 0;
+    for _ in 0..8 {
+        dispatch_key(&mut h, 38, KeyState::Pressed);
+        dispatch_key(&mut h, 38, KeyState::Released);
+    }
+    assert_eq!(h.gv.redraw_requests, 0, "client typing must not redraw the bar");
+}
+
+
+#[test]
+fn window_hints_use_home_row_focus_and_cancel_without_client_keys() {
+    let (mut h, output) = setup();
+    let a = h.window();
+    let s = h.window();
+    let hidden = h.window();
+    for w in [&a, &s, &hidden] { h.gv.map_new_window(w.clone()); h.commit_size(w, 300, 200); }
+    h.gv.minimize_window(&hidden);
+    let elsewhere = h.window();
+    h.gv.map_new_window(elsewhere.clone());
+    h.gv.move_to_workspace(&elsewhere, 1);
+    h.gv.focus_window(Some(&s));
+    h.gv.set_code_mode(true);
+    h.gv.toggle_window_hints();
+    let hints = h.gv.overlay.keyboard.windows.as_ref().unwrap();
+    assert_eq!(hints.output, output);
+    assert_eq!(hints.windows.iter().map(|(s, _)| s.as_str()).collect::<Vec<_>>(), ["a", "s"]);
+    assert_eq!(hints.windows[0].1, a);
+    assert_eq!(hints.windows[1].1, s);
+    assert_eq!(h.gv.topbar.hint_context, Some(crate::hints::HintContext::Windows));
+    h.keyboard_keys();
+    tap_key(&mut h, 38); // XKB keycode for Latin A.
+    assert_eq!(h.gv.focused_window(), Some(a.clone()));
+    assert!(!h.gv.overlay.keyboard.open());
+    assert!(h.keyboard_keys().is_empty());
+    h.gv.toggle_window_hints();
+    tap_key(&mut h, 9); // Escape.
+    assert!(!h.gv.overlay.keyboard.open());
+    assert_eq!(h.gv.focused_window(), Some(a));
+    assert!(h.keyboard_keys().is_empty());
+    h.gv.toggle_window_hints();
+    button(&mut h.gv, BTN_LEFT, ButtonState::Pressed);
+    button(&mut h.gv, BTN_LEFT, ButtonState::Released);
+    assert!(!h.gv.overlay.keyboard.open());
+    assert!(h.pointer_buttons().is_empty());
+}
+
+#[test]
+fn overview_keyboard_selection_crosses_workspaces_and_enter_focuses() {
+    let (mut h, output) = setup();
+    let a = h.window();
+    let b = h.window();
+    for w in [&a, &b] { h.gv.map_new_window(w.clone()); h.commit_size(w, 400, 300); }
+    h.gv.move_to_workspace(&b, 1);
+    h.gv.focus_window(Some(&a));
+    h.gv.set_code_mode(true);
+    h.gv.toggle_overview();
+    assert_eq!(h.gv.overview.selected, Some(a.clone()));
+    assert_eq!(h.gv.topbar.hint_context, Some(crate::hints::HintContext::Overview));
+    h.keyboard_keys();
+    tap_key(&mut h, 114); // Right.
+    assert_eq!(h.gv.overview.selected, Some(b.clone()));
+    assert_eq!(h.gv.workspaces.get(&output).unwrap().list.active, 0);
+    assert_eq!(h.gv.focused_window(), Some(a));
+    tap_key(&mut h, 9); // Escape restores the original workspace view.
+    assert_eq!(h.gv.workspaces.get(&output).unwrap().position.target, 0.0);
+    h.gv.toggle_overview();
+    tap_key(&mut h, 114);
+    tap_key(&mut h, 36); // Enter.
+    assert_eq!(h.gv.focused_window(), Some(b));
+    assert_eq!(h.gv.workspaces.get(&output).unwrap().list.active, 1);
+    assert!(!h.gv.overview.open());
+    assert_eq!(h.gv.topbar.hint_context, Some(crate::hints::HintContext::Code));
+    assert!(h.keyboard_keys().is_empty());
+}
+
+#[test]
+fn cheat_sheet_binds_toggle_and_swallow_the_dismissal() {
+    let (mut h, _) = setup();
+    h.gv.config.mod_key = crate::config::ModKey::Super;
+    let w = h.window();
+    h.gv.map_new_window(w.clone());
+    h.gv.focus_window(Some(&w));
+    for sym in [keysyms::KEY_slash, keysyms::KEY_F1] {
+        let mods = ModifiersState { logo: true, ..Default::default() };
+        let action = h.gv.bind_for(Keysym::from(sym), &mods).unwrap();
+        assert_eq!(action, Action::CheatSheet);
+        h.gv.run_action(action.clone());
+        assert!(h.gv.overlay.keyboard.open());
+        h.gv.run_action(action);
+        assert!(!h.gv.overlay.keyboard.open());
+    }
+    h.gv.toggle_cheat_sheet();
+    h.keyboard_keys();
+    tap_key(&mut h, 38);
+    assert!(!h.gv.overlay.keyboard.open());
+    assert!(h.keyboard_keys().is_empty());
+    // The sheet remains available within resize mode and overview.
+    h.gv.enter_resize_mode();
+    dispatch_key(&mut h, 133, KeyState::Pressed); // Super.
+    tap_key(&mut h, 67); // F1.
+    dispatch_key(&mut h, 133, KeyState::Released);
+    assert!(h.gv.overlay.keyboard.open());
+    tap_key(&mut h, 9);
+    assert!(h.gv.overlay.resize_mode.active());
+    h.gv.exit_resize_mode();
+    h.gv.toggle_overview();
+    dispatch_key(&mut h, 133, KeyState::Pressed);
+    tap_key(&mut h, 67);
+    dispatch_key(&mut h, 133, KeyState::Released);
+    assert!(h.gv.overlay.keyboard.open());
+    tap_key(&mut h, 9);
+    assert!(h.gv.overview.open());
+}
+
+#[test]
+fn resize_mode_ctrl_arrows_move_floating_windows_and_ignore_tiles() {
+    let (mut h, output) = setup();
+    let w = h.window();
+    h.gv.map_new_window(w.clone());
+    h.commit_size(&w, 400, 300);
+    h.gv.focus_window(Some(&w));
+    h.gv.space.map_element(w.clone(), (400, 300), false);
+    h.gv.save_workspace_location(&w, (400, 300).into());
+    h.gv.enter_resize_mode();
+    let before = h.gv.interactive_rect(&w).unwrap();
+    dispatch_key(&mut h, 37, KeyState::Pressed); // Ctrl.
+    tap_key(&mut h, 114); // Right.
+    dispatch_key(&mut h, 37, KeyState::Released);
+    let after = h.gv.interactive_rect(&w).unwrap();
+    assert_eq!(after.loc.x, before.loc.x + 10);
+    assert_eq!(after.loc.y, before.loc.y);
+    assert_eq!(after.size, before.size);
+    h.gv.resize_mode_key_with_ctrl(keysyms::KEY_Down, true, true);
+    assert_eq!(h.gv.interactive_rect(&w).unwrap().loc.y, before.loc.y + 50);
+    for _ in 0..100 { h.gv.resize_mode_key_with_ctrl(keysyms::KEY_Right, true, true); }
+    let rect = h.gv.interactive_rect(&w).unwrap();
+    let area = h.gv.work_area(&output);
+    assert!(rect.loc.x + rect.size.w <= area.loc.x + area.size.w);
+    h.gv.exit_resize_mode();
+    h.gv.set_code_mode(true);
+    assert!(h.gv.tiled(&w));
+    h.gv.enter_resize_mode();
+    let before = h.gv.interactive_rect(&w).unwrap();
+    h.gv.resize_mode_key_with_ctrl(keysyms::KEY_l, false, true);
+    assert_eq!(h.gv.interactive_rect(&w).unwrap(), before);
+    h.gv.exit_resize_mode();
+    h.gv.toggle_floating(&w);
+    h.gv.space.map_element(w.clone(), (400, 300), false);
+    h.gv.enter_resize_mode();
+    let before = h.gv.interactive_rect(&w).unwrap();
+    h.gv.resize_mode_key_with_ctrl(keysyms::KEY_l, false, true);
+    assert_eq!(h.gv.interactive_rect(&w).unwrap().loc.x, before.loc.x + 10);
+}
+
+#[test]
+fn latin_hint_letters_and_resize_aliases_work_in_russian_layout() {
+    let (mut h, _) = setup();
+    let w = h.window();
+    h.gv.map_new_window(w.clone());
+    h.commit_size(&w, 400, 300);
+    h.gv.focus_window(Some(&w));
+    let keyboard = h.gv.seat.get_keyboard().unwrap();
+    keyboard.with_xkb_state(&mut h.gv, |mut ctx| ctx.set_layout(smithay::input::keyboard::Layout(1)));
+    h.gv.toggle_window_hints();
+    tap_key(&mut h, 38); // Physical A, Cyrillic ф in the active layout.
+    assert!(!h.gv.overlay.keyboard.open());
+    assert_eq!(h.gv.focused_window(), Some(w.clone()));
+    h.gv.set_code_mode(true);
+    h.gv.toggle_floating(&w);
+    h.gv.enter_resize_mode();
+    let before = h.gv.interactive_rect(&w).unwrap();
+    dispatch_key(&mut h, 37, KeyState::Pressed);
+    tap_key(&mut h, 46); // Physical L, Cyrillic д.
+    dispatch_key(&mut h, 37, KeyState::Released);
+    assert_eq!(h.gv.interactive_rect(&w).unwrap().loc.x, before.loc.x + 10);
+}
+
+#[test]
+fn hidden_pointer_keeps_client_cursor_updates_and_survives_resize_cursor_refresh() {
+    use smithay::input::pointer::{CursorIcon, CursorImageStatus};
+    let (mut h, _) = setup();
+    let w = h.window();
+    h.gv.map_new_window(w.clone());
+    h.gv.focus_window(Some(&w));
+    h.gv.set_code_mode(true);
+    h.gv.hide_pointer();
+    let seat = h.gv.seat.clone();
+    smithay::input::SeatHandler::cursor_image(&mut h.gv, &seat, CursorImageStatus::Named(CursorIcon::Text));
+    h.gv.enter_resize_mode();
+    h.gv.refresh_splitter_cursor();
+    h.gv.refresh_resize_cursor();
+    assert!(h.gv.cursor.hidden);
+    assert_eq!(h.gv.cursor_status, CursorImageStatus::Hidden);
+    h.gv.show_pointer();
+    assert_eq!(h.gv.cursor_status, CursorImageStatus::Named(CursorIcon::Text));
+    assert!(!h.gv.cursor.hidden);
+    h.gv.hide_pointer();
+    h.gv.on_pointer_axis::<TestBackend>(Scroll);
+    assert!(!h.gv.pointer_hidden);
+    h.gv.hide_pointer();
+    button(&mut h.gv, BTN_LEFT, ButtonState::Pressed);
+    button(&mut h.gv, BTN_LEFT, ButtonState::Released);
+    assert!(!h.gv.pointer_hidden);
+}
+
+#[test]
+fn modal_focus_changes_clear_held_modifiers_in_the_new_wayland_client() {
+    for overview in [false, true] {
+        for modifier in [50, 37] { // Shift and Ctrl, in XKB keycodes.
+            let (mut h, _) = setup();
+            let first = h.window();
+            h.gv.map_new_window(first.clone());
+            h.commit_size(&first, 300, 200);
+            let _previous_client = h.switch_to_new_client();
+            let second = h.window();
+            h.gv.map_new_window(second.clone());
+            h.commit_size(&second, 300, 200);
+            h.gv.focus_window(Some(&first));
+            h.keyboard_modifiers();
+            h.keyboard_keys();
+            if overview { h.gv.toggle_overview(); }
+            else { h.gv.toggle_window_hints(); }
+            dispatch_key(&mut h, modifier, KeyState::Pressed);
+            if overview {
+                // The second window is left of the focused first window in the scene.
+                tap_key(&mut h, 113);
+                assert_eq!(h.gv.overview.selected, Some(second.clone()));
+                tap_key(&mut h, 36);
+            } else {
+                assert_eq!(h.gv.overlay.keyboard.windows.as_ref().unwrap().windows[0].1, second);
+                tap_key(&mut h, 38); // A selects the second client.
+            }
+            assert_eq!(h.gv.focused_window(), Some(second));
+            assert_ne!(h.keyboard_modifiers().last().unwrap().0, 0, "focus entry must expose the held modifier");
+            dispatch_key(&mut h, modifier, KeyState::Released);
+            assert_eq!(h.keyboard_modifiers().last(), Some(&(0, 0, 0, 0)), "overview={overview}, modifier={modifier}");
+            assert!(h.keyboard_keys().is_empty(), "modal keys and unmatched modifier releases must stay suppressed");
+        }
+    }
+}
+
+fn open_keyboard_test_modal(gv: &mut Gavno, kind: &str) {
+    match kind {
+        "overview" => gv.toggle_overview(),
+        "hints" => gv.toggle_window_hints(),
+        "sheet" => gv.toggle_cheat_sheet(),
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn modal_releases_cancel_volume_brightness_and_launcher_repeats() {
+    for kind in ["overview", "hints", "sheet"] {
+        for code in [123, 233] { // Volume up and brightness up.
+            let (mut h, _) = setup();
+            dispatch_key(&mut h, code, KeyState::Pressed);
+            assert_eq!(h.gv.media.repeat.as_ref().map(|(key, _, _)| *key), Some(code));
+            open_keyboard_test_modal(&mut h.gv, kind);
+            dispatch_key(&mut h, code, KeyState::Released);
+            assert!(h.gv.media.repeat.is_none(), "{kind}: repeat survived release of {code}");
+            assert!(!h.gv.media.core_keys.contains(&code));
+            assert!(!h.gv.suppressed_keys.contains(&code));
+        }
+        let (mut h, _) = setup();
+        h.gv.toggle_run_launcher();
+        dispatch_key(&mut h, 38, KeyState::Pressed);
+        assert_eq!(h.gv.launcher.repeating_key(), Some(38));
+        open_keyboard_test_modal(&mut h.gv, kind);
+        dispatch_key(&mut h, 38, KeyState::Released);
+        assert_eq!(h.gv.launcher.repeating_key(), None, "{kind}: launcher repeat survived release");
+    }
+}
+
+#[test]
+fn modal_opening_mod_release_preserves_the_next_standalone_mod_tap() {
+    for (kind, code) in [("overview", 38), ("hints", 41), ("sheet", 67)] {
+        let (mut h, _) = setup();
+        dispatch_key(&mut h, 64, KeyState::Pressed); // Alt is Mod in the harness.
+        tap_key(&mut h, code);
+        assert!(h.gv.overview.open() || h.gv.overlay.keyboard.open(), "{kind}");
+        dispatch_key(&mut h, 64, KeyState::Released);
+        tap_key(&mut h, 9); // Close the modal.
+        assert!(!h.gv.launcher.open);
+        tap_key(&mut h, 64);
+        assert!(h.gv.launcher.open, "{kind}: standalone Mod tap was lost");
+    }
+}
+
+#[test]
+fn overview_respects_the_focused_clients_active_shortcut_inhibitor() {
+    let (mut h, _) = setup();
+    let window = h.window();
+    h.gv.map_new_window(window.clone());
+    h.commit_size(&window, 400, 300);
+    h.gv.focus_window(Some(&window));
+    let _inhibitor = h.inhibit_shortcuts(&window);
+    assert!(h.gv.seat.keyboard_shortcuts_inhibited());
+    // Gestures can open overview without moving keyboard focus or suspending
+    // the client's inhibitor; exercise the resulting production input path.
+    h.gv.toggle_overview();
+    let selected = h.gv.overview.selected.clone();
+    h.keyboard_keys();
+    for code in [38, 114, 9] { tap_key(&mut h, code); }
+    assert_eq!(h.keyboard_keys(), [30, 30, 106, 106, 1, 1]);
+    assert!(h.gv.seat.keyboard_shortcuts_inhibited());
+    assert_eq!(h.gv.focused_window(), Some(window));
+    assert_eq!(h.gv.overview.selected, selected);
+    assert!(h.gv.overview.open(), "inhibited Escape must reach the client");
+}
+
+#[test]
+fn code_mode_reconnect_does_not_restore_a_removed_workspace_mode() {
+    for refresh_while_disconnected in [false, true] {
+        let (mut h, left) = setup();
+        let right = second_output(&mut h, "external", 1600);
+        h.gv.workspaces.ensure(&left).list.items[0].tiling = true;
+        h.gv.workspaces.ensure(&right).list.items[0].tiling = true;
+        let old_id = h.gv.workspaces.get(&right).unwrap().list.items[0].id;
+        h.gv.set_code_mode(true);
+        h.gv.space.unmap_output(&right);
+        if refresh_while_disconnected {
+            h.gv.refresh_workspaces();
+            assert!(!h.gv.code_mode_saved.iter().any(|(output, _, _)| *output == right));
+        }
+        let reconnected = second_output(&mut h, "external", 1600);
+        assert_ne!(reconnected, right);
+        assert_eq!(h.gv.workspaces.get(&reconnected).unwrap().list.items[0].id, old_id);
+        h.gv.reflow_tiling(false);
+        assert!(h.gv.workspaces.get(&reconnected).unwrap().list.items[0].tiling);
+        h.gv.set_code_mode(false);
+        let owner = h.gv.workspaces.get(&reconnected).unwrap();
+        assert!(!owner.list.default_tiling);
+        assert!(!owner.list.items[0].tiling, "a new workspace must use the normal default");
+        assert!(h.gv.workspaces.get(&left).unwrap().list.items[0].tiling, "surviving workspace mode must still restore");
+        h.gv.config.mod_key = crate::config::ModKey::Super;
+        h.gv.sync_bar_hints();
+        assert_eq!(h.gv.topbar.mod_label, "Super");
+    }
+}
+
+#[test]
+fn removing_the_overlay_output_closes_hints_and_sheet_before_migration() {
+    for kind in ["hints", "sheet"] {
+        for remove_all in [false, true] {
+            let (mut h, left) = setup();
+            let local = h.window();
+            h.gv.map_new_window(local.clone());
+            h.commit_size(&local, 300, 200);
+            let right = second_output(&mut h, "external", 1600);
+            let remote = h.window();
+            h.gv.map_new_window(remote.clone());
+            h.commit_size(&remote, 300, 200);
+            h.gv.space.map_element(remote.clone(), (1800, 200), false);
+            h.gv.refresh_workspaces();
+            assert_eq!(h.gv.workspaces.membership(&remote), Some((right.clone(), 0)));
+            motion(&mut h.gv, None, (1800.0, 400.0).into());
+            open_keyboard_test_modal(&mut h.gv, kind);
+            assert_eq!(h.gv.overlay.keyboard.output(), Some(&right));
+            h.gv.space.unmap_output(&right);
+            if remove_all { h.gv.space.unmap_output(&left); }
+            h.gv.refresh_workspaces();
+            assert!(!h.gv.overlay.keyboard.open(), "{kind}, remove_all={remove_all}");
+            assert!(h.gv.overlay.keyboard.output().is_none());
+            if !remove_all {
+                assert_eq!(h.gv.workspaces.membership(&remote), Some((left, 0)));
+                h.gv.focus_window(Some(&local));
+                h.keyboard_keys();
+                tap_key(&mut h, 38);
+                assert_eq!(h.gv.focused_window(), Some(local));
+                assert_eq!(h.keyboard_keys(), [30, 30], "an invisible modal must not capture the letter");
+            }
+        }
+    }
+}
+
+#[test]
+fn settled_overview_ignored_keys_and_missing_candidates_request_no_redraws() {
+    let (mut h, output) = setup();
+    let window = h.window();
+    h.gv.map_new_window(window.clone());
+    h.commit_size(&window, 400, 300);
+    h.gv.focus_window(Some(&window));
+    h.gv.toggle_overview();
+    h.gv.overview.progress.jump(1.0);
+    h.gv.workspaces.ensure(&output).position.jump(0.0);
+    h.gv.window_animations.entries.clear();
+    h.gv.redraw_requests = 0;
+    for code in [65, 113, 114, 111, 116, 23, 10, 18] {
+        // Space, four arrows without candidates, Tab with one window, current
+        // workspace 1 and nonexistent workspace 9.
+        tap_key(&mut h, code);
+    }
+    assert_eq!(h.gv.redraw_requests, 0);
+    assert_eq!(h.gv.overview.selected, Some(window));
+    assert!(h.gv.overview.open());
+    let second = h.window();
+    h.gv.map_new_window(second.clone());
+    h.commit_size(&second, 400, 300);
+    h.gv.redraw_requests = 0;
+    tap_key(&mut h, 23);
+    assert!(h.gv.redraw_requests > 0, "a changed selection must redraw");
+    assert_eq!(h.gv.overview.selected, Some(second));
+}

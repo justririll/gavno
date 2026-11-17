@@ -76,6 +76,8 @@ pub struct Overview {
     pub held: bool,
     pub flick: Option<(Window, Spring, Spring)>,
     pub hits: Vec<SceneWindow>,
+    pub selected: Option<Window>,
+    selection_box: ShaderBox,
     pub thumbnails: Vec<Rect>,
     pub work_area: Option<Rectangle<i32, Logical>>,
     order: Vec<Window>,
@@ -93,6 +95,8 @@ impl Default for Overview {
             held: false,
             flick: None,
             hits: Vec::new(),
+            selected: None,
+            selection_box: ShaderBox::default(),
             thumbnails: Vec::new(),
             work_area: None,
             order: Vec::new(),
@@ -106,6 +110,7 @@ impl Default for Overview {
 }
 impl Overview {
     pub fn forget(&mut self, window: &Window) {
+        if self.selected.as_ref() == Some(window) { self.selected = None; }
         if self.flick.as_ref().is_some_and(|(w,_,_)|w==window) {self.flick=None;}
         if self.drag.as_ref().is_some_and(|(w, _, _)| w == window) {
             self.drag = None;
@@ -217,6 +222,11 @@ impl Overview {
             }
         }
         if p > 0.0 {
+            if self.selected.as_ref().is_none_or(|w| !scene.iter().any(|v| &v.window == w)) {
+                self.selected = owner.list.items[owner.list.active].windows.last()
+                    .and_then(|w| scene.iter().find(|v| v.window == w.window)).or(scene.first())
+                    .map(|v| v.window.clone());
+            }
             self.hits = scene.clone();
         }
         Some(scene)
@@ -227,6 +237,7 @@ impl Overview {
         workspaces: &Workspaces,
         space: &Space<Window>,
         output: &Output,
+        accent: [f32; 4],
     ) -> Vec<GavnoRenderElement> {
         if self.output.as_ref() != Some(output) || !self.visible() {
             return Vec::new();
@@ -265,6 +276,14 @@ impl Overview {
                     tracing::warn!(?err, "overview shaders unavailable");
                     self.shader_failed = true;
                 }
+            }
+        }
+        if let (Some(shaders), Some(selected)) = (&self.shaders, &self.selected) {
+            if let Some(v) = self.hits.iter().find(|v| &v.window == selected) {
+                out.push(GavnoRenderElement::Shader(shader::rrect(
+                    &mut self.selection_box, shaders, v.rect.to_i32_round(), 10.0 * scale as f32,
+                    [0.0; 4], 3.0 * scale as f32, accent, alpha, scale,
+                )));
             }
         }
         // Keep the strip reachable on small outputs and with many workspaces.
@@ -342,6 +361,21 @@ impl Overview {
         out
     }
 }
+fn nearest(rects: &[Rect], current: usize, sym: u32) -> Option<usize> {
+    use smithay::input::keyboard::keysyms;
+    let center = |r: &Rect| (r.loc.x + r.size.w / 2.0, r.loc.y + r.size.h / 2.0);
+    let (x, y) = center(rects.get(current)?);
+    rects.iter().enumerate().filter_map(|(i, r)| {
+        let (cx, cy) = center(r);
+        let (dx, dy) = (cx - x, cy - y);
+        let ahead = match sym {
+            keysyms::KEY_Left => dx < -0.5, keysyms::KEY_Right => dx > 0.5,
+            keysyms::KEY_Up => dy < -0.5, keysyms::KEY_Down => dy > 0.5, _ => false,
+        };
+        ahead.then_some((i, dx * dx + dy * dy))
+    }).min_by(|a, b| a.1.total_cmp(&b.1)).map(|(i, _)| i)
+}
+
 impl Gavno {
     pub fn toggle_overview(&mut self) {
         self.guard(crate::module::Feature::Overview, Default::default(), |gv| gv.toggle_overview_feature())
@@ -353,8 +387,14 @@ impl Gavno {
         }
         if let Some(output) = self.active_output() {
             self.workspaces.snapshot(&self.space);
-            self.overview
-                .set(output, !self.overview.open(), self.start_time.elapsed());
+            let opening = !self.overview.open();
+            if !opening { self.close_overview_feature(); return; }
+            if opening {
+                self.close_keyboard_overlay();
+                self.overview.selected = self.focused_window();
+            }
+            self.overview.set(output, opening, self.start_time.elapsed());
+            self.sync_bar_hints();
             self.clear_desktop_pointer();
             self.queue_redraw_all();
         }
@@ -365,11 +405,85 @@ impl Gavno {
 
     fn close_overview_feature(&mut self) {
         if let Some(output) = self.overview.output.clone() {
-            self.overview.set(output, false, self.start_time.elapsed());
+            let now = self.start_time.elapsed();
+            if let Some(owner) = self.workspaces.outputs.iter_mut().find(|o| o.output == output) {
+                owner.position.advance(now);
+                owner.position.set(owner.list.active as f64);
+            }
+            self.overview.set(output, false, now);
             self.overview.drag = None;
+            self.sync_bar_hints();
             self.queue_redraw_all();
         }
     }
+    /// Modal navigation uses the same output-local rectangles as the renderer.
+    pub fn overview_key(&mut self, sym: u32, shift: bool) {
+        use smithay::input::keyboard::keysyms;
+        let sym = crate::input::vim_arrow(sym).unwrap_or(sym);
+        if !matches!(sym, keysyms::KEY_Escape | keysyms::KEY_Return | keysyms::KEY_KP_Enter
+            | keysyms::KEY_Delete | keysyms::KEY_Tab | keysyms::KEY_ISO_Left_Tab
+            | keysyms::KEY_Left | keysyms::KEY_Right | keysyms::KEY_Up | keysyms::KEY_Down
+            | keysyms::KEY_1..=keysyms::KEY_9) { return; }
+        let Some(output) = self.overview.output.clone() else { return; };
+        let selected_before = self.overview.selected.clone();
+        let now = self.start_time.elapsed();
+        self.overview.work_area = Some(self.work_area(&output));
+        // Navigation has deterministic positions even before the first animation frame.
+        let progress = std::mem::replace(&mut self.overview.progress, Spring::new(1.0, SpringParams::SMOOTH));
+        self.overview.scene(&mut self.workspaces, &self.space, &output, now);
+        self.overview.progress = progress;
+        let hits = &self.overview.hits;
+        let current = self.overview.selected.as_ref().and_then(|w| hits.iter().position(|v| &v.window == w)).unwrap_or(0);
+        let mut changed = self.overview.selected != selected_before;
+        let mut select = None;
+        match sym {
+            keysyms::KEY_Escape => { self.close_overview(); return; }
+            keysyms::KEY_Return | keysyms::KEY_KP_Enter => {
+                if let Some(window) = self.overview.selected.clone().filter(|w| w.alive() && self.workspaces.membership(w).is_some()) {
+                    self.focus_window(Some(&window));
+                }
+                self.close_overview();
+                return;
+            }
+            keysyms::KEY_Delete => {
+                if let Some(t) = self.overview.selected.as_ref().and_then(|w| w.toplevel()) { t.send_close(); }
+            }
+            keysyms::KEY_Tab | keysyms::KEY_ISO_Left_Tab if !hits.is_empty() => {
+                select = Some((current + if shift { hits.len() - 1 } else { 1 }) % hits.len());
+            }
+            keysyms::KEY_Left | keysyms::KEY_Right | keysyms::KEY_Up | keysyms::KEY_Down => {
+                select = nearest(&hits.iter().map(|v| v.rect).collect::<Vec<_>>(), current, sym);
+            }
+            keysyms::KEY_1..=keysyms::KEY_9 => {
+                let index = (sym - keysyms::KEY_1) as usize;
+                if self.workspaces.get(&output).is_some_and(|owner| index < owner.list.items.len()) {
+                    let owner = self.workspaces.get(&output).unwrap();
+                    if index != owner.list.active || owner.position.target != index as f64 || owner.held {
+                        self.switch_workspace(&output, index);
+                    }
+                    let selected = self.focused_window();
+                    changed |= self.overview.selected != selected;
+                    self.overview.selected = selected;
+                }
+            }
+            _ => {}
+        }
+        if let Some(window) = select.and_then(|i| self.overview.hits.get(i)).map(|v| v.window.clone())
+            .filter(|window| self.overview.selected.as_ref() != Some(window))
+        {
+            changed = true;
+            self.overview.selected = Some(window.clone());
+            if let Some((output, index)) = self.workspaces.membership(&window) {
+                // Reveal the selection without changing client focus or the active
+                // workspace. Enter commits it; Escape restores the active view.
+                let owner = self.workspaces.ensure(&output);
+                owner.position.advance(now);
+                owner.position.set(index as f64);
+            }
+        }
+        if changed { self.queue_redraw_all(); }
+    }
+
     pub fn clear_desktop_pointer(&mut self) {
         self.end_window_grab();
         let pointer = self.seat.get_pointer().unwrap();

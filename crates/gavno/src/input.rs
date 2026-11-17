@@ -4,7 +4,7 @@ use smithay::{
         KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
     },
     input::{
-        keyboard::{keysyms, FilterResult, Keysym, ModifiersState},
+        keyboard::{keysyms, FilterResult, KeyboardTarget, Keysym, ModifiersState},
         pointer::{AxisFrame, ButtonEvent, Focus, GrabStartData, MotionEvent, RelativeMotionEvent},
     },
     reexports::wayland_protocols::xdg::shell::server::xdg_toplevel,
@@ -56,6 +56,10 @@ pub enum Action {
     ToggleOverview,
     CloseOverview,
     ToggleLauncher,
+    /// Keyboard-only shell mode; applies to the GAVNO shell only.
+    ToggleCodeMode,
+    WindowHints,
+    CheatSheet,
 }
 
 impl Gavno {
@@ -67,6 +71,18 @@ impl Gavno {
     where
         I::GestureSwipeUpdateEvent: 'static,
     {
+        // Any pointer activity brings a hidden cursor back, without touching
+        // pointer focus.
+        if matches!(&event,
+            InputEvent::PointerMotion { .. } | InputEvent::PointerMotionAbsolute { .. }
+            | InputEvent::PointerButton { .. } | InputEvent::PointerAxis { .. }
+            | InputEvent::GestureSwipeBegin { .. } | InputEvent::GestureSwipeUpdate { .. }
+            | InputEvent::GestureSwipeEnd { .. } | InputEvent::GesturePinchBegin { .. }
+            | InputEvent::GesturePinchUpdate { .. } | InputEvent::GesturePinchEnd { .. }
+            | InputEvent::GestureHoldBegin { .. } | InputEvent::GestureHoldEnd { .. })
+        {
+            self.show_pointer();
+        }
         if !matches!(&event, InputEvent::DeviceAdded { .. } | InputEvent::DeviceRemoved { .. }) {
             static FIRST_INPUT: std::sync::Once = std::sync::Once::new();
             FIRST_INPUT.call_once(|| crate::perf::startup("input.first_event"));
@@ -122,6 +138,7 @@ impl Gavno {
         let raw_code: u32 = keycode.raw();
 
         let keyboard = self.seat.get_keyboard().unwrap();
+        let modifiers_before = keyboard.modifier_state();
         let action = keyboard.input::<Option<Action>, _>(
             self,
             keycode,
@@ -139,20 +156,78 @@ impl Gavno {
                     gv.classic.switcher_win = false;
                 }
                 let sym = handle.modified_sym().raw();
+                let emergency = (keysyms::KEY_XF86Switch_VT_1..=keysyms::KEY_XF86Switch_VT_12).contains(&sym)
+                    || (mods.ctrl && mods.alt && (sym == keysyms::KEY_Delete
+                        || handle.raw_latin_sym_or_raw_current_sym().is_some_and(|s| matches!(s.raw(), keysyms::KEY_l | keysyms::KEY_L))));
+                // Release bookkeeping runs before every modal return. A modal may
+                // have opened after the press started a repeat or a Mod tap.
+                if key_state == KeyState::Released {
+                    let bar_consumed = gv.bar_key(sym, raw_code, false);
+                    gv.launcher_key_release(raw_code);
+                    let tap_enabled = gv.greeter.is_none() && !gv.protocols.locks.locked
+                        && !gv.seat.keyboard_shortcuts_inhibited()
+                        && (gv.classic_mode() || (gv.features.on(Feature::Gestures)
+                            && (gv.features.on(Feature::Overview) || gv.features.on(Feature::Launcher))));
+                    let is_main = match gv.config.mod_key {
+                        crate::config::ModKey::Super => matches!(sym, keysyms::KEY_Super_L | keysyms::KEY_Super_R),
+                        crate::config::ModKey::Alt => matches!(sym, keysyms::KEY_Alt_L | keysyms::KEY_Alt_R),
+                    };
+                    if !tap_enabled || bar_consumed || gv.overlay.keyboard.open() || gv.overview.open() || gv.music_open() {
+                        gv.gestures.super_tap.cancel();
+                    }
+                    // Always clear the physical key, even if its feature or shell
+                    // changed while held. Cancellation above prevents a modal tap.
+                    let toggle = gv.gestures.super_tap.key(raw_code, is_main, false, false);
+                    let captured = gv.suppressed_keys.contains(&raw_code);
+                    gv.suppressed_keys.retain(|k| *k != raw_code);
+                    if toggle {
+                        let action = if gv.classic_mode() { Action::Classic(crate::classic::binds::ClassicAction::Start) }
+                            else if gv.features.on(Feature::Launcher) { gv.config.launcher.clone().map(Action::Spawn).unwrap_or(Action::ToggleLauncher) }
+                            else { Action::ToggleOverview };
+                        return FilterResult::Intercept(Some(action));
+                    }
+                    return if bar_consumed || captured || (tap_enabled && is_main) || gv.lock.internal() || gv.greeter.is_some() {
+                        FilterResult::Intercept(None)
+                    } else { FilterResult::Forward };
+                }
                 // Modal music input precedes shell shortcuts and modifier-tap binds.
                 if gv.music_open() && !gv.polkit_visible() && !gv.protocols.locks.locked
                     && gv.greeter.is_none() && !(mods.ctrl && mods.alt)
                     && !(keysyms::KEY_XF86Switch_VT_1..=keysyms::KEY_XF86Switch_VT_12).contains(&sym) {
-                    if key_state == KeyState::Pressed {
-                        gv.suppressed_keys.push(raw_code);
-                        let sym = handle.modified_sym();
-                        gv.music_key(sym, sym.key_char(), mods);
-                    } else {
-                        // Balance a press delivered before the panel opened.
-                        let captured = gv.suppressed_keys.contains(&raw_code);
-                        gv.suppressed_keys.retain(|k| *k != raw_code);
-                        return if captured { FilterResult::Intercept(None) } else { FilterResult::Forward };
+                    gv.suppressed_keys.push(raw_code);
+                    let sym = handle.modified_sym();
+                    gv.music_key(sym, sym.key_char(), mods);
+                    return FilterResult::Intercept(None);
+                }
+                if key_state == KeyState::Pressed && !gv.protocols.locks.locked && gv.greeter.is_none()
+                    && !gv.lock.internal() && !gv.polkit_visible() && !gv.overlay.keyboard.open() && !gv.seat.keyboard_shortcuts_inhibited()
+                    && handle.raw_latin_sym_or_raw_current_sym().is_some_and(|s| gv.bind_for(s, mods) == Some(Action::CheatSheet))
+                {
+                    gv.suppressed_keys.push(raw_code);
+                    gv.cancel_shell_tap();
+                    return FilterResult::Intercept(Some(Action::CheatSheet));
+                }
+                if key_state == KeyState::Pressed && gv.overview.open() && !gv.overlay.keyboard.open()
+                    && !gv.protocols.locks.locked && !gv.lock.internal() && gv.greeter.is_none() && !gv.polkit_visible()
+                    && !gv.seat.keyboard_shortcuts_inhibited()
+                    && handle.raw_latin_sym_or_raw_current_sym().is_some_and(|s| gv.bind_for(s, mods) == Some(Action::ToggleOverview))
+                {
+                    gv.suppressed_keys.push(raw_code);
+                    gv.cancel_shell_tap();
+                    return FilterResult::Intercept(Some(Action::ToggleOverview));
+                }
+                if gv.greeter.is_none() && !gv.protocols.locks.locked && !gv.lock.internal() && !gv.polkit_visible()
+                    && !gv.seat.keyboard_shortcuts_inhibited()
+                    && !emergency && (gv.overlay.keyboard.open() || gv.overview.open())
+                {
+                    let latin = handle.raw_latin_sym_or_raw_current_sym().map(|s| s.raw()).unwrap_or(sym);
+                    if !modifier_only {
+                        if gv.code_mode { gv.hide_pointer(); }
+                        if gv.overlay.keyboard.open() { gv.keyboard_overlay_key(latin); }
+                        else { gv.overview_key(latin, mods.shift); }
                     }
+                    if !gv.suppressed_keys.contains(&raw_code) { gv.suppressed_keys.push(raw_code); }
+                    gv.cancel_shell_tap();
                     return FilterResult::Intercept(None);
                 }
                 if gv.bar_key(sym, raw_code, key_state == KeyState::Pressed) {
@@ -175,15 +250,6 @@ impl Gavno {
                     }
                     if is_super { return FilterResult::Intercept(None); }
                 } else { gv.cancel_shell_tap(); }
-                if key_state == KeyState::Released {
-                    gv.launcher_key_release(raw_code);
-                    // Swallow the release of a key whose press was a bind.
-                    if let Some(i) = gv.suppressed_keys.iter().position(|k| *k == raw_code) {
-                        gv.suppressed_keys.swap_remove(i);
-                        return FilterResult::Intercept(None);
-                    }
-                    return if gv.lock.internal() || gv.greeter.is_some() { FilterResult::Intercept(None) } else { FilterResult::Forward };
-                }
 
                 // VT switch keysyms come from the XKB keymap (Ctrl+Alt+F<N>).
                 let modified = handle.modified_sym().raw();
@@ -267,7 +333,8 @@ impl Gavno {
                     return FilterResult::Forward;
                 }
 
-                if gv.resize_mode_key(handle.modified_sym().raw(),mods.shift) {
+                if gv.resize_mode_key_with_ctrl(handle.raw_latin_sym_or_raw_current_sym().map(|s| s.raw()).unwrap_or(sym), mods.shift, mods.ctrl) {
+                    if gv.code_mode { gv.hide_pointer(); }
                     gv.suppressed_keys.push(raw_code);
                     return FilterResult::Intercept(None);
                 }
@@ -304,9 +371,31 @@ impl Gavno {
             },
         );
 
+        // Smithay suppresses modifier notifications together with intercepted
+        // keys. Focus entry may already have sent a held modifier to a new client;
+        // publish its cleared state without forwarding an unmatched key release.
+        let modifiers = keyboard.modifier_state();
+        if key_state == KeyState::Released && action.is_some() && modifiers != modifiers_before {
+            if let Some(focus) = keyboard.current_focus() {
+                focus.modifiers(&self.seat.clone(), self, modifiers, serial);
+            }
+        }
+
         match key_state {
             KeyState::Pressed => { if !self.desktop_keys.contains(&raw_code) { self.desktop_keys.push(raw_code); } }
             KeyState::Released => self.desktop_keys.retain(|k| *k != raw_code),
+        }
+        // The first key press that reaches a client or a bind hides the
+        // pointer. Shell text entry, such as the launcher, leaves it alone.
+        if key_state == KeyState::Pressed && self.code_mode
+            && !self.protocols.locks.locked && self.greeter.is_none()
+        {
+            let reaches = match &action {
+                Some(Some(_)) => true,
+                Some(None) => false,
+                None => keyboard.current_focus().is_some(),
+            };
+            if reaches { self.hide_pointer(); }
         }
         if action.is_none() {
             let focus = keyboard.current_focus();
@@ -358,6 +447,7 @@ impl Gavno {
     }
     fn action_enabled(&self, action: &Action) -> bool {
         let feature = match action {
+            Action::ToggleCodeMode if self.classic_mode() => return false,
             Action::Classic(_) => Feature::Classic,
             Action::Minimize => Feature::Dock,
             Action::ToggleTiling | Action::ToggleFloating | Action::RotateSplit | Action::Swap(_) => Feature::Tiling,
@@ -373,9 +463,14 @@ impl Gavno {
     fn bind_for_enabled(&self, sym: Keysym, mods: &ModifiersState) -> Option<Action> {
         let main = self.config.mod_key.is_held(mods);
         let sym = Keysym::from(sym.raw()).raw();
+        if (keysyms::KEY_XF86Switch_VT_1..=keysyms::KEY_XF86Switch_VT_12).contains(&sym) {
+            return Some(Action::SwitchVt((sym - keysyms::KEY_XF86Switch_VT_1 + 1) as i32));
+        }
 
-        if matches!(sym, keysyms::KEY_l | keysyms::KEY_L) && !mods.shift
-            && ((mods.ctrl && mods.alt) || (main && !mods.ctrl)) { return Some(Action::Lock); }
+        // Ctrl+Alt+L remains the emergency lock chord in code mode too.
+        if matches!(sym, keysyms::KEY_l | keysyms::KEY_L) && !mods.shift && mods.ctrl && mods.alt {
+            return Some(Action::Lock);
+        }
         if mods.ctrl && mods.alt && sym == keysyms::KEY_Delete {
             return Some(Action::Quit);
         }
@@ -396,6 +491,22 @@ impl Gavno {
         if !main {
             return None;
         }
+        if !mods.ctrl && !mods.shift && matches!(sym, keysyms::KEY_slash | keysyms::KEY_F1) { return Some(Action::CheatSheet); }
+        if !mods.ctrl && !mods.shift && matches!(sym, keysyms::KEY_f | keysyms::KEY_F) { return Some(Action::WindowHints); }
+        if !self.classic_mode() && mods.shift && !mods.ctrl && matches!(sym, keysyms::KEY_c | keysyms::KEY_C) {
+            return Some(Action::ToggleCodeMode);
+        }
+        // In code mode H/J/K/L stand in for the arrows in every Mod+arrow
+        // chord. The alias wins over Mod+L lock and Mod+Shift+H HDR, but never
+        // over Ctrl+Alt+L above.
+        if self.code_mode {
+            if let Some(dir) = vim_arrow(sym).and_then(arrow_direction) {
+                return Some(self.direction_action(dir, mods));
+            }
+        }
+        if !self.code_mode && matches!(sym, keysyms::KEY_l | keysyms::KEY_L) && !mods.shift && !mods.ctrl {
+            return Some(Action::Lock);
+        }
         if (keysyms::KEY_1..=keysyms::KEY_9).contains(&sym) {
             let index = (sym - keysyms::KEY_1) as usize;
             return Some(if mods.shift { Action::MoveWorkspace(index) } else { Action::Workspace(index) });
@@ -403,26 +514,8 @@ impl Gavno {
         if matches!(sym, keysyms::KEY_Tab | keysyms::KEY_ISO_Left_Tab) { return Some(Action::WorkspaceStep(mods.shift)); }
         if mods.ctrl && matches!(sym, keysyms::KEY_Page_Up | keysyms::KEY_Page_Down) { return Some(Action::WorkspaceStep(sym == keysyms::KEY_Page_Up)); }
         if matches!(sym, keysyms::KEY_a | keysyms::KEY_A) { return Some(Action::ToggleOverview); }
-        let direction = match sym {
-            keysyms::KEY_Left => Some(Direction::Left),
-            keysyms::KEY_Right => Some(Direction::Right),
-            keysyms::KEY_Up => Some(Direction::Up),
-            keysyms::KEY_Down => Some(Direction::Down),
-            _ => None,
-        };
-        if let Some(dir) = direction {
-            return Some(if mods.ctrl {
-                Action::Snap(dir)
-            } else if mods.shift {
-                Action::Resize(dir)
-            // With Alt as Mod in nested mode, Super is the extra modifier.
-            } else if (mods.alt && self.config.mod_key == crate::config::ModKey::Super)
-                || (mods.logo && self.config.mod_key == crate::config::ModKey::Alt)
-            {
-                Action::Swap(dir)
-            } else {
-                Action::FocusDirection(dir)
-            });
+        if let Some(dir) = arrow_direction(sym) {
+            return Some(self.direction_action(dir, mods));
         }
         match sym {
             keysyms::KEY_r | keysyms::KEY_R if !mods.ctrl && !mods.shift => Some(Action::ResizeMode),
@@ -444,6 +537,22 @@ impl Gavno {
         }
     }
 
+    /// The action shared by Mod+arrow and its H/J/K/L alias.
+    fn direction_action(&self, dir: Direction, mods: &ModifiersState) -> Action {
+        if mods.ctrl {
+            Action::Snap(dir)
+        } else if mods.shift {
+            Action::Resize(dir)
+        // With Alt as Mod in nested mode, Super is the extra modifier.
+        } else if (mods.alt && self.config.mod_key == crate::config::ModKey::Super)
+            || (mods.logo && self.config.mod_key == crate::config::ModKey::Alt)
+        {
+            Action::Swap(dir)
+        } else {
+            Action::FocusDirection(dir)
+        }
+    }
+
     pub fn run_action(&mut self, action: Action) {
         if !self.action_enabled(&action) { return; }
         if self.protocols.locks.locked && !matches!(action, Action::SwitchVt(_)) { return; }
@@ -461,6 +570,9 @@ impl Gavno {
             Action::WorkspaceStep(backwards) => self.workspace_step(backwards),
             Action::ToggleOverview => self.toggle_overview(),
             Action::CloseOverview => self.close_overview(),
+            Action::WindowHints => self.toggle_window_hints(),
+            Action::CheatSheet => self.toggle_cheat_sheet(),
+            Action::ToggleCodeMode => self.set_code_mode(!self.code_mode),
             Action::Quit => self.quit(),
             Action::Spawn(cmd) => self.launch_shell(&cmd, None),
             Action::CloseWindow => self.close_focused(),
@@ -479,6 +591,7 @@ impl Gavno {
     }
 
     fn on_pointer_motion<I: InputBackend>(&mut self, event: I::PointerMotionEvent) {
+        self.show_pointer();
         let pointer = self.seat.get_pointer().unwrap();
         let current = pointer.current_location();
         let under = self.surface_under(current);
@@ -525,6 +638,7 @@ impl Gavno {
     }
 
     fn on_pointer_motion_absolute<I: InputBackend>(&mut self, event: I::PointerMotionAbsoluteEvent) {
+        self.show_pointer();
         let Some(output) = self.space.outputs().next().cloned() else {
             return;
         };
@@ -576,6 +690,7 @@ impl Gavno {
     }
 
     fn on_pointer_button<I: InputBackend>(&mut self, event: I::PointerButtonEvent) {
+        self.show_pointer();
         let pointer = self.seat.get_pointer().unwrap();
         let keyboard = self.seat.get_keyboard().unwrap();
         let serial = SERIAL_COUNTER.next_serial();
@@ -616,6 +731,11 @@ impl Gavno {
         // A new press ends any earlier synthetic release of this button.
         if button_state == ButtonState::Pressed {
             self.suppressed_buttons.retain(|b| *b != button);
+        }
+        if button_state == ButtonState::Pressed && self.overlay.keyboard.open() {
+            self.close_keyboard_overlay();
+            self.suppressed_buttons.push(button);
+            return;
         }
         // Balance presses already delivered to Smithay before desktop UI can
         // consume their releases. Shell-only presses never enter this list.
@@ -791,6 +911,7 @@ impl Gavno {
     }
 
     fn on_pointer_axis<I: InputBackend>(&mut self, event: I::PointerAxisEvent) {
+        self.show_pointer();
         self.cancel_shell_tap();
         let source = event.source();
         let horizontal = event
@@ -835,6 +956,28 @@ impl Gavno {
         let pointer = self.seat.get_pointer().unwrap();
         pointer.axis(self, frame);
         pointer.frame(self);
+    }
+}
+
+/// Arrow keysyms map to navigation directions.
+fn arrow_direction(sym: u32) -> Option<Direction> {
+    match sym {
+        keysyms::KEY_Left => Some(Direction::Left),
+        keysyms::KEY_Right => Some(Direction::Right),
+        keysyms::KEY_Up => Some(Direction::Up),
+        keysyms::KEY_Down => Some(Direction::Down),
+        _ => None,
+    }
+}
+
+/// Vim alias keysyms map to the arrows they stand in for.
+pub(crate) fn vim_arrow(sym: u32) -> Option<u32> {
+    match sym {
+        keysyms::KEY_h | keysyms::KEY_H => Some(keysyms::KEY_Left),
+        keysyms::KEY_j | keysyms::KEY_J => Some(keysyms::KEY_Down),
+        keysyms::KEY_k | keysyms::KEY_K => Some(keysyms::KEY_Up),
+        keysyms::KEY_l | keysyms::KEY_L => Some(keysyms::KEY_Right),
+        _ => None,
     }
 }
 

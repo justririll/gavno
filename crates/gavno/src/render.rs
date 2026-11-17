@@ -70,6 +70,8 @@ pub struct SurfaceDmabufFeedback {
 pub struct CursorCache {
     /// KMS cursor planes sit above the primary plane, including its dimmer.
     pub dimmed: bool,
+    /// Suppresses both software elements and KMS cursor-plane candidates.
+    pub hidden: bool,
     cursor: Cursor,
     buffers: Vec<(Image, u32, MemoryRenderBuffer)>,
 }
@@ -81,6 +83,7 @@ impl CursorCache {
     pub fn new() -> Self {
         Self {
             dimmed: false,
+            hidden: false,
             cursor: Cursor::load(),
             buffers: Vec::new(),
         }
@@ -267,7 +270,7 @@ fn output_elements_inner(
     }
 
     if let Some(stall) = stall.as_deref_mut() { stall.mark("elements.lock"); }
-    if !locks.locked && output_geo.to_f64().contains(pointer_pos) {
+    if !cursor.hidden && !locks.locked && output_geo.to_f64().contains(pointer_pos) {
         if let CursorImageStatus::Surface(surface) = cursor_status {
             if !surface.alive() {
                 *cursor_status = CursorImageStatus::default_named();
@@ -362,6 +365,7 @@ fn output_elements_inner(
         }));
     }
     let accent = topbar.accent();
+    elements.extend(overlay.keyboard.elements(renderer, output, output_geo, space, scale.x, accent));
     elements.extend(features.call(Feature::Launcher, Vec::new(), || {
         launcher.elements(renderer, output, output_geo.size, scale.x, time, accent, &config.dock.icon_theme)
     }));
@@ -388,7 +392,7 @@ fn output_elements_inner(
         crate::workspace::workspace_scene(workspaces, space, output, time)
     };
     features.call(Feature::Dock, (), || dock.minimize_scene(space, output, time, &mut scene));
-    elements.extend(features.call(Feature::Overview, Vec::new(), || overview.chrome(renderer, workspaces, space, output)));
+    elements.extend(features.call(Feature::Overview, Vec::new(), || overview.chrome(renderer, workspaces, space, output, accent)));
     let accent = topbar.accent();
     let overview_visible = features.on(Feature::Overview) && overview.visible();
     elements.extend(features.call(Feature::Tiling, Vec::new(), || {

@@ -529,6 +529,8 @@ impl Gavno {
     }
 
     fn toggle_workspace_tiling_feature(&mut self, output: &Output) {
+        // Code mode keeps every workspace tiled; leave it first.
+        if self.code_mode { return; }
         self.end_window_grab();
         self.workspaces.snapshot(&self.space);
         let owner = self.workspaces.ensure(output);
@@ -675,6 +677,8 @@ impl Gavno {
         if self.greeter.is_some() {
             return;
         }
+        // Workspaces created during code mode tile like all the others.
+        self.enforce_code_mode_tiling();
         let focus = self.focused_window();
         let moving = self.workspaces.moving_tile.clone();
         let mut targets = Vec::new();
@@ -892,6 +896,7 @@ impl Gavno {
     }
 
     fn refresh_splitter_cursor_feature(&mut self) {
+        if self.pointer_hidden { return; }
         if self.greeter.is_some() || self.protocols.locks.locked {
             return;
         }

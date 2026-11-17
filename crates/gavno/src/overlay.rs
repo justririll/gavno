@@ -73,6 +73,7 @@ struct OutputCache {
 }
 
 pub struct Overlay {
+    pub keyboard: crate::keyboard_overlay::KeyboardOverlay,
     preview: Option<Preview>,
     pub switcher: Option<Switcher>,
     pub resize_mode: crate::resize_mode::ResizeMode,
@@ -84,6 +85,7 @@ pub struct Overlay {
 impl Default for Overlay {
     fn default() -> Self {
         Self {
+            keyboard: Default::default(),
             preview: None,
             switcher: None,
             resize_mode: Default::default(),
