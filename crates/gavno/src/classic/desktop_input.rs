@@ -213,7 +213,7 @@ impl Gavno {
             if let Some(command) = widget
                 .as_ref()
                 .filter(|(name, _)| name == "media" || name == "music")
-                .and_then(|(_, r)| super::widgets::media_button(*r, p))
+                .and_then(|(name, r)| super::widgets::media_button(*r, p, name == "music"))
             {
                 if widget.as_ref().is_some_and(|(name, _)| name == "music") {
                     gv.music_command(command);
@@ -707,19 +707,14 @@ mod interaction_tests {
                 .unwrap()
                 .1;
         h.gv.config.media.music_panel = false;
-        for (index, command) in [
-            crate::media::Command::Previous,
-            crate::media::Command::PlayPause,
-            crate::media::Command::Next,
-        ]
-        .into_iter()
-        .enumerate()
-        {
+        let buttons: Vec<_> = crate::classic::widgets::media_buttons(r, true).collect();
+        assert_eq!(buttons.len(), 3);
+        for (command, b) in buttons {
             motion(
                 &mut h.gv,
                 (
-                    r.loc.x as f64 + 20.0 + index as f64 * 52.0,
-                    r.loc.y as f64 + 90.0,
+                    b.loc.x as f64 + b.size.w as f64 / 2.0,
+                    b.loc.y as f64 + b.size.h as f64 / 2.0,
                 )
                     .into(),
             );

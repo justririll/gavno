@@ -1,5 +1,5 @@
-//! Glass popover, with stable render elements reused until its contents change.
-use super::{Covers, Hit, Hits, Item, Session};
+//! Glass music browser. Playback ticks reuse every static render element.
+use super::{worker::CoverKind, Covers, Hit, Hits, Item, Session};
 use crate::{
     icons::Icons,
     render::GavnoRenderElement,
@@ -7,6 +7,7 @@ use crate::{
         geometry::{rect, Rect},
         Canvas, GLASS, LINE,
     },
+    ui::text::{TextStyleSpec, Weight},
 };
 use smithay::{
     backend::renderer::{
@@ -26,15 +27,17 @@ pub struct View {
     pub visible_rows: usize,
     cached: Vec<crate::classic::cache::CachedElement>,
     geometry: Option<(Size<i32, Logical>, f64, [f32; 4])>,
-    /// Progress fill and time label live apart from the static content, so a
-    /// playback tick rebuilds two elements instead of the whole panel.
     tick: Canvas,
     tick_cached: Vec<crate::classic::cache::CachedElement>,
-    tick_key: Option<(i32, String)>,
+    tick_key: Option<(i32, u32, u32, bool)>,
     #[cfg(test)]
     pub static_builds: usize,
     #[cfg(test)]
     pub tick_builds: usize,
+    #[cfg(test)]
+    pub labels: Vec<(String, Rect, TextStyleSpec)>,
+    #[cfg(test)]
+    pub remaining_right: i32,
 }
 impl View {
     pub fn hit(&self, point: Point<f64, Logical>) -> Option<(Rect, Hit)> {
@@ -49,7 +52,7 @@ pub fn panel_rect(size: Size<i32, Logical>, anchor: Option<Rect>) -> Rect {
     if let Some(anchor) = anchor {
         let available_h = (size.h - crate::classic::TASKBAR_HEIGHT).max(1);
         let width = 420.min(size.w.max(1));
-        let height = 600.min(available_h);
+        let height = 660.min(available_h);
         let left = anchor.loc.x - width - 12;
         let x = if left >= 0 {
             left
@@ -64,62 +67,119 @@ pub fn panel_rect(size: Size<i32, Logical>, anchor: Option<Rect>) -> Rect {
         );
     }
     let width = 420.min((size.w - 16).max(1));
-    let height = 600.min((size.h - 48).max(1));
+    let height = 660.min((size.h - 48).max(1));
     let x = (size.w / 2 + 64).min(size.w - width - 8).max(0);
     rect(x, 40.min((size.h - height).max(0)), width, height)
 }
-fn image(view: &mut View, renderer: &mut GlesRenderer, item: Option<&Item>, area: Rect) {
-    let c = &mut view.canvas;
-    c.rect(area, 7.0, [1.0, 1.0, 1.0, 0.08], 0.0, LINE);
-    if let Some(buffer) = item
+fn white(alpha: f32) -> [f32; 4] {
+    [1.0, 1.0, 1.0, alpha]
+}
+fn style(size: f32, weight: Weight, color: [f32; 4]) -> TextStyleSpec {
+    TextStyleSpec {
+        size,
+        weight,
+        color,
+        tracking: 0.0,
+    }
+}
+fn label(view: &mut View, renderer: &mut GlesRenderer, value: &str, area: Rect, st: TextStyleSpec) {
+    #[cfg(test)]
+    view.labels.push((value.to_owned(), area, st));
+    view.canvas
+        .styled_label(renderer, value, area.loc.x, area.loc.y, area.size.w, st);
+}
+fn centered(
+    view: &mut View,
+    renderer: &mut GlesRenderer,
+    value: &str,
+    area: Rect,
+    st: TextStyleSpec,
+) {
+    let w = (view.canvas.text.measure(value, st).ceil() as i32).min(area.size.w);
+    label(
+        view,
+        renderer,
+        value,
+        rect(
+            area.loc.x + (area.size.w - w) / 2,
+            area.loc.y,
+            w,
+            area.size.h,
+        ),
+        st,
+    );
+}
+fn icon(view: &mut View, renderer: &mut GlesRenderer, name: &str, area: Rect, color: [f32; 4]) {
+    let alpha = view.canvas.alpha;
+    view.canvas.alpha *= color[3];
+    view.canvas.colored_icon(
+        renderer,
+        &mut view.icons,
+        &[name],
+        "Adwaita",
+        area,
+        Some([color[0], color[1], color[2]].map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8)),
+    );
+    view.canvas.alpha = alpha;
+}
+fn image(
+    view: &mut View,
+    renderer: &mut GlesRenderer,
+    item: Option<&Item>,
+    area: Rect,
+    kind: CoverKind,
+) {
+    let cover = item
         .and_then(|i| i.cover_path.as_ref())
-        .and_then(|p| view.covers.get(p))
-    {
+        .and_then(|p| view.covers.variant(p, kind));
+    if let Some(cover) = cover {
+        let c = &mut view.canvas;
         if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
             renderer,
             (
                 (area.loc.x as f64 * c.scale).round(),
                 (area.loc.y as f64 * c.scale).round(),
             ),
-            buffer,
+            &cover.buffer,
             Some(1.0),
-            Some(Rectangle::from_size((96.0, 96.0).into())),
+            Some(Rectangle::from_size(
+                (kind.size() as f64, kind.size() as f64).into(),
+            )),
             Some(area.size),
             Kind::Unspecified,
         ) {
             c.elements.push(GavnoRenderElement::Memory(element));
         }
     } else {
-        c.colored_icon(
+        let radius = match kind {
+            CoverKind::Hero => 10.0,
+            CoverKind::Artist => area.size.w as f32 / 2.0,
+            CoverKind::List => 7.0,
+        };
+        view.canvas.rect(area, radius, white(0.07), 0.0, LINE);
+        let size = if kind == CoverKind::Hero { 40 } else { 18 };
+        icon(
+            view,
             renderer,
-            &mut view.icons,
-            &["audio-x-generic-symbolic"],
-            "Adwaita",
+            "audio-x-generic-symbolic",
             rect(
-                area.loc.x + area.size.w / 4,
-                area.loc.y + area.size.h / 4,
-                area.size.w / 2,
-                area.size.h / 2,
+                area.loc.x + (area.size.w - size) / 2,
+                area.loc.y + (area.size.h - size) / 2,
+                size,
+                size,
             ),
-            Some(crate::media::ui::ICON_COLOR),
+            white(0.35),
         );
     }
 }
-fn label(view: &mut View, renderer: &mut GlesRenderer, value: &str, area: Rect, size: f32) {
-    view.canvas
-        .label(renderer, value, area.loc.x, area.loc.y, area.size.w, size);
+pub(super) fn time(ms: u32) -> String {
+    format!("{}:{:02}", ms / 60000, ms / 1000 % 60)
 }
-fn button(view: &mut View, renderer: &mut GlesRenderer, area: Rect, text: &str, hit: Hit) {
-    view.canvas
-        .rect(area, 8.0, [1.0, 1.0, 1.0, 0.07], 0.0, LINE);
-    label(
-        view,
-        renderer,
-        text,
-        rect(area.loc.x + 10, area.loc.y + 8, area.size.w - 20, 20),
-        12.0,
-    );
-    view.hits.push((area, hit));
+pub(super) fn page_title(value: &str) -> String {
+    let mut chars = value.chars();
+    chars
+        .next()
+        .map_or_else(String::new, |c| c.to_uppercase().chain(chars).collect())
 }
 impl Session {
     pub fn elements(
@@ -133,15 +193,15 @@ impl Session {
         if &self.output != output {
             return Vec::new();
         }
-        let rebuild = self.dirty || self.view.geometry != Some((size, scale, accent));
-        if rebuild {
+        if self.dirty || self.view.geometry != Some((size, scale, accent)) {
             self.build_static(renderer, size, scale, accent);
         }
         self.build_progress(renderer, size, scale, accent);
-        let view = &self.view;
-        view.tick_cached
+        self.request_covers();
+        self.view
+            .tick_cached
             .iter()
-            .chain(&view.cached)
+            .chain(&self.view.cached)
             .cloned()
             .map(GavnoRenderElement::Desktop)
             .collect()
@@ -157,212 +217,470 @@ impl Session {
         #[cfg(test)]
         {
             view.static_builds += 1;
+            view.labels.clear();
         }
-        view.tick_key = None;
         self.dirty = false;
+        view.tick_key = None;
         view.geometry = Some((size, scale, accent));
         view.canvas.begin(renderer, scale);
         view.hits.clear();
-        let panel = panel_rect(size, self.anchor);
-        let x = panel.loc.x + 16;
-        let y = panel.loc.y + 16;
-        let w = (panel.size.w - 32).max(1);
-        view.canvas.shadow(panel, 16.0);
-        view.canvas.rect(panel, 16.0, GLASS, 1.0, LINE);
-        view.hits.push((panel, Hit::Panel));
-        // Tiny outputs retain a correctly clamped shell; omit overflowing contents.
-        if panel.size.w < 240 || panel.size.h < 300 {
-            label(view, renderer, "Music", rect(x, y, w, 20), 14.0);
-            view.cached = view
-                .canvas
-                .finish()
-                .into_iter()
-                .filter_map(crate::classic::cache::CachedElement::from_ui)
-                .collect();
-            return;
-        }
-        image(view, renderer, self.state.item.as_ref(), rect(x, y, 52, 52));
-        let title = self
-            .state
-            .item
-            .as_ref()
-            .map_or("Spotify", |i| i.title.as_str());
-        let subtitle = self.state.item.as_ref().map_or("", |i| i.subtitle.as_str());
-        label(view, renderer, title, rect(x + 64, y + 4, w - 64, 22), 14.0);
-        label(
-            view,
-            renderer,
-            subtitle,
-            rect(x + 64, y + 30, w - 64, 18),
-            11.5,
-        );
-        for (i, command) in ["previous", "toggle", "next"].into_iter().enumerate() {
-            let r = rect(x + i as i32 * 48, y + 64, 40, 30);
-            view.canvas.rect(r, 8.0, [1.0, 1.0, 1.0, 0.07], 0.0, LINE);
-            let icon = match command {
-                "previous" => "media-skip-backward-symbolic",
-                "next" => "media-skip-forward-symbolic",
-                _ if self.state.playing => "media-playback-pause-symbolic",
-                _ => "media-playback-start-symbolic",
-            };
-            view.canvas.colored_icon(
-                renderer,
-                &mut view.icons,
-                &[icon],
-                "Adwaita",
-                rect(r.loc.x + 12, r.loc.y + 7, 16, 16),
-                Some(crate::media::ui::ICON_COLOR),
-            );
-            view.hits.push((r, Hit::Control(command)));
-        }
-        let seek = rect(x, y + 104, w, 18);
-        view.canvas.rect(
-            rect(x, seek.loc.y + 6, w, 5),
-            2.5,
-            [1.0, 1.0, 1.0, 0.12],
-            0.0,
-            LINE,
-        );
-        view.hits.push((seek, Hit::Seek));
-        label(view, renderer, "Volume", rect(x, y + 133, 60, 20), 11.0);
-        let volume = rect(x + 70, y + 128, w - 70, 22);
-        view.canvas.rect(
-            rect(volume.loc.x, volume.loc.y + 8, volume.size.w, 5),
-            2.5,
-            [1.0, 1.0, 1.0, 0.12],
-            0.0,
-            LINE,
-        );
-        view.canvas.rect(
-            rect(
-                volume.loc.x,
-                volume.loc.y + 8,
-                (volume.size.w as f64 * self.state.volume.clamp(0.0, 1.0)) as i32,
-                5,
-            ),
-            2.5,
-            accent,
-            0.0,
-            LINE,
-        );
-        view.hits.push((volume, Hit::Volume));
-        view.canvas.rect(
-            rect(x, y + 162, w, 36),
-            8.0,
-            [1.0, 1.0, 1.0, 0.07],
+        view.visible_rows = 0;
+        let p = panel_rect(size, self.anchor);
+        let (x, y, w) = (p.loc.x, p.loc.y, p.size.w);
+        let right = x + w;
+        let accent_text = [
+            accent[0] * 0.65 + 0.35,
+            accent[1] * 0.65 + 0.35,
+            accent[2] * 0.65 + 0.35,
             1.0,
-            LINE,
-        );
-        label(
-            view,
-            renderer,
-            if self.query.is_empty() {
-                "Search Spotify…"
+        ];
+        view.canvas.shadow(p, 16.0);
+        view.canvas.rect(p, 16.0, GLASS, 1.0, LINE);
+        view.hits.push((p, Hit::Panel));
+        if w >= 240 && p.size.h >= 300 {
+            let card = rect(x + 12, y + 12, w - 24, 176);
+            let tint = self
+                .state
+                .item
+                .as_ref()
+                .and_then(|i| i.cover_path.as_ref())
+                .and_then(|p| view.covers.variant(p, CoverKind::Hero))
+                .map_or(white(0.05), |c| [c.tint[0], c.tint[1], c.tint[2], 0.34]);
+            view.canvas.rect(card, 14.0, tint, 1.0, LINE);
+            image(
+                view,
+                renderer,
+                self.state.item.as_ref(),
+                rect(card.loc.x + 12, card.loc.y + 12, 112, 112),
+                CoverKind::Hero,
+            );
+            let tx = card.loc.x + 138;
+            let tw = card.size.w - 150;
+            let title = self
+                .state
+                .item
+                .as_ref()
+                .map_or("Nothing playing", |i| i.title.as_str());
+            let artist = self
+                .state
+                .item
+                .as_ref()
+                .map_or("Pick something below", |i| i.subtitle.as_str());
+            label(
+                view,
+                renderer,
+                title,
+                rect(tx, card.loc.y + 16, tw, 22),
+                style(
+                    16.0,
+                    Weight::SemiBold,
+                    white(if self.state.item.is_some() { 0.97 } else { 0.9 }),
+                ),
+            );
+            label(
+                view,
+                renderer,
+                artist,
+                rect(tx, card.loc.y + 40, tw, 20),
+                style(
+                    12.5,
+                    Weight::Medium,
+                    white(if self.state.item.is_some() {
+                        0.72
+                    } else {
+                        0.55
+                    }),
+                ),
+            );
+            if let Some(next) = self.state.upcoming.first() {
+                label(
+                    view,
+                    renderer,
+                    &format!("Next: {}", next.title),
+                    rect(tx, card.loc.y + 62, tw, 18),
+                    style(11.0, Weight::Regular, white(0.50)),
+                );
+            }
+            view.canvas.alpha = if self.state.item.is_some() { 1.0 } else { 0.45 };
+            for (i, command) in ["previous", "toggle", "next"].into_iter().enumerate() {
+                let toggle = command == "toggle";
+                let diameter = if toggle { 44 } else { 36 };
+                let cx = tx + tw / 2 + (i as i32 - 1) * 54;
+                let area = rect(
+                    cx - diameter / 2,
+                    card.loc.y + 102 - diameter / 2,
+                    diameter,
+                    diameter,
+                );
+                let hit = Hit::Control(command);
+                crate::media::ui::transport(
+                    &mut view.canvas,
+                    renderer,
+                    &mut view.icons,
+                    "Adwaita",
+                    match command {
+                        "previous" => crate::media::Command::Previous,
+                        "next" => crate::media::Command::Next,
+                        _ => crate::media::Command::PlayPause,
+                    },
+                    self.state.playing,
+                    true,
+                    area,
+                    self.hovered == Some(hit),
+                );
+                view.hits.push((area, hit));
+            }
+            view.canvas.alpha = 1.0;
+            let track = rect(card.loc.x + 12, card.loc.y + 140, card.size.w - 24, 4);
+            view.canvas.rect(track, 2.0, white(0.16), 0.0, LINE);
+            view.hits.push((
+                rect(track.loc.x, track.loc.y - 8, track.size.w, 20),
+                Hit::Seek,
+            ));
+            let row_y = card.loc.y + card.size.h + 14;
+            let volume = self.state.volume.clamp(0.0, 1.0);
+            let name = if volume == 0.0 {
+                "audio-volume-muted-symbolic"
+            } else if volume < 0.34 {
+                "audio-volume-low-symbolic"
+            } else if volume < 0.67 {
+                "audio-volume-medium-symbolic"
+            } else {
+                "audio-volume-high-symbolic"
+            };
+            icon(
+                view,
+                renderer,
+                name,
+                rect(x + 24, row_y + 4, 16, 16),
+                white(0.72),
+            );
+            let slider = rect(x + 52, row_y, w - 76, 24);
+            view.canvas.rect(
+                rect(slider.loc.x, row_y + 10, slider.size.w, 4),
+                2.0,
+                white(0.16),
+                0.0,
+                LINE,
+            );
+            let fill = (slider.size.w as f64 * volume).round() as i32;
+            view.canvas.rect(
+                rect(slider.loc.x, row_y + 10, fill, 4),
+                2.0,
+                accent,
+                0.0,
+                LINE,
+            );
+            view.canvas.rect(
+                rect(slider.loc.x + fill - 6, row_y + 6, 12, 12),
+                6.0,
+                white(1.0),
+                0.0,
+                LINE,
+            );
+            view.hits.push((slider, Hit::Volume));
+            let field = rect(x + 12, y + 240, w - 24, 36);
+            view.canvas.rect(
+                field,
+                18.0,
+                white(0.06),
+                1.0,
+                if self.query.is_empty() {
+                    LINE
+                } else {
+                    [accent[0], accent[1], accent[2], 0.6]
+                },
+            );
+            icon(
+                view,
+                renderer,
+                "system-search-symbolic",
+                rect(field.loc.x + 14, field.loc.y + 10, 16, 16),
+                white(0.6),
+            );
+            let st = style(
+                13.0,
+                Weight::Regular,
+                white(if self.query.is_empty() { 0.45 } else { 0.95 }),
+            );
+            let text = if self.query.is_empty() {
+                "Search Spotify"
             } else {
                 &self.query
-            },
-            rect(x + 12, y + 172, w - 24, 20),
-            13.0,
-        );
-        for (i, tab) in ["Home", "Library", "Playlists"].into_iter().enumerate() {
-            let r = rect(x + i as i32 * (w / 3), y + 208, w / 3 - 4, 32);
-            if i == self.tab {
-                view.canvas.rect(r, 8.0, [accent[0], accent[1], accent[2], 0.18], 0.0, LINE);
-            }
+            };
+            let text_width = field.size.w - 52;
             label(
                 view,
                 renderer,
-                tab,
-                rect(r.loc.x + 8, r.loc.y + 8, r.size.w - 16, 20),
-                12.0,
+                text,
+                rect(field.loc.x + 38, field.loc.y + 9, text_width, 20),
+                st,
             );
-            view.hits.push((r, Hit::Tab(i)));
-        }
-        let status = if !self.error.is_empty() {
-            &self.error
-        } else {
-            &self.state.message
-        };
-        label(view, renderer, status, rect(x, y + 250, w, 18), 11.0);
-        let mut row_y = y + 278;
-        if row_y + 40 > panel.loc.y + panel.size.h - 12 {
-            view.visible_rows = 0;
-        } else if !self.state.logged_in {
-            button(
-                view,
-                renderer,
-                rect(x, row_y, w, 36),
-                if self.state.login_pending {
-                    "Waiting for Spotify login…"
-                } else {
-                    "Log in to Spotify"
-                },
-                Hit::Login,
-            );
-        } else {
-            if !self.back.is_empty() {
-                button(view, renderer, rect(x, row_y, 64, 30), "Back", Hit::Back);
+            if !self.query.is_empty() {
+                let caret = view.canvas.text.measure(text, st).ceil() as i32;
+                view.canvas.rect(
+                    rect(
+                        field.loc.x + 38 + caret.min(text_width),
+                        field.loc.y + 10,
+                        2,
+                        16,
+                    ),
+                    0.0,
+                    accent,
+                    0.0,
+                    LINE,
+                );
             }
-            label(
-                view,
-                renderer,
-                if self.loading {
-                    "Loading…"
-                } else {
-                    &self.page.title
-                },
-                rect(x + 76, row_y + 8, w - 76, 20),
-                12.0,
-            );
-            row_y += 40;
-            view.visible_rows = ((panel.loc.y + panel.size.h - 12 - row_y) / 52).max(0) as usize;
-            for index in self.scroll
-                ..(self.scroll + view.visible_rows)
-                    .min(self.page.items.len() + usize::from(self.page.next.is_some()))
-            {
-                if index == self.page.items.len() {
-                    button(
-                        view,
-                        renderer,
-                        rect(x, row_y, w, 44),
-                        "Load more",
-                        Hit::More,
+            let tabs = rect(x + 12, y + 288, w - 24, 32);
+            view.canvas.rect(tabs, 10.0, white(0.05), 0.0, LINE);
+            for (i, name) in ["Home", "Library", "Playlists"].into_iter().enumerate() {
+                let left = i as i32 * (tabs.size.w - 6) / 3;
+                let end = (i as i32 + 1) * (tabs.size.w - 6) / 3;
+                let area = rect(tabs.loc.x + 3 + left, tabs.loc.y + 3, end - left, 26);
+                if i == self.tab || self.hovered == Some(Hit::Tab(i)) {
+                    view.canvas.rect(
+                        area,
+                        8.0,
+                        if i == self.tab {
+                            [accent[0], accent[1], accent[2], 0.28]
+                        } else {
+                            white(0.05)
+                        },
+                        0.0,
+                        LINE,
                     );
-                    break;
                 }
-                let item = &self.page.items[index];
-                let r = rect(x, row_y, w, 48);
-                if item.kind == "section" {
-                    label(
-                        view,
-                        renderer,
-                        &item.title,
-                        rect(x + 4, row_y + 14, w - 8, 20),
-                        13.0,
-                    );
-                } else {
-                    if index == self.selected {
-                        view.canvas.rect(r, 8.0, [1.0, 1.0, 1.0, 0.07], 0.0, LINE);
-                    }
-                    image(view, renderer, Some(item), rect(x + 4, row_y + 4, 40, 40));
-                    label(
-                        view,
-                        renderer,
-                        &item.title,
-                        rect(x + 56, row_y + 7, w - 64, 20),
-                        12.5,
-                    );
-                    label(
-                        view,
-                        renderer,
-                        &item.subtitle,
-                        rect(x + 56, row_y + 28, w - 64, 18),
+                centered(
+                    view,
+                    renderer,
+                    name,
+                    rect(area.loc.x, area.loc.y + 5, area.size.w, 20),
+                    style(
+                        12.0,
+                        Weight::Medium,
+                        white(if i == self.tab { 0.97 } else { 0.62 }),
+                    ),
+                );
+                view.hits.push((area, Hit::Tab(i)));
+            }
+            let status = if !self.error.is_empty() {
+                &self.error
+            } else {
+                &self.state.message
+            };
+            if !status.is_empty() {
+                label(
+                    view,
+                    renderer,
+                    status,
+                    rect(x + 16, y + 328, w - 32, 18),
+                    style(
                         11.0,
-                    );
-                    view.hits.push((r, Hit::Row(index)));
-                }
-                row_y += 52;
+                        Weight::Regular,
+                        if self.error.is_empty() {
+                            white(0.55)
+                        } else {
+                            [1.0, 0.56, 0.56, 0.95]
+                        },
+                    ),
+                );
             }
+            let list_top = y + 330 + if status.is_empty() { 0 } else { 22 };
+            let bottom = y + p.size.h - 12;
+            if !self.state.logged_in {
+                // Centre the complete login block in the available list area.
+                let cy = list_top + (bottom - list_top - 164).max(0) / 2;
+                icon(
+                    view,
+                    renderer,
+                    "audio-x-generic-symbolic",
+                    rect(x + w / 2 - 20, cy, 40, 40),
+                    white(0.35),
+                );
+                centered(
+                    view,
+                    renderer,
+                    "Connect Spotify",
+                    rect(x + 12, cy + 52, w - 24, 24),
+                    style(15.0, Weight::SemiBold, white(0.95)),
+                );
+                centered(
+                    view,
+                    renderer,
+                    "Sign in once to play your music here.",
+                    rect(x + 12, cy + 80, w - 24, 20),
+                    style(11.5, Weight::Regular, white(0.58)),
+                );
+                let button = rect(x + (w - 140) / 2, cy + 116, 140, 36);
+                view.canvas.rect(
+                    button,
+                    18.0,
+                    white(if self.state.login_pending { 0.12 } else { 0.96 }),
+                    0.0,
+                    LINE,
+                );
+                centered(
+                    view,
+                    renderer,
+                    if self.state.login_pending {
+                        "Waiting for login…"
+                    } else {
+                        "Log in"
+                    },
+                    rect(button.loc.x + 4, button.loc.y + 9, 132, 20),
+                    style(
+                        13.0,
+                        Weight::SemiBold,
+                        if self.state.login_pending {
+                            white(0.75)
+                        } else {
+                            [0.08, 0.09, 0.12, 1.0]
+                        },
+                    ),
+                );
+                view.hits.push((button, Hit::Login));
+            } else {
+                let title_x = if self.back.is_empty() { x + 16 } else { x + 48 };
+                if !self.back.is_empty() {
+                    let area = rect(x + 12, list_top, 28, 28);
+                    if self.hovered == Some(Hit::Back) {
+                        view.canvas.rect(area, 14.0, white(0.10), 0.0, LINE);
+                    }
+                    icon(
+                        view,
+                        renderer,
+                        "go-previous-symbolic",
+                        rect(area.loc.x + 6, area.loc.y + 6, 16, 16),
+                        white(1.0),
+                    );
+                    view.hits.push((area, Hit::Back));
+                }
+                let show_header = !self.back.is_empty()
+                    || self.searching
+                    || !self.query.is_empty()
+                    || self.loading;
+                if show_header {
+                    label(
+                        view,
+                        renderer,
+                        &if self.loading {
+                            "Loading…".into()
+                        } else {
+                            page_title(&self.page.title)
+                        },
+                        rect(title_x, list_top + 5, right - 16 - title_x, 22),
+                        style(
+                            14.0,
+                            Weight::SemiBold,
+                            white(if self.loading { 0.55 } else { 0.95 }),
+                        ),
+                    );
+                }
+                let mut row_y = list_top + if show_header { 36 } else { 4 };
+                view.visible_rows = ((bottom - row_y) / 52).max(0) as usize;
+                for index in self.scroll
+                    ..(self.scroll + view.visible_rows)
+                        .min(self.page.items.len() + usize::from(self.page.next.is_some()))
+                {
+                    let area = rect(x + 8, row_y, w - 16, 48);
+                    if index == self.page.items.len() {
+                        if self.hovered == Some(Hit::More) {
+                            view.canvas.rect(area, 10.0, white(0.06), 0.0, LINE);
+                        }
+                        centered(
+                            view,
+                            renderer,
+                            "Show more",
+                            rect(area.loc.x, row_y + 16, area.size.w, 20),
+                            style(12.0, Weight::Medium, accent_text),
+                        );
+                        view.hits.push((area, Hit::More));
+                        break;
+                    }
+                    let item = &self.page.items[index];
+                    if item.kind == "section" {
+                        let mut st = style(11.0, Weight::SemiBold, white(0.55));
+                        st.tracking = 0.8;
+                        label(
+                            view,
+                            renderer,
+                            &item.title.to_uppercase(),
+                            rect(x + 16, row_y + 22, w - 32, 20),
+                            st,
+                        );
+                    } else {
+                        if index == self.selected || self.hovered == Some(Hit::Row(index)) {
+                            view.canvas.rect(area, 10.0, white(0.07), 0.0, LINE);
+                        }
+                        image(
+                            view,
+                            renderer,
+                            Some(item),
+                            rect(x + 14, row_y + 3, 42, 42),
+                            if item.kind == "artist" {
+                                CoverKind::Artist
+                            } else {
+                                CoverKind::List
+                            },
+                        );
+                        let playing = self
+                            .state
+                            .item
+                            .as_ref()
+                            .is_some_and(|current| current.uri == item.uri);
+                        let duration = item.kind == "track" && item.duration_ms > 0;
+                        let text_w = w - 86 - if playing || duration { 56 } else { 0 };
+                        label(
+                            view,
+                            renderer,
+                            &item.title,
+                            rect(x + 66, row_y + 7, text_w, 20),
+                            style(
+                                12.5,
+                                Weight::Medium,
+                                if playing { accent_text } else { white(0.95) },
+                            ),
+                        );
+                        label(
+                            view,
+                            renderer,
+                            &item.subtitle,
+                            rect(x + 66, row_y + 27, text_w, 18),
+                            style(11.0, Weight::Regular, white(0.58)),
+                        );
+                        if playing {
+                            icon(
+                                view,
+                                renderer,
+                                "audio-volume-high-symbolic",
+                                rect(right - 36, row_y + 16, 16, 16),
+                                accent,
+                            );
+                        } else if duration {
+                            let text = time(item.duration_ms);
+                            let st = style(11.0, Weight::Regular, white(0.45));
+                            let width = view.canvas.text.measure(&text, st).ceil() as i32;
+                            label(
+                                view,
+                                renderer,
+                                &text,
+                                rect(right - 20 - width, row_y + 17, width, 18),
+                                st,
+                            );
+                        }
+                        view.hits.push((area, Hit::Row(index)));
+                    }
+                    row_y += 52;
+                }
+            }
+        } else {
+            label(
+                view,
+                renderer,
+                "Music",
+                rect(x + 16, y + 16, w - 32, 20),
+                style(14.0, Weight::SemiBold, white(0.95)),
+            );
         }
         view.cached = view
             .canvas
@@ -371,7 +689,6 @@ impl Session {
             .filter_map(crate::classic::cache::CachedElement::from_ui)
             .collect();
     }
-    /// Elapsed/total label and the bar fill, rebuilt only when either changes.
     fn build_progress(
         &mut self,
         renderer: &mut GlesRenderer,
@@ -380,29 +697,26 @@ impl Session {
         accent: [f32; 4],
     ) {
         let view = &mut self.view;
-        let panel = panel_rect(size, self.anchor);
-        if panel.size.w < 240 || panel.size.h < 300 {
+        let p = panel_rect(size, self.anchor);
+        if p.size.w < 240 || p.size.h < 300 {
             view.tick_cached.clear();
             return;
         }
-        let (x, y, w) = (panel.loc.x + 16, panel.loc.y + 16, (panel.size.w - 32).max(1));
         let duration = self.state.item.as_ref().map_or(0, |i| i.duration_ms);
-        let position = self.state.position();
-        let fraction = if duration == 0 {
-            0.0
+        let position = self.state.position().min(duration);
+        let width = p.size.w - 48;
+        let fill = if duration == 0 {
+            0
         } else {
-            position as f64 / duration as f64
+            (width as f64 * position as f64 / duration as f64).round() as i32
         };
-        let fill = (w as f64 * fraction) as i32;
-        let text = format!(
-            "{}:{:02} / {}:{:02}",
-            position / 60000,
-            position / 1000 % 60,
-            duration / 60000,
-            duration / 1000 % 60
+        let key = (
+            fill,
+            position / 1000,
+            duration.saturating_sub(position) / 1000,
+            self.state.item.is_some(),
         );
-        let key = (fill, text);
-        if view.tick_key.as_ref() == Some(&key) {
+        if view.tick_key == Some(key) {
             return;
         }
         #[cfg(test)]
@@ -410,10 +724,29 @@ impl Session {
             view.tick_builds += 1;
         }
         view.tick.begin(renderer, scale);
-        view.tick
-            .rect(rect(x, y + 110, fill, 5), 2.5, accent, 0.0, LINE);
-        view.tick
-            .label(renderer, &key.1, x + 156, y + 72, w - 156, 11.0);
+        let (x, y) = (p.loc.x + 24, p.loc.y + 152);
+        if self.state.item.is_some() {
+            view.tick.rect(rect(x, y, fill, 4), 2.0, accent, 0.0, LINE);
+            view.tick.rect(
+                rect(x + fill - 6, y - 4, 12, 12),
+                6.0,
+                white(1.0),
+                0.0,
+                LINE,
+            );
+            let st = style(11.0, Weight::Medium, white(0.62));
+            view.tick
+                .styled_label(renderer, &time(position), x, y + 10, width / 2, st);
+            let remaining = format!("-{}", time(duration.saturating_sub(position)));
+            let text_width = view.tick.text.measure(&remaining, st).ceil() as i32;
+            let label_x = x + width - text_width;
+            view.tick
+                .styled_label(renderer, &remaining, label_x, y + 10, text_width, st);
+            #[cfg(test)]
+            {
+                view.remaining_right = label_x + text_width;
+            }
+        }
         view.tick_cached = view
             .tick
             .finish()

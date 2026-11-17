@@ -112,7 +112,7 @@ pub struct Widgets {
     pub refreshing: bool,
     player: Option<crate::media::Player>,
     music: Option<crate::media::Player>,
-    music_image: Option<smithay::backend::renderer::element::memory::MemoryRenderBuffer>,
+    music_image: Option<std::sync::Arc<crate::media::ui::Cover>>,
     music_available: bool,
 }
 const MEDIA_COMMANDS: [crate::media::Command; 3] = [
@@ -121,15 +121,44 @@ const MEDIA_COMMANDS: [crate::media::Command; 3] = [
     crate::media::Command::Next,
 ];
 /// Previous / play-pause / next buttons inside a media widget panel.
-fn media_buttons(r: Rect) -> impl Iterator<Item = (crate::media::Command, Rect)> {
+pub(crate) fn media_buttons(
+    r: Rect,
+    music: bool,
+) -> impl Iterator<Item = (crate::media::Command, Rect)> {
+    let center = if music {
+        r.loc.x + 128 + (r.size.w - 142) / 2
+    } else {
+        r.loc.x + r.size.w / 2
+    };
     MEDIA_COMMANDS
         .into_iter()
         .enumerate()
-        .map(move |(i, c)| (c, rect(r.loc.x + 16 + i as i32 * 52, r.loc.y + 84, 44, 30)))
+        .map(move |(index, command)| {
+            let diameter = if command == crate::media::Command::PlayPause {
+                36
+            } else {
+                30
+            };
+            (
+                command,
+                rect(
+                    center + (index as i32 - 1) * 42 - diameter / 2,
+                    r.loc.y + 86 - diameter / 2,
+                    diameter,
+                    diameter,
+                ),
+            )
+        })
 }
-/// The media command under `p` when `r` is the media widget's panel.
-pub fn media_button(r: Rect, p: smithay::utils::Point<f64, Logical>) -> Option<crate::media::Command> {
-    media_buttons(r).find(|(_, b)| b.to_f64().contains(p)).map(|(c, _)| c)
+/// Drawing and input share the same transport geometry for each widget kind.
+pub fn media_button(
+    r: Rect,
+    p: smithay::utils::Point<f64, Logical>,
+    music: bool,
+) -> Option<crate::media::Command> {
+    media_buttons(r, music)
+        .find(|(_, r)| r.to_f64().contains(p))
+        .map(|(command, _)| command)
 }
 impl Widgets {
     pub fn configure(&mut self, names: &[String]) {
@@ -170,49 +199,10 @@ impl Widgets {
         }
     }
     fn update_music(&mut self, media: &crate::media::Media) {
-        let session = media.music.session.as_ref().filter(|s| s.has_state);
-        let (player, image) = if let Some(session) = session {
-            let player = session
-                .state
-                .item
-                .as_ref()
-                .map(|item| crate::media::Player {
-                    name: crate::media::MUSIC_PLAYER.into(),
-                    identity: "Spotify".into(),
-                    metadata: crate::media::Metadata {
-                        title: item.title.clone(),
-                        artists: vec![item.subtitle.clone()],
-                        art_url: item.cover_path.clone().unwrap_or_default(),
-                        ..Default::default()
-                    },
-                    playback: if session.state.playing {
-                        crate::media::Playback::Playing
-                    } else {
-                        crate::media::Playback::Paused
-                    },
-                    can_previous: true,
-                    can_play: true,
-                    can_pause: true,
-                    can_next: true,
-                    ..Default::default()
-                });
-            let image = session
-                .state
-                .item
-                .as_ref()
-                .and_then(|i| i.cover_path.as_ref())
-                .and_then(|path| session.view.covers.get(path))
-                .cloned();
-            (player, image)
-        } else {
-            (
-                media.snapshot.music_player.clone(),
-                media.snapshot.music_image.clone(),
-            )
-        };
-        let available = media.snapshot.music_available || session.is_some();
+        let (player, image) = media.music_now();
+        let available = media.snapshot.music_available || media.music.session.is_some();
         if self.music != player
-            || self.music_image.is_some() != image.is_some()
+            || !crate::media::ui::same_cover(&self.music_image, &image)
             || self.music_available != available
         {
             self.music = player;
@@ -264,7 +254,16 @@ impl Widgets {
         theme: &str,
     ) {
         for (name, r) in self.layouts(positions, size) {
-            layer.panel(r, 14.0, [0.065, 0.075, 0.10, 0.90], 1.0);
+            layer.panel(
+                r,
+                if name == "music" || name == "media" {
+                    16.0
+                } else {
+                    14.0
+                },
+                [0.065, 0.075, 0.10, 0.90],
+                1.0,
+            );
             if name == "clock" {
                 layer.label(
                     &self.clock,
@@ -280,75 +279,103 @@ impl Widgets {
                     1,
                     false,
                 );
-            } else if name == "music" {
-                let (title, artist) = self.music.as_ref().map_or_else(
+            } else if name == "music" || name == "media" {
+                use crate::ui::text::{TextStyleSpec, Weight};
+                let music = name == "music";
+                let player = if music {
+                    self.music.as_ref()
+                } else {
+                    self.player.as_ref()
+                };
+                if music {
+                    if let Some(image) = &self.music_image {
+                        layer.panel(
+                            r,
+                            16.0,
+                            [image.tint[0], image.tint[1], image.tint[2], 0.30],
+                            0.0,
+                        );
+                        layer.decoded_image(
+                            &image.buffer,
+                            rect(r.loc.x + 14, r.loc.y + 14, 100, 100),
+                        );
+                    } else {
+                        layer.panel(
+                            rect(r.loc.x + 14, r.loc.y + 14, 100, 100),
+                            10.0,
+                            [1.0, 1.0, 1.0, 0.07],
+                            0.0,
+                        );
+                        layer.tinted_icon_alpha(
+                            "audio-x-generic-symbolic",
+                            theme,
+                            rect(r.loc.x + 46, r.loc.y + 46, 36, 36),
+                            [255; 3],
+                            0.35,
+                        );
+                    }
+                }
+                let x = r.loc.x + if music { 128 } else { 16 };
+                let width = r.size.w - if music { 142 } else { 32 };
+                let title = player.map_or(if music { "Spotify" } else { "Nothing playing" }, |p| {
+                    p.title()
+                });
+                let artist = player.map_or_else(
                     || {
-                        (
-                            "Spotify",
+                        if music {
                             if self.music_available {
                                 "Click to browse".into()
                             } else {
                                 "Music daemon not installed".into()
-                            },
-                        )
+                            }
+                        } else {
+                            String::new()
+                        }
                     },
-                    |player| (player.title(), player.artist()),
+                    |p| {
+                        let artist = p.artist();
+                        if !music && artist.is_empty() {
+                            p.identity.clone()
+                        } else {
+                            artist
+                        }
+                    },
                 );
-                let text_x = if let Some(image) = &self.music_image {
-                    layer.decoded_image(image, rect(r.loc.x + 16, r.loc.y + 12, 52, 52));
-                    r.loc.x + 80
-                } else {
-                    r.loc.x + 16
-                };
-                let width = r.loc.x + r.size.w - 16 - text_x;
-                layer.label(title, rect(text_x, r.loc.y + 12, width, 24), 15.0, 1, false);
-                layer.label(
-                    &artist,
-                    rect(text_x, r.loc.y + 44, width, 20),
-                    12.0,
+                layer.styled_label(
+                    title,
+                    rect(x, r.loc.y + 16, width, 24),
+                    TextStyleSpec {
+                        size: 14.0,
+                        weight: Weight::SemiBold,
+                        color: [
+                            1.0,
+                            1.0,
+                            1.0,
+                            if !music && player.is_none() {
+                                0.55
+                            } else {
+                                0.97
+                            },
+                        ],
+                        tracking: 0.0,
+                    },
                     1,
                     false,
                 );
-                for (command, b) in media_buttons(r) {
-                    let enabled = self.music.as_ref().is_some_and(|p| p.allows(command));
-                    layer.panel(
-                        b,
-                        9.0,
-                        [1.0, 1.0, 1.0, if enabled { 0.16 } else { 0.05 }],
-                        0.0,
-                    );
-                    let icon = match command {
-                        crate::media::Command::Previous => "media-skip-backward-symbolic",
-                        crate::media::Command::Next => "media-skip-forward-symbolic",
-                        _ if self
-                            .music
-                            .as_ref()
-                            .is_some_and(|p| p.playback == crate::media::Playback::Playing) =>
-                        {
-                            "media-playback-pause-symbolic"
-                        }
-                        _ => "media-playback-start-symbolic",
-                    };
-                    layer.tinted_icon(
-                        icon,
-                        theme,
-                        rect(b.loc.x + 14, b.loc.y + 7, 16, 16),
-                        crate::media::ui::ICON_COLOR,
-                    );
-                }
-            } else if name == "media" {
-                let Some(player) = self.player.as_ref() else {
-                    layer.label("Nothing playing", rect(r.loc.x + 16, r.loc.y + 12, 248, 22), 14.0, 1, false);
-                    continue;
-                };
-                layer.label(player.title(), rect(r.loc.x + 16, r.loc.y + 12, 248, 24), 15.0, 1, false);
-                let artist = player.artist();
-                let artist = if artist.is_empty() { player.identity.clone() } else { artist };
-                layer.label(&artist, rect(r.loc.x + 16, r.loc.y + 44, 248, 20), 12.0, 1, false);
-                for (command, b) in media_buttons(r) {
-                    let alpha = if player.allows(command) { 0.16 } else { 0.05 };
-                    layer.panel(b, 9.0, [1.0, 1.0, 1.0, alpha], 0.0);
-                    layer.tinted_icon(crate::media::ui::icon(player, command), theme, rect(b.loc.x + 14, b.loc.y + 7, 16, 16), crate::media::ui::ICON_COLOR);
+                layer.styled_label(
+                    &artist,
+                    rect(x, r.loc.y + 38, width, 20),
+                    TextStyleSpec {
+                        size: 11.5,
+                        weight: Weight::Regular,
+                        color: [1.0, 1.0, 1.0, if player.is_some() { 0.62 } else { 0.55 }],
+                        tracking: 0.0,
+                    },
+                    1,
+                    false,
+                );
+                for (command, area) in media_buttons(r, music) {
+                    crate::media::ui::layer_transport(layer, theme, player, command, area);
                 }
             } else {
                 layer.label(
@@ -422,11 +449,14 @@ pub fn widget_height(name: &str) -> i32 {
     }
 }
 impl Gavno {
+    /// Overlay the daemon session on the MPRIS snapshot and show the result in
+    /// both media widgets, so they always match the bar.
     pub(crate) fn refresh_classic_music(&mut self) {
-        self.classic
-            .desktop
-            .widgets
-            .update_music(&self.now_playing.borrow());
+        let mut media = self.now_playing.borrow_mut();
+        media.sync_music_session();
+        let widgets = &mut self.classic.desktop.widgets;
+        widgets.update_player(media.snapshot.player.as_ref());
+        widgets.update_music(&media);
     }
     /// Only a visible desktop widget can pass through the open panel's input grab.
     pub(crate) fn classic_music_at(&self, point: smithay::utils::Point<f64, Logical>) -> bool {
@@ -624,19 +654,39 @@ mod tests {
     #[test]
     fn media_widget_tracks_the_player_and_maps_buttons() {
         let mut w = Widgets::default();
-        w.configure(&["media".into(), "clock".into(), "media".into(), "weather".into()]);
+        w.configure(&[
+            "media".into(),
+            "clock".into(),
+            "media".into(),
+            "weather".into(),
+        ]);
         assert_eq!(w.enabled, ["media", "clock"]);
         let before = w.revision;
-        let player = crate::media::Player { name: "p".into(), can_next: true, ..Default::default() };
+        let player = crate::media::Player {
+            name: "p".into(),
+            can_next: true,
+            ..Default::default()
+        };
         w.update_player(Some(&player));
         assert!(w.revision > before);
         let after = w.revision;
         w.update_player(Some(&player));
-        assert_eq!(w.revision, after, "an unchanged player must not re-prepare the layer");
+        assert_eq!(
+            w.revision, after,
+            "an unchanged player must not re-prepare the layer"
+        );
         let r = rect(100, 50, 280, 128);
-        assert_eq!(media_button(r, (100.0 + 16.0 + 52.0 * 2.0 + 5.0, 50.0 + 90.0).into()), Some(crate::media::Command::Next));
-        assert_eq!(media_button(r, (100.0 + 16.0 + 5.0, 50.0 + 90.0).into()), Some(crate::media::Command::Previous));
-        assert_eq!(media_button(r, (110.0, 60.0).into()), None);
+        for music in [false, true] {
+            for (command, area) in media_buttons(r, music) {
+                let point = (
+                    area.loc.x as f64 + area.size.w as f64 / 2.0,
+                    area.loc.y as f64 + area.size.h as f64 / 2.0,
+                )
+                    .into();
+                assert_eq!(media_button(r, point, music), Some(command));
+            }
+            assert_eq!(media_button(r, (110.0, 60.0).into(), music), None);
+        }
     }
     #[test]
     fn cpu_delta_ignores_guest_and_handles_resets() {
@@ -684,7 +734,10 @@ mod tests {
         h.gv.reconcile_classic_widgets();
         assert!(h.gv.classic.desktop.widgets.clock_timer.is_some());
         assert!(h.gv.classic.desktop.widgets.system_timer.is_some());
-        assert_eq!(h.gv.classic.desktop.widgets.enabled, ["clock", "system", "media"]);
+        assert_eq!(
+            h.gv.classic.desktop.widgets.enabled,
+            ["clock", "system", "media"]
+        );
         h.gv.power_off_monitors("test");
         assert!(h.gv.classic.desktop.widgets.clock_timer.is_none());
         assert!(h.gv.classic.desktop.widgets.system_timer.is_none());
@@ -709,5 +762,178 @@ mod tests {
         h.gv.stop_classic_desktop();
         std::thread::sleep(Duration::from_millis(30));
         let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+#[cfg(test)]
+mod music_design_artifacts {
+    use super::*;
+    use crate::media::ui::artifacts;
+    #[test]
+    fn classic_music_and_media_artifacts() {
+        let mut renderer = artifacts::renderer();
+        let path = artifacts::cover_path("widget-art");
+        for name in ["music", "media"] {
+            for empty in [false, true] {
+                let mut widgets = Widgets {
+                    enabled: vec![name.into()],
+                    music_available: true,
+                    ..Default::default()
+                };
+                if !empty {
+                    widgets.player = Some(artifacts::player());
+                    widgets.music = Some(artifacts::player());
+                    widgets.music_image = Some(artifacts::decoded_cover(&path));
+                }
+                for scale in [1.0, 1.35] {
+                    let mut layer = Layer::default();
+                    layer.begin(scale);
+                    widgets.prepare(
+                        &mut layer,
+                        &BTreeMap::from([(name.into(), [20, 20])]),
+                        (320, 220).into(),
+                        [0.22, 0.58, 0.42, 1.0],
+                        "Adwaita",
+                    );
+                    let mut elements = Vec::new();
+                    layer.append(&mut renderer, &mut elements, 1.0, (0.0, 0.0).into());
+                    artifacts::capture(
+                        &mut renderer,
+                        &elements,
+                        (320, 168),
+                        scale,
+                        &format!("classic-{name}{}", if empty { "-empty" } else { "" }),
+                    );
+                }
+            }
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod media_design_tests {
+    use super::*;
+    use crate::media::{
+        ui::{artifacts, Cover},
+        Command,
+    };
+    #[test]
+    fn transport_drawing_and_clicks_share_rectangles_and_cover_controls_tint() {
+        let r = rect(20, 20, 280, 128);
+        for music in [true, false] {
+            let name = if music { "music" } else { "media" };
+            let widgets = Widgets {
+                enabled: vec![name.into()],
+                music: Some(artifacts::player()),
+                player: Some(artifacts::player()),
+                ..Default::default()
+            };
+            let mut layer = Layer::default();
+            layer.begin(1.0);
+            widgets.prepare(
+                &mut layer,
+                &BTreeMap::from([(name.into(), [20, 20])]),
+                (640, 480).into(),
+                [0.3; 4],
+                "Adwaita",
+            );
+            let centers: Vec<_> = media_buttons(r, music)
+                .map(|(_, a)| a.loc.x + a.size.w / 2)
+                .collect();
+            assert_eq!(centers[1] - centers[0], 42);
+            assert_eq!(centers[2] - centers[1], 42);
+            assert_eq!(centers[1], r.loc.x + if music { 197 } else { 140 });
+            for (command, area) in media_buttons(r, music) {
+                assert_eq!(area.loc.y + area.size.h / 2, r.loc.y + 86);
+                let side = if command == Command::PlayPause {
+                    18
+                } else {
+                    16
+                };
+                let icon = rect(
+                    area.loc.x + (area.size.w - side) / 2,
+                    area.loc.y + (area.size.h - side) / 2,
+                    side,
+                    side,
+                );
+                assert!(
+                    layer.image_rects().contains(&icon),
+                    "missing {command:?} at {icon:?}"
+                );
+                let point = (
+                    area.loc.x as f64 + area.size.w as f64 / 2.0,
+                    area.loc.y as f64 + area.size.h as f64 / 2.0,
+                )
+                    .into();
+                assert_eq!(media_button(r, point, music), Some(command));
+                if command == Command::PlayPause {
+                    assert!(layer
+                        .panels()
+                        .iter()
+                        .any(|(r, c)| *r == area && c[3] == 0.96));
+                }
+            }
+            assert_eq!(
+                layer.panels().iter().filter(|(area, _)| *area == r).count(),
+                1
+            );
+        }
+        let art = std::sync::Arc::new(Cover {
+            tint: [0.2, 0.3, 0.4],
+            ..Default::default()
+        });
+        let mut widgets = Widgets {
+            enabled: vec!["music".into()],
+            music_image: Some(art.clone()),
+            ..Default::default()
+        };
+        let positions = BTreeMap::from([("music".into(), [20, 20])]);
+        let mut layer = Layer::default();
+        layer.begin(1.0);
+        widgets.prepare(
+            &mut layer,
+            &positions,
+            (640, 480).into(),
+            [0.3; 4],
+            "Adwaita",
+        );
+        assert!(layer.panels().contains(&(r, [0.2, 0.3, 0.4, 0.30])));
+        assert_eq!(
+            layer.panels().iter().filter(|(area, _)| *area == r).count(),
+            2
+        );
+        widgets.music_image = None;
+        layer.begin(1.0);
+        widgets.prepare(
+            &mut layer,
+            &positions,
+            (640, 480).into(),
+            [0.3; 4],
+            "Adwaita",
+        );
+        assert_eq!(
+            layer.panels().iter().filter(|(area, _)| *area == r).count(),
+            1
+        );
+    }
+    #[test]
+    fn unchanged_art_does_not_invalidate_but_a_new_cover_does() {
+        let mut widgets = Widgets::default();
+        let mut media = crate::media::Media::default();
+        media.snapshot.music_player = Some(artifacts::player());
+        media.snapshot.music_image = Some(std::sync::Arc::new(Cover::default()));
+        widgets.update_music(&media);
+        let revision = widgets.revision;
+        for _ in 0..10 {
+            widgets.update_music(&media);
+        }
+        assert_eq!(widgets.revision, revision);
+        media.snapshot.music_image = Some(std::sync::Arc::new(Cover {
+            tint: [0.2, 0.3, 0.4],
+            ..Default::default()
+        }));
+        widgets.update_music(&media);
+        assert_eq!(widgets.revision, revision + 1);
     }
 }

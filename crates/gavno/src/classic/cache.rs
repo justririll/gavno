@@ -7,7 +7,7 @@ use crate::{
         geometry::{rect, Rect},
         label_style, Canvas, LINE,
     },
-    ui::text::TextRenderer,
+    ui::text::{TextRenderer, TextStyleSpec, Weight},
 };
 use smithay::{
     backend::renderer::{
@@ -23,6 +23,7 @@ use std::collections::HashMap;
 
 #[derive(Clone)]
 struct Image {
+    alpha: f32,
     buffer: MemoryRenderBuffer,
     physical: (i32, i32),
     logical: (i32, i32),
@@ -117,12 +118,22 @@ impl smithay::backend::renderer::element::RenderElement<GlesRenderer> for Cached
     }
 }
 
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct LabelKey {
+    value: String,
+    size: u32,
+    weight: Weight,
+    color: [u32; 4],
+    tracking: u32,
+    width: i32,
+    lines: usize,
+}
 #[derive(Default)]
 pub struct Layer {
     canvas: Canvas,
     text: Option<TextRenderer>,
     icons: Icons,
-    labels: HashMap<(String, u32, i32, usize), Label>,
+    labels: HashMap<LabelKey, Label>,
     primitives: Vec<Primitive>,
     rendered: Vec<CachedElement>,
     scale: f64,
@@ -152,11 +163,22 @@ impl Layer {
             .push(Primitive::Box(r, radius, color, border));
     }
     pub fn tinted_icon(&mut self, name: &str, theme: &str, r: Rect, color: [u8; 3]) {
+        self.tinted_icon_alpha(name, theme, r, color, 1.0);
+    }
+    pub fn tinted_icon_alpha(
+        &mut self,
+        name: &str,
+        theme: &str,
+        r: Rect,
+        color: [u8; 3],
+        alpha: f32,
+    ) {
         let px = (r.size.w as f64 * self.scale).ceil() as u32;
         if let Some(buffer) = self.icons.get_tinted_color(name, px, theme, color) {
             self.primitives.push(Primitive::Image(
                 r,
                 Image {
+                    alpha,
                     buffer,
                     physical: (px as i32, px as i32),
                     logical: (r.size.w, r.size.h),
@@ -174,6 +196,7 @@ impl Layer {
             self.primitives.push(Primitive::Image(
                 r,
                 Image {
+                    alpha: 1.0,
                     buffer,
                     physical: (px as i32, px as i32),
                     logical: (r.size.w, r.size.h),
@@ -181,25 +204,43 @@ impl Layer {
             ));
         }
     }
-    /// Reuse a 96px cover decoded by the MPRIS or music worker.
+    /// Reuse the shared, rounded 160 px music cover without decoding it here.
     pub fn decoded_image(&mut self, buffer: &MemoryRenderBuffer, r: Rect) {
         self.primitives.push(Primitive::Image(
             r,
             Image {
+                alpha: 1.0,
                 buffer: buffer.clone(),
-                physical: (96, 96),
+                physical: (160, 160),
                 logical: (r.size.w, r.size.h),
             },
         ));
     }
     pub fn label(&mut self, value: &str, r: Rect, size: f32, lines: usize, center: bool) {
-        let key = (value.to_owned(), (size * 1000.0) as u32, r.size.w, lines);
+        self.styled_label(value, r, label_style(size), lines, center);
+    }
+    pub fn styled_label(
+        &mut self,
+        value: &str,
+        r: Rect,
+        style: TextStyleSpec,
+        lines: usize,
+        center: bool,
+    ) {
+        let key = LabelKey {
+            value: value.to_owned(),
+            size: style.size.to_bits(),
+            weight: style.weight,
+            color: style.color.map(f32::to_bits),
+            tracking: style.tracking.to_bits(),
+            width: r.size.w,
+            lines,
+        };
         if !self.labels.contains_key(&key) {
             if self.labels.len() >= 384 {
                 self.labels.retain(|_, label| label.used == self.revision);
             }
             let text = self.text.get_or_insert_with(TextRenderer::new);
-            let style = label_style(size);
             let mut values = Vec::new();
             if lines > 1 && text.measure(value, style) > r.size.w as f32 {
                 let mut split = 0;
@@ -228,6 +269,7 @@ impl Layer {
                 .iter()
                 .filter_map(|s| text.render(s, style, self.scale))
                 .map(|i| Image {
+                    alpha: 1.0,
                     buffer: i.buffer,
                     physical: (i.width, i.height),
                     logical: (i.logical_w, i.logical_h),
@@ -252,7 +294,7 @@ impl Layer {
                 self.primitives.push(Primitive::Image(
                     rect(
                         x,
-                        r.loc.y + i as i32 * (size.ceil() as i32 + 3),
+                        r.loc.y + i as i32 * (style.size.ceil() as i32 + 3),
                         image.logical.0,
                         image.logical.1,
                     ),
@@ -295,7 +337,7 @@ impl Layer {
                             renderer,
                             (r.loc.x as f64 * self.scale, r.loc.y as f64 * self.scale),
                             &image.buffer,
-                            Some(p as f32),
+                            Some(p as f32 * image.alpha),
                             Some(Rectangle::from_size(
                                 (image.physical.0 as f64, image.physical.1 as f64).into(),
                             )),
@@ -329,6 +371,26 @@ impl Layer {
                 .cloned()
                 .map(GavnoRenderElement::Desktop),
         );
+    }
+    #[cfg(test)]
+    pub(crate) fn panels(&self) -> Vec<(Rect, [f32; 4])> {
+        self.primitives
+            .iter()
+            .filter_map(|p| match p {
+                Primitive::Box(r, _, c, _) => Some((*r, *c)),
+                _ => None,
+            })
+            .collect()
+    }
+    #[cfg(test)]
+    pub(crate) fn image_rects(&self) -> Vec<Rect> {
+        self.primitives
+            .iter()
+            .filter_map(|p| match p {
+                Primitive::Image(r, _) => Some(*r),
+                _ => None,
+            })
+            .collect()
     }
     #[cfg(test)]
     pub fn image_bytes(&self) -> usize {
@@ -393,5 +455,31 @@ pub(crate) mod performance {
                     .and_then(|line| line.split_whitespace().nth(1)?.parse().ok())
             })
             .unwrap_or(0)
+    }
+}
+
+#[cfg(test)]
+mod styled_label_tests {
+    use super::*;
+    #[test]
+    fn label_cache_separates_styles_and_reuses_identical_styles() {
+        let mut layer = Layer::default();
+        layer.begin(1.0);
+        let mut style = label_style(12.0);
+        style.color = [1.0, 0.0, 0.0, 1.0];
+        let area = rect(0, 0, 120, 20);
+        layer.styled_label("Same text", area, style, 1, false);
+        assert_eq!(layer.labels.len(), 1);
+        style.color = [0.0, 1.0, 0.0, 1.0];
+        layer.styled_label("Same text", area, style, 1, false);
+        assert_eq!(layer.labels.len(), 2);
+        layer.styled_label("Same text", area, style, 1, true);
+        assert_eq!(layer.labels.len(), 2);
+        style.weight = Weight::Regular;
+        layer.styled_label("Same text", area, style, 1, false);
+        assert_eq!(layer.labels.len(), 3);
+        style.tracking = 0.8;
+        layer.styled_label("Same text", area, style, 1, false);
+        assert_eq!(layer.labels.len(), 4);
     }
 }

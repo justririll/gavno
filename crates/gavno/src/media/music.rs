@@ -12,7 +12,8 @@ use smithay::{
     utils::{Logical, Point},
 };
 use std::{
-    collections::HashMap,
+    collections::VecDeque,
+    sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -27,7 +28,7 @@ mod ui;
 #[path = "music_worker.rs"]
 pub(super) mod worker;
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Item {
     pub uri: String,
@@ -115,6 +116,7 @@ pub struct Session {
     pub selected: usize,
     pub scroll: usize,
     pub dirty: bool,
+    pub hovered: Option<Hit>,
     pub view: ui::View,
     worker: async_channel::Sender<worker::Request>,
     source: Option<RegistrationToken>,
@@ -140,6 +142,54 @@ impl Drop for Session {
     }
 }
 impl Session {
+    fn hover(&mut self, hit: Option<Hit>) -> bool {
+        if self.hovered == hit {
+            return false;
+        }
+        self.hovered = hit;
+        if let Some(Hit::Row(index)) = hit {
+            self.selected = index;
+        }
+        self.dirty = true;
+        true
+    }
+    fn request_covers(&mut self) {
+        if !self.state.logged_in {
+            return;
+        }
+        if let Some(path) = self
+            .state
+            .item
+            .as_ref()
+            .and_then(|i| i.cover_path.as_deref())
+        {
+            self.view
+                .covers
+                .request(path, worker::CoverKind::Hero, &self.worker);
+        }
+        if self.state.logged_in {
+            for item in self
+                .page
+                .items
+                .iter()
+                .skip(self.scroll)
+                .take(self.view.visible_rows.max(6))
+                .filter(|i| i.kind != "section")
+            {
+                if let Some(path) = &item.cover_path {
+                    self.view.covers.request(
+                        path,
+                        if item.kind == "artist" {
+                            worker::CoverKind::Artist
+                        } else {
+                            worker::CoverKind::List
+                        },
+                        &self.worker,
+                    );
+                }
+            }
+        }
+    }
     pub fn send(&self, command: worker::Command) {
         let _ = self.worker.try_send(worker::Request::Command(command));
     }
@@ -199,6 +249,7 @@ impl Session {
         self.scroll = 0;
         self.selected = 0;
         self.drag = None;
+        self.hovered = None;
         self.view = Default::default();
     }
     fn tab(&mut self, tab: usize, handle: &LoopHandle<'_, Gavno>) {
@@ -324,6 +375,7 @@ impl Gavno {
                 selected: 0,
                 scroll: 0,
                 dirty: true,
+                hovered: None,
                 view: Default::default(),
                 worker,
                 source: None,
@@ -443,6 +495,7 @@ impl Gavno {
         else {
             return;
         };
+        let mut static_changed = true;
         match event {
             worker::Event::State(mut state) => {
                 let now = Instant::now();
@@ -450,7 +503,8 @@ impl Gavno {
                 if dragging(Hit::Volume) || s.volume_hold.is_some_and(|t| now < t) {
                     state.volume = s.state.volume;
                 }
-                let same_item = state.item.as_ref().map(|i| &i.uri) == s.state.item.as_ref().map(|i| &i.uri);
+                let same_item =
+                    state.item.as_ref().map(|i| &i.uri) == s.state.item.as_ref().map(|i| &i.uri);
                 if same_item && (dragging(Hit::Seek) || s.seek_hold.is_some_and(|t| now < t)) {
                     state.position_ms = s.state.position_ms;
                     state.position_at_ms = s.state.position_at_ms;
@@ -458,6 +512,16 @@ impl Gavno {
                 let logged_in = state.logged_in && !s.state.logged_in;
                 if s.state.logged_in && !state.logged_in {
                     s.clear_account(&self.loop_handle);
+                }
+                static_changed = s.state.logged_in != state.logged_in
+                    || s.state.login_pending != state.login_pending
+                    || s.state.playing != state.playing
+                    || s.state.item != state.item
+                    || s.state.volume != state.volume
+                    || s.state.message != state.message
+                    || s.state.upcoming != state.upcoming;
+                if !same_item {
+                    s.view.covers.clear_hero();
                 }
                 s.state = state;
                 s.has_state = true;
@@ -491,10 +555,16 @@ impl Gavno {
                 s.has_state = false;
                 s.error = "Music daemon unavailable".into();
             }
-            worker::Event::Cover(url, path, image) => {
+            worker::Event::Cover(_, _, _, _) if !s.state.logged_in => return,
+            worker::Event::Cover(url, path, kind, image) => {
                 s.cover_ready(&url, &path);
                 if let Some(image) = image {
-                    s.view.covers.insert(path, image);
+                    if kind != worker::CoverKind::Hero
+                        || s.state.item.as_ref().and_then(|i| i.cover_path.as_deref())
+                            == Some(&path)
+                    {
+                        s.view.covers.insert(path, kind, image);
+                    }
                 }
             }
             worker::Event::Error(error) => {
@@ -502,7 +572,8 @@ impl Gavno {
                 s.error = error;
             }
         }
-        s.dirty = true;
+        s.request_covers();
+        s.dirty |= static_changed;
         let playing = s.state.playing;
         if !playing {
             if let Some(token) = s.tick.take() {
@@ -519,32 +590,30 @@ impl Gavno {
     }
     /// One-second progress tick, armed only while the panel is open and music plays.
     fn music_tick(&mut self) {
-        let token = self
-            .loop_handle
-            .insert_source(Timer::from_duration(Duration::from_secs(1)), |_, _, gv| {
-                gv.guard(Feature::Media, (), |gv| {
-                    let mut media = gv.now_playing.borrow_mut();
-                    let Some(s) = media.music.session.as_mut() else {
-                        return;
-                    };
-                    s.tick = None;
-                    // Outputs off: `power_on_monitors` re-arms the tick. A finished
-                    // track needs no ticks either; the next daemon state re-arms it.
-                    let finished = s
-                        .state
-                        .item
-                        .as_ref()
-                        .is_some_and(|i| i.duration_ms > 0 && s.state.position() >= i.duration_ms);
-                    if !s.state.playing || finished || gv.power.is_off() {
-                        return;
-                    }
-                    drop(media);
-                    gv.queue_redraw_all();
-                    gv.music_tick();
-                });
-                TimeoutAction::Drop
-            })
-            .ok();
+        let token =
+            self.loop_handle
+                .insert_source(Timer::from_duration(Duration::from_secs(1)), |_, _, gv| {
+                    gv.guard(Feature::Media, (), |gv| {
+                        let mut media = gv.now_playing.borrow_mut();
+                        let Some(s) = media.music.session.as_mut() else {
+                            return;
+                        };
+                        s.tick = None;
+                        // Outputs off: `power_on_monitors` re-arms the tick. A finished
+                        // track needs no ticks either; the next daemon state re-arms it.
+                        let finished = s.state.item.as_ref().is_some_and(|i| {
+                            i.duration_ms > 0 && s.state.position() >= i.duration_ms
+                        });
+                        if !s.state.playing || finished || gv.power.is_off() {
+                            return;
+                        }
+                        drop(media);
+                        gv.queue_redraw_all();
+                        gv.music_tick();
+                    });
+                    TimeoutAction::Drop
+                })
+                .ok();
         if let Some(s) = self.now_playing.borrow_mut().music.session.as_mut() {
             s.tick = token;
         }
@@ -748,10 +817,18 @@ impl Gavno {
             }
             let mut media = gv.now_playing.borrow_mut();
             let s = media.music.session.as_mut().unwrap();
-            if let Some((area, hit)) = s.drag {
-                if let Some(geometry) = gv.space.output_geometry(&s.output) {
-                    s.adjust(area, point - geometry.loc.to_f64(), hit);
-                }
+            let local = gv
+                .space
+                .output_geometry(&s.output)
+                .map(|g| point - g.loc.to_f64());
+            let mut changed = s.hover(local.and_then(|p| s.view.hit(p)).map(|(_, hit)| hit));
+            if let (Some((area, hit)), Some(local)) = (s.drag, local) {
+                s.adjust(area, local, hit);
+                changed |= s.dirty;
+            }
+            drop(media);
+            if changed {
+                gv.queue_redraw_all();
             }
             true
         })
@@ -778,6 +855,73 @@ impl Gavno {
     }
 }
 // Keep these imports local to this module's public UI vocabulary.
-pub(super) type Covers =
-    HashMap<String, smithay::backend::renderer::element::memory::MemoryRenderBuffer>;
+/// FIFO list cache plus exactly one high-resolution now-playing image.
+#[derive(Default)]
+pub struct Covers {
+    list: VecDeque<((String, worker::CoverKind), Arc<worker::Cover>)>,
+    hero: Option<(String, Arc<worker::Cover>)>,
+    requested: VecDeque<(String, worker::CoverKind)>,
+}
+impl Covers {
+    pub(crate) fn get(&self, path: &str) -> Option<&Arc<worker::Cover>> {
+        self.variant(path, worker::CoverKind::Hero)
+    }
+    fn variant(&self, path: &str, kind: worker::CoverKind) -> Option<&Arc<worker::Cover>> {
+        if kind == worker::CoverKind::Hero {
+            self.hero
+                .as_ref()
+                .filter(|(p, _)| p == path)
+                .map(|(_, c)| c)
+        } else {
+            self.list
+                .iter()
+                .find(|((p, k), _)| p == path && *k == kind)
+                .map(|(_, c)| c)
+        }
+    }
+    fn insert(&mut self, path: String, kind: worker::CoverKind, cover: worker::Cover) {
+        if kind == worker::CoverKind::Hero {
+            self.hero = Some((path, Arc::new(cover)));
+            return;
+        }
+        self.list.retain(|((p, k), _)| *p != path || *k != kind);
+        if self.list.len() == 64 {
+            if let Some((key, _)) = self.list.pop_front() {
+                self.requested.retain(|k| *k != key);
+            }
+        }
+        self.list.push_back(((path, kind), Arc::new(cover)));
+    }
+    fn clear_hero(&mut self) {
+        self.hero = None;
+        self.requested
+            .retain(|(_, k)| *k != worker::CoverKind::Hero);
+    }
+    fn request(
+        &mut self,
+        path: &str,
+        kind: worker::CoverKind,
+        worker: &async_channel::Sender<worker::Request>,
+    ) {
+        if self.variant(path, kind).is_some()
+            || self.requested.iter().any(|(p, k)| p == path && *k == kind)
+        {
+            return;
+        }
+        if worker
+            .try_send(worker::Request::Cover(path.to_owned(), kind))
+            .is_ok()
+        {
+            // Failed paths are remembered too, avoiding redraw/retry loops.
+            if self.requested.len() == 128 {
+                self.requested.pop_front();
+            }
+            self.requested.push_back((path.to_owned(), kind));
+        }
+    }
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.list.is_empty() && self.hero.is_none()
+    }
+}
 pub(super) type Hits = Vec<(Rect, Hit)>;

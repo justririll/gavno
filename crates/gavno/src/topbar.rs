@@ -697,8 +697,7 @@ impl TopBar {
             if let (Some(area), Some(player)) = (l.media, media.player.as_ref()) {
                 let action = BarAction::Media(crate::media::Command::PlayPause);
                 capsule(c, area, v.hover == Some(action.clone()));
-                c.colored_icon(renderer, &mut self.icons, &[crate::media::ui::icon(player, crate::media::Command::PlayPause)], &self.icon_theme, rect(area.loc.x + 9, 8, 14, 14), Some(crate::media::ui::ICON_COLOR));
-                c.label(renderer, &player.label(), area.loc.x + 30, 7, area.size.w - 38, 12.0);
+                crate::media::ui::capsule_content(c,renderer,&mut self.icons,&self.icon_theme,&media,player,area,v.hover==Some(action.clone()));
                 if self.music_panel {
                     push_hit(c, &mut v.hits, rect(area.loc.x, area.loc.y, 28, area.size.h), action);
                     push_hit(c, &mut v.hits, rect(area.loc.x + 28, area.loc.y, area.size.w - 28, area.size.h), BarAction::MusicPanel);
@@ -1450,5 +1449,74 @@ mod power_clock_tests {
         h.gv.power_on_monitors("test");
         h.gv.refresh_shell();
         assert!(h.gv.minute_timer.is_some());
+    }
+}
+
+#[cfg(test)]
+mod music_capsule_artifacts {
+    use super::*;
+    use crate::media::ui::artifacts;
+    #[test]
+    fn bar_capsule_artifacts() {
+        let mut renderer=artifacts::renderer();
+        let path=artifacts::cover_path("bar-art");
+        let mut bar=TopBar::default();
+        bar.now_playing.borrow_mut().snapshot=crate::media::Snapshot {
+            player:Some(artifacts::player()),music_player:Some(artifacts::player()),music_available:true,
+            music_image:Some(artifacts::decoded_cover(&path)),..Default::default()
+        };
+        let output=Output::new("capsule-test".into(),smithay::output::PhysicalProperties {size:(0,0).into(),subpixel:smithay::output::Subpixel::Unknown,make:"test".into(),model:"test".into()});
+        let features=crate::module::Features::new(&crate::config::Config::parse_checked(true,"",|_|None).unwrap());
+        for scale in [1.0,1.35] {
+            output.change_current_state(Some(smithay::output::Mode {size:((1280.0*scale) as i32,(800.0*scale) as i32).into(),refresh:60000}),None,Some(smithay::output::Scale::Fractional(scale)),None);
+            for hover in [false,true] {
+                if let Some(view)=bar.views.first_mut(){view.hover=hover.then_some(BarAction::Media(crate::media::Command::PlayPause));}
+                let elements=bar.elements(&mut renderer,&output,1280,None,Duration::from_secs(100),true,&features);
+                artifacts::capture(&mut renderer,&elements,(1280,40),scale,if hover{"bar-capsule-hover"}else{"bar-capsule"});
+            }
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod capsule_render_tests {
+    use super::*;
+    use crate::media::{ui::artifacts,Command};
+    use smithay::backend::renderer::element::Element;
+    #[test]
+    fn cover_toggle_scrim_and_static_capsule_commits() {
+        let mut renderer=artifacts::renderer();
+        let path=artifacts::cover_path("bar-check");
+        let art=artifacts::decoded_cover(&path);
+        let output=Output::new("bar-check".into(),smithay::output::PhysicalProperties {size:(0,0).into(),subpixel:smithay::output::Subpixel::Unknown,make:"test".into(),model:"test".into()});
+        output.change_current_state(Some(smithay::output::Mode {size:(1280,800).into(),refresh:60000}),None,None,None);
+        let features=crate::module::Features::new(&crate::config::Config::parse_checked(true,"",|_|None).unwrap());
+        let mut bar=TopBar::default();
+        let draw=|bar:&mut TopBar,renderer:&mut GlesRenderer,seconds|bar.elements(renderer,&output,1280,None,Duration::from_secs(seconds),true,&features);
+        for (spotify,loaded) in [(true,false),(false,true),(true,true)] {
+            let mut player=artifacts::player();if !spotify {player.name="org.mpris.MediaPlayer2.other".into();}
+            bar.now_playing.borrow_mut().snapshot=crate::media::Snapshot {player:Some(player),music_image:loaded.then(||art.clone()),..Default::default()};
+            let elements=draw(&mut bar,&mut renderer,100);
+            let area=bar.views[0].layout.as_ref().unwrap().media.unwrap();
+            let cover_rect=rect(area.loc.x+5,area.loc.y+3,18,18);
+            let has_cover=elements.iter().any(|e| {let g=e.geometry(1.0.into());g.loc.x==cover_rect.loc.x && g.loc.y==cover_rect.loc.y && g.size.w==18 && g.size.h==18 && e.src().size.w==160.0});
+            assert_eq!(has_cover,spotify && loaded);
+            assert!(!bar.views[0].canvas.drawn.contains(&cover_rect));
+            bar.views[0].hover=Some(BarAction::MusicPanel);draw(&mut bar,&mut renderer,101);
+            assert!(!bar.views[0].canvas.drawn.contains(&cover_rect));
+            bar.views[0].hover=Some(BarAction::Media(Command::PlayPause));draw(&mut bar,&mut renderer,102);
+            assert_eq!(bar.views[0].canvas.drawn.contains(&cover_rect),spotify && loaded);
+            bar.views[0].hover=None;
+        }
+        // Settle workspace springs. Position-only redraws retain every capsule
+        // element's identity and commit; no clock or progress timer is added.
+        draw(&mut bar,&mut renderer,200);draw(&mut bar,&mut renderer,201);
+        let before=draw(&mut bar,&mut renderer,202);
+        let after=draw(&mut bar,&mut renderer,203);
+        let area=bar.views[0].layout.as_ref().unwrap().media.unwrap();
+        let commits=|elements:Vec<GavnoRenderElement>|elements.into_iter().filter_map(|e| {let g=e.geometry(1.0.into());(g.loc.x>=area.loc.x && g.loc.x+g.size.w<=area.loc.x+area.size.w).then(||(e.id().clone(),e.current_commit()))}).collect::<Vec<_>>();
+        assert_eq!(commits(before),commits(after));
+        std::fs::remove_file(path).unwrap();
     }
 }

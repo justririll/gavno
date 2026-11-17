@@ -9,7 +9,11 @@ use crate::{module::Feature, Gavno};
 use smithay::{
     backend::renderer::element::memory::MemoryRenderBuffer, reexports::calloop::channel,
 };
-use std::{cell::RefCell, rc::Rc, sync::mpsc};
+use std::{
+    cell::RefCell,
+    rc::Rc,
+    sync::{mpsc, Arc},
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
@@ -97,7 +101,7 @@ pub struct Snapshot {
     pub image: Option<MemoryRenderBuffer>,
     pub music_available: bool,
     pub music_player: Option<Player>,
-    pub music_image: Option<MemoryRenderBuffer>,
+    pub music_image: Option<Arc<ui::Cover>>,
 }
 #[derive(Default)]
 pub struct Media {
@@ -107,6 +111,63 @@ pub struct Media {
     started: bool,
 }
 pub type Shared = Rc<RefCell<Media>>;
+
+impl Media {
+    /// The music player and cover to show. The daemon session, once it has state,
+    /// wins over the MPRIS view of the same player.
+    pub(crate) fn music_now(&self) -> (Option<Player>, Option<Arc<ui::Cover>>) {
+        self.session_music().unwrap_or_else(|| {
+            (self.snapshot.music_player.clone(), self.snapshot.music_image.clone())
+        })
+    }
+    /// Publish session art once, so bar, popover and widgets share its buffer.
+    pub(crate) fn sync_music_session(&mut self) {
+        let Some((player, image)) = self.session_music() else {
+            return;
+        };
+        if self
+            .snapshot
+            .player
+            .as_ref()
+            .is_none_or(|p| p.name == MUSIC_PLAYER)
+        {
+            self.snapshot.player = player.clone();
+        }
+        self.snapshot.music_player = player;
+        self.snapshot.music_image = image;
+    }
+    fn session_music(&self) -> Option<(Option<Player>, Option<Arc<ui::Cover>>)> {
+        let session = self.music.session.as_ref().filter(|s| s.has_state)?;
+        let player = session.state.item.as_ref().map(|item| Player {
+            name: MUSIC_PLAYER.into(),
+            identity: "Spotify".into(),
+            metadata: Metadata {
+                title: item.title.clone(),
+                artists: vec![item.subtitle.clone()],
+                art_url: item.cover_path.clone().unwrap_or_default(),
+                ..Default::default()
+            },
+            playback: if session.state.playing {
+                Playback::Playing
+            } else {
+                Playback::Paused
+            },
+            can_previous: true,
+            can_next: true,
+            can_play: true,
+            can_pause: true,
+            ..Default::default()
+        });
+        let image = session
+            .state
+            .item
+            .as_ref()
+            .and_then(|i| i.cover_path.as_deref())
+            .and_then(|p| session.view.covers.get(p))
+            .cloned();
+        Some((player, image))
+    }
+}
 
 impl Gavno {
     pub fn refresh_media(&mut self) {
@@ -118,7 +179,8 @@ impl Gavno {
                 return;
             }
             gv.now_playing.borrow_mut().started = true;
-            let _startup = crate::perf::Startup::new("dbus.media.spawn.begin", "dbus.media.spawn.end");
+            let _startup =
+                crate::perf::Startup::new("dbus.media.spawn.begin", "dbus.media.spawn.end");
             if let Some(tx) = gv.media_events() {
                 gv.now_playing.borrow_mut().worker =
                     mpris::spawn(tx, gv.config.dock.icon_theme.clone());
@@ -127,11 +189,13 @@ impl Gavno {
     }
     pub(crate) fn media_events(&self) -> Option<channel::Sender<Snapshot>> {
         let (tx, rx) = channel::channel();
-        let generation=self.media_generation;
+        let generation = self.media_generation;
         match self.loop_handle.insert_source(rx, move |event, _, gv| {
             let _stall = crate::perf::Stall::new("dbus.media");
             if let channel::Event::Msg(snapshot) = event {
-                if gv.media_generation==generation {gv.media_update(snapshot);}
+                if gv.media_generation == generation {
+                    gv.media_update(snapshot);
+                }
             }
         }) {
             Ok(_) => Some(tx),
@@ -143,7 +207,6 @@ impl Gavno {
     }
     pub(crate) fn media_update(&mut self, snapshot: Snapshot) {
         self.guard(Feature::Media, (), |gv| {
-            gv.classic.desktop.widgets.update_player(snapshot.player.as_ref());
             gv.now_playing.borrow_mut().snapshot = snapshot;
             gv.refresh_classic_music();
             gv.queue_redraw_all();

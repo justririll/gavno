@@ -275,11 +275,22 @@ fn run(
                 .map(|p| (p.metadata.art_url.clone(), p.desktop.clone()))
                 .unwrap_or_default();
             if key != music_image_key {
-                music_image = if key == image_key {
-                    image.clone()
-                } else {
-                    file_url(&key.0).and_then(|p| p.to_str().and_then(|p| icons.get(p, 96, theme)))
-                };
+                use super::music::worker::{decode_cover, CoverKind};
+                let path = file_url(&key.0);
+                let path = path.as_deref().and_then(|p| p.to_str());
+                music_image = path
+                    .and_then(|p| decode_cover(p, CoverKind::Hero))
+                    .or_else(|| {
+                        // Rounded, tinted covers need a PNG; other art (SVG) still shows,
+                        // square and with a neutral tint, through the icon loader. Every
+                        // view draws covers at the hero size, so load it at that size.
+                        let buffer = icons.get(path?, CoverKind::Hero.size(), theme)?;
+                        Some(super::ui::Cover {
+                            buffer,
+                            tint: super::ui::NEUTRAL_TINT,
+                        })
+                    })
+                    .map(std::sync::Arc::new);
                 music_image_key = key;
             }
             if events

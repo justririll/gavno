@@ -253,7 +253,13 @@ fn renderer() -> GlesRenderer {
 fn draw(h: &mut Harness, renderer: &mut GlesRenderer, output: &Output) {
     let mut media = h.gv.now_playing.borrow_mut();
     let s = media.music.session.as_mut().unwrap();
-    let elements = s.elements(renderer, output, (1280, 800).into(), 1.0, h.gv.topbar.accent());
+    let elements = s.elements(
+        renderer,
+        output,
+        (1280, 800).into(),
+        1.0,
+        h.gv.topbar.accent(),
+    );
     assert!(!elements.is_empty());
     if let Some(directory) = std::env::var_os("GAVNO_MUSIC_TEST_ARTIFACTS") {
         let bytes = crate::render::capture_elements(renderer, &elements, (1280, 800), 1.0).unwrap();
@@ -1128,7 +1134,10 @@ fn stale_daemon_volume_does_not_pull_back_the_slider() {
     state.volume = 0.5;
     emit_state(&fake, &connection, state);
     settle(&mut h);
-    assert!(session(&h.gv).state.volume < 0.1, "slider jumped back to the stale volume");
+    assert!(
+        session(&h.gv).state.volume < 0.1,
+        "slider jumped back to the stale volume"
+    );
 }
 
 #[test]
@@ -1156,7 +1165,10 @@ fn dj_row_plays_the_dj_without_a_context() {
     pump(&mut h, |_| !fake.calls("Play").is_empty());
     assert_eq!(
         fake.calls("Play"),
-        [("spotify:playlist:37i9dQZF1EYkqdzj48dyYq".into(), String::new())]
+        [(
+            "spotify:playlist:37i9dQZF1EYkqdzj48dyYq".into(),
+            String::new()
+        )]
     );
 }
 
@@ -1295,6 +1307,11 @@ fn classic_widget_opens_anchored_controls_drag_and_gates() {
         h.gv.classic.desktop.widgets.revision, revision,
         "daemon state wins over MPRIS"
     );
+    {
+        let media = h.gv.now_playing.borrow();
+        assert_eq!(media.music_now().0.unwrap().title(), "Header");
+        assert_eq!(media.snapshot.player.as_ref().unwrap().title(), "Header");
+    }
     let mut state = fake.0.lock().unwrap().state.clone();
     state.position_ms += 1000;
     emit_state(&fake, &connection, state);
@@ -1304,10 +1321,12 @@ fn classic_widget_opens_anchored_controls_drag_and_gates() {
         "position ticks do not invalidate the widget"
     );
     // Widget buttons control the existing daemon session without toggling it.
-    for (index, name) in ["previous", "toggle", "next"].into_iter().enumerate() {
+    for ((_, area), name) in
+        crate::classic::widgets::media_buttons(widget, true).zip(["previous", "toggle", "next"])
+    {
         let p = Point::from((
-            widget.loc.x as f64 + 20.0 + index as f64 * 52.0,
-            widget.loc.y as f64 + 90.0,
+            area.loc.x as f64 + area.size.w as f64 / 2.0,
+            area.loc.y as f64 + area.size.h as f64 / 2.0,
         ));
         widget_click(&mut h.gv, p);
         pump(&mut h, |_| {
@@ -1427,7 +1446,10 @@ fn progress_tick_does_not_rebuild_the_static_panel() {
     };
     let (before, after) = (ids(&first), ids(&ticked));
     let changed = before.iter().zip(&after).filter(|(a, b)| a != b).count();
-    assert!(changed <= 2, "only the bar fill and time label change, got {changed}");
+    assert!(
+        changed <= 4,
+        "only the fill, knob and two time labels change, got {changed}"
+    );
     // Content changes still rebuild the static part.
     build(&mut h, &mut renderer, &output, 1.25, accent);
     assert_eq!(counters(&h), (2, 3));
@@ -1510,4 +1532,541 @@ fn settle_for(h: &mut Harness, duration: Duration) {
             .dispatch(Some(Duration::from_millis(10)), &mut h.gv)
             .unwrap();
     }
+}
+
+/// Deterministic, offline visual fixtures and warm compositor-thread timings.
+#[test]
+fn music_design_artifacts_and_timings() {
+    let Some((_bus, address)) = bus() else { return };
+    let (_fake, _connection) = fake(&address, true);
+    let (mut h, output) = setup(&address);
+    playing_session(&mut h, &output);
+    let mut renderer = renderer();
+    let accent = [0.22, 0.58, 0.42, 1.0];
+    let root = std::env::temp_dir().join(format!("gavno-music-design-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let mut paths = Vec::new();
+    for (index, colors) in [
+        ([210u8, 50, 80], [40u8, 70, 160]),
+        ([25, 170, 150], [90, 45, 160]),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let path = root.join(format!("cover-{index}.png"));
+        let mut pixels = Vec::new();
+        for y in 0..160 {
+            for x in 0..160 {
+                let t = (x + y) as f32 / 318.0;
+                pixels.extend(
+                    (0..3).map(|c| (colors.0[c] as f32 * (1.0 - t) + colors.1[c] as f32 * t) as u8),
+                );
+                pixels.push(255);
+            }
+        }
+        let mut encoder = png::Encoder::new(std::fs::File::create(&path).unwrap(), 160, 160);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder
+            .write_header()
+            .unwrap()
+            .write_image_data(&pixels)
+            .unwrap();
+        paths.push(path.to_str().unwrap().to_owned());
+    }
+    {
+        let mut s = session_mut(&mut h);
+        s.page = Page {
+            title: "home".into(),
+            items: vec![
+                item("section", "Made for your evening"),
+                item("album", "Night colours"),
+                item("artist", "Nils Frahm"),
+                item("track", "Now playing"),
+                item("track", "A walk after dark"),
+            ],
+            ..Default::default()
+        };
+        s.selected = 3;
+        s.state.volume = 0.63;
+        s.state.position_ms = 73_000;
+        s.state.upcoming = vec![item("track", "A walk after dark")];
+        s.state.item.as_mut().unwrap().cover_path = Some(paths[0].clone());
+        for (index, item) in s.page.items.iter_mut().enumerate().skip(1) {
+            item.cover_path = Some(paths[index % 2].clone());
+            if index == 4 {
+                item.uri = "spotify:track:after-dark".into();
+            }
+        }
+        for path in &paths {
+            for kind in [worker::CoverKind::List, worker::CoverKind::Artist] {
+                s.view.covers.insert(
+                    path.clone(),
+                    kind,
+                    worker::decode_cover(path, kind).unwrap(),
+                );
+            }
+        }
+    }
+    session_mut(&mut h).view.covers.insert(
+        paths[0].clone(),
+        worker::CoverKind::Hero,
+        worker::decode_cover(&paths[0], worker::CoverKind::Hero).unwrap(),
+    );
+    let directory = std::env::var_os("GAVNO_MUSIC_TEST_ARTIFACTS").map(std::path::PathBuf::from);
+    for mode in ["playing", "logged-out", "idle"] {
+        {
+            let mut s = session_mut(&mut h);
+            s.state.logged_in = mode != "logged-out";
+            if mode == "idle" {
+                s.state.item = None;
+                s.state.upcoming.clear();
+                s.state.playing = false;
+            }
+            s.dirty = true;
+        }
+        for scale in [1.0, 1.35] {
+            let elements = build(&mut h, &mut renderer, &output, scale, accent);
+            if let Some(directory) = &directory {
+                std::fs::create_dir_all(directory).unwrap();
+                let (w, height) = ((1280.0 * scale) as i32, (800.0 * scale) as i32);
+                let bytes =
+                    crate::render::capture_elements(&mut renderer, &elements, (w, height), scale)
+                        .unwrap();
+                let suffix = if scale == 1.0 { "" } else { "-1.35" };
+                let mut encoder = png::Encoder::new(
+                    std::fs::File::create(directory.join(format!("music-{mode}{suffix}.png")))
+                        .unwrap(),
+                    w as u32,
+                    height as u32,
+                );
+                encoder.set_color(png::ColorType::Rgba);
+                encoder.set_depth(png::BitDepth::Eight);
+                encoder
+                    .write_header()
+                    .unwrap()
+                    .write_image_data(&bytes)
+                    .unwrap();
+            }
+        }
+    }
+    session_mut(&mut h).state.item = Some(item("track", "Now playing"));
+    build(&mut h, &mut renderer, &output, 1.35, accent);
+    let mut statics = Vec::new();
+    let mut ticks = Vec::new();
+    for index in 0..100 {
+        session_mut(&mut h).dirty = true;
+        let start = Instant::now();
+        build(&mut h, &mut renderer, &output, 1.35, accent);
+        statics.push(start.elapsed().as_secs_f64() * 1000.0);
+        session_mut(&mut h).state.position_ms = index * 1000;
+        let start = Instant::now();
+        build(&mut h, &mut renderer, &output, 1.35, accent);
+        ticks.push(start.elapsed().as_secs_f64() * 1000.0);
+    }
+    for (name, mut samples) in [("static", statics), ("tick", ticks)] {
+        samples.sort_by(f64::total_cmp);
+        eprintln!(
+            "music {name} (1.35, warm, n=100): median {:.3} ms, p95 {:.3} ms, max {:.3} ms",
+            samples[50], samples[95], samples[99]
+        );
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn cover_tint_is_neutral_for_grey_and_preserves_red_hue_within_clamps() {
+    let grey = worker::cover_tint(&[128, 128, 128, 255].repeat(64));
+    let lab = crate::ui::theme::oklab(grey);
+    assert!((0.32 - 1e-6..=0.48 + 1e-6).contains(&lab[0]));
+    assert!(
+        lab[1].hypot(lab[2]) < 1e-6,
+        "grey tint must be neutral: {lab:?}"
+    );
+    let red = worker::cover_tint(&[255, 0, 0, 255].repeat(64));
+    let lab = crate::ui::theme::oklab(red);
+    let original = crate::ui::theme::oklab([1.0, 0.0, 0.0]);
+    assert!((0.32 - 1e-6..=0.48 + 1e-6).contains(&lab[0]));
+    assert!((0.10..=0.110001).contains(&lab[1].hypot(lab[2])));
+    assert!((lab[2].atan2(lab[1]) - original[2].atan2(original[1])).abs() < 0.001);
+}
+
+#[test]
+fn cover_corners_are_antialiased_and_artists_are_circular() {
+    for kind in [
+        worker::CoverKind::Hero,
+        worker::CoverKind::List,
+        worker::CoverKind::Artist,
+    ] {
+        let size = kind.size();
+        let mut pixels = [200, 100, 50, 255].repeat((size * size) as usize);
+        worker::mask_cover(&mut pixels, size, kind);
+        let alpha = |x: u32, y: u32| pixels[((y * size + x) * 4 + 3) as usize];
+        assert_eq!(alpha(0, 0), 0);
+        assert_eq!(alpha(size / 2, size / 2), 255);
+        assert!(pixels.chunks_exact(4).any(|p| p[3] > 0 && p[3] < 255));
+        assert_eq!(alpha(6, 6) == 0, kind == worker::CoverKind::Artist);
+        assert!(
+            pixels
+                .chunks_exact(4)
+                .all(|p| p[..3].iter().all(|c| *c <= p[3])),
+            "mask must retain premultiplied alpha"
+        );
+    }
+}
+
+#[test]
+fn hover_changes_rebuild_once_and_unchanged_motion_reuses_static_elements() {
+    let Some((_bus, address)) = bus() else { return };
+    let (_fake, _connection) = fake(&address, true);
+    let (mut h, output) = setup(&address);
+    playing_session(&mut h, &output);
+    let mut renderer = renderer();
+    let accent = h.gv.topbar.accent();
+    build(&mut h, &mut renderer, &output, 1.0, accent);
+    for hit in [Hit::Control("previous"), Hit::Tab(1), Hit::Row(2)] {
+        let area = session(&h.gv)
+            .view
+            .hits
+            .iter()
+            .find(|(_, h)| *h == hit)
+            .unwrap()
+            .0;
+        let point = (
+            area.loc.x as f64 + area.size.w as f64 / 2.0,
+            area.loc.y as f64 + area.size.h as f64 / 2.0,
+        )
+            .into();
+        let before = counters(&h).0;
+        h.gv.music_motion(point);
+        assert_eq!(session(&h.gv).hovered, Some(hit));
+        build(&mut h, &mut renderer, &output, 1.0, accent);
+        assert_eq!(counters(&h).0, before + 1);
+        h.gv.music_motion(point);
+        build(&mut h, &mut renderer, &output, 1.0, accent);
+        assert_eq!(counters(&h).0, before + 1);
+    }
+    assert_eq!(session(&h.gv).selected, 2);
+}
+
+#[test]
+fn music_empty_states_keep_login_and_transport_targets() {
+    let Some((_bus, address)) = bus() else { return };
+    let (_fake, _connection) = fake(&address, true);
+    let (mut h, output) = setup(&address);
+    playing_session(&mut h, &output);
+    let mut renderer = renderer();
+    let accent = h.gv.topbar.accent();
+    for pending in [false, true] {
+        {
+            let mut s = session_mut(&mut h);
+            s.state.logged_in = false;
+            s.state.login_pending = pending;
+            s.dirty = true;
+        }
+        build(&mut h, &mut renderer, &output, 1.0, accent);
+        assert!(session(&h.gv)
+            .view
+            .hits
+            .iter()
+            .any(|(_, h)| *h == Hit::Login));
+        assert_eq!(session(&h.gv).view.visible_rows, 0);
+    }
+    {
+        let mut s = session_mut(&mut h);
+        s.state.logged_in = true;
+        s.state.item = None;
+        s.state.playing = false;
+        s.dirty = true;
+    }
+    build(&mut h, &mut renderer, &output, 1.0, accent);
+    let s = session(&h.gv);
+    for hit in [
+        Hit::Control("previous"),
+        Hit::Control("toggle"),
+        Hit::Control("next"),
+        Hit::Seek,
+        Hit::Volume,
+    ] {
+        assert!(s.view.hits.iter().any(|(_, h)| *h == hit));
+    }
+    assert!(s
+        .view
+        .labels
+        .iter()
+        .any(|(text, _, _)| text == "Nothing playing"));
+    assert!(s
+        .view
+        .labels
+        .iter()
+        .any(|(text, _, _)| text == "Pick something below"));
+    drop(s);
+    let before = counters(&h);
+    build(&mut h, &mut renderer, &output, 1.0, accent);
+    assert_eq!(counters(&h), before);
+    assert_eq!(ui::panel_rect((1280, 800).into(), None).size.h, 660);
+}
+
+#[test]
+fn remaining_time_stays_right_aligned_and_rows_have_playing_and_section_styles() {
+    use smithay::backend::renderer::element::Element;
+    let Some((_bus, address)) = bus() else { return };
+    let (_fake, _connection) = fake(&address, true);
+    let (mut h, output) = setup(&address);
+    playing_session(&mut h, &output);
+    let mut renderer = renderer();
+    let accent = [0.1, 0.2, 0.3, 1.0];
+    {
+        let mut s = session_mut(&mut h);
+        s.page = page("home");
+        s.page.items[1] = item("track", "Now playing");
+        s.page.items.push(Item {
+            uri: "spotify:track:other".into(),
+            ..item("track", "Other song")
+        });
+        s.dirty = true;
+    }
+    let mut right = None;
+    for scale in [1.0, 1.35] {
+        let mut rendered_right: Option<i32> = None;
+        for position in [0, 9_000, 61_000, 141_000, 199_000] {
+            session_mut(&mut h).state.position_ms = position;
+            let elements = build(&mut h, &mut renderer, &output, scale, accent);
+            // The remaining label is the frontmost progress element. Check
+            // its real render bounds too, allowing physical pixel snapping.
+            let bounds = elements[0].geometry(scale.into());
+            let actual_right = bounds.loc.x + bounds.size.w;
+            if let Some(expected) = rendered_right {
+                assert!(
+                    (actual_right - expected).abs() <= 1,
+                    "remaining label moved: {expected} -> {actual_right}"
+                );
+            } else {
+                rendered_right = Some(actual_right);
+            }
+            let s = session(&h.gv);
+            let edge = s.view.remaining_right;
+            assert_eq!(edge, ui::panel_rect((1280, 800).into(), None).loc.x + 396);
+            if let Some(expected) = right {
+                assert_eq!(edge, expected);
+            } else {
+                right = Some(edge);
+            }
+        }
+    }
+    let s = session(&h.gv);
+    let labels = &s.view.labels;
+    assert!(labels
+        .iter()
+        .any(|(text, _, st)| text == "RECOMMENDED" && st.tracking == 0.8 && st.color[3] == 0.55));
+    assert!(!labels
+        .iter()
+        .any(|(text, _, st)| text == "Home" && st.size == 14.0));
+    let area = s
+        .view
+        .hits
+        .iter()
+        .find(|(_, h)| *h == Hit::Row(1))
+        .unwrap()
+        .0;
+    let (_, _, st) = labels
+        .iter()
+        .find(|(text, r, _)| text == "Now playing" && r.loc.y == area.loc.y + 7)
+        .unwrap();
+    assert_eq!(st.color, [0.415, 0.48, 0.545, 1.0]);
+    assert!(labels
+        .iter()
+        .any(|(text, _, st)| text == "3:20" && st.color[3] == 0.45));
+}
+
+#[test]
+fn decoded_cover_cache_is_bounded_and_drops_the_previous_hero() {
+    let cover = worker::Cover {
+        buffer: Default::default(),
+        tint: [0.3; 3],
+    };
+    let mut cache = Covers::default();
+    for index in 0..70 {
+        cache.insert(index.to_string(), worker::CoverKind::List, cover.clone());
+    }
+    assert_eq!(cache.list.len(), 64);
+    assert!(cache.variant("0", worker::CoverKind::List).is_none());
+    assert!(cache.variant("69", worker::CoverKind::List).is_some());
+    cache.insert("hero".into(), worker::CoverKind::Hero, cover);
+    cache.clear_hero();
+    assert!(cache.hero.is_none());
+    assert_eq!(cache.list.len(), 64);
+}
+
+#[test]
+fn daemon_position_updates_reuse_static_and_slider_drags_keep_their_ranges() {
+    let Some((_bus, address)) = bus() else { return };
+    let (_fake, _connection) = fake(&address, true);
+    let (mut h, output) = setup(&address);
+    playing_session(&mut h, &output);
+    let mut renderer = renderer();
+    let accent = h.gv.topbar.accent();
+    build(&mut h, &mut renderer, &output, 1.0, accent);
+    let before = counters(&h);
+    let (generation, mut state) = {
+        let s = session(&h.gv);
+        (s.generation, s.state.clone())
+    };
+    state.position_ms = 15_000;
+    h.gv.music_event(generation, worker::Event::State(state));
+    build(&mut h, &mut renderer, &output, 1.0, accent);
+    assert_eq!(counters(&h), (before.0, before.1 + 1));
+    for hit in [Hit::Seek, Hit::Volume] {
+        let area = session(&h.gv)
+            .view
+            .hits
+            .iter()
+            .find(|(_, h)| *h == hit)
+            .unwrap()
+            .0;
+        let y = area.loc.y as f64 + area.size.h as f64 / 2.0;
+        assert!(h.gv.music_button((area.loc.x as f64, y).into(), true));
+        h.gv.music_motion((area.loc.x as f64 + area.size.w as f64, y).into());
+        {
+            let s = session(&h.gv);
+            if hit == Hit::Seek {
+                assert_eq!(s.state.position(), 200_000);
+            } else {
+                assert_eq!(s.state.volume, 1.0);
+            }
+        }
+        h.gv.music_motion((area.loc.x as f64, y).into());
+        {
+            let s = session(&h.gv);
+            if hit == Hit::Seek {
+                assert!(s.state.position() < 100);
+            } else {
+                assert_eq!(s.state.volume, 0.0);
+            }
+        }
+        h.gv.music_release();
+        assert!(session(&h.gv).drag.is_none());
+    }
+}
+
+#[test]
+fn top_level_rows_follow_tabs_but_search_back_and_loading_keep_headers() {
+    let Some((_bus, address)) = bus() else { return };
+    let (_fake, _connection) = fake(&address, true);
+    let (mut h, output) = setup(&address);
+    playing_session(&mut h, &output);
+    let mut renderer = renderer();
+    let accent = h.gv.topbar.accent();
+    let panel = ui::panel_rect((1280, 800).into(), None);
+    for (tab, title) in ["home", "library", "playlists"].into_iter().enumerate() {
+        {
+            let mut s = session_mut(&mut h);
+            s.tab = tab;
+            s.page = page(title);
+            s.loading = false;
+            s.back.clear();
+            s.query.clear();
+            s.searching = false;
+            s.dirty = true;
+        }
+        build(&mut h, &mut renderer, &output, 1.0, accent);
+        let s = session(&h.gv);
+        assert!(!s.view.labels.iter().any(|(_, _, st)| st.size == 14.0));
+        let section = s
+            .view
+            .labels
+            .iter()
+            .find(|(text, _, _)| text == "RECOMMENDED")
+            .unwrap()
+            .1;
+        assert_eq!(section.loc.y, panel.loc.y + 330 + 4 + 22);
+        let track = s
+            .view
+            .hits
+            .iter()
+            .find(|(_, hit)| *hit == Hit::Row(1))
+            .unwrap()
+            .0;
+        assert_eq!(track.loc.y, panel.loc.y + 330 + 4 + 52);
+    }
+    for kind in ["search", "back", "loading"] {
+        {
+            let mut s = session_mut(&mut h);
+            s.searching = kind == "search";
+            s.loading = kind == "loading";
+            s.back.clear();
+            if kind == "back" {
+                s.back.push(HistoryEntry {
+                    page: page("home"),
+                    query: String::new(),
+                });
+            }
+            s.dirty = true;
+        }
+        build(&mut h, &mut renderer, &output, 1.0, accent);
+        let s = session(&h.gv);
+        assert!(s.view.labels.iter().any(|(_, _, st)| st.size == 14.0));
+        assert_eq!(
+            s.view.hits.iter().any(|(_, hit)| *hit == Hit::Back),
+            kind == "back"
+        );
+        let track = s
+            .view
+            .hits
+            .iter()
+            .find(|(_, hit)| *hit == Hit::Row(1))
+            .unwrap()
+            .0;
+        assert_eq!(track.loc.y, panel.loc.y + 330 + 36 + 52);
+    }
+}
+
+#[test]
+fn current_cover_and_tint_are_shared_with_snapshot_and_survive_panel_close() {
+    let Some((_bus, address)) = bus() else { return };
+    let (_fake, _connection) = fake(&address, true);
+    let (mut h, output) = setup(&address);
+    playing_session(&mut h, &output);
+    {
+        let mut s = session_mut(&mut h);
+        s.state.item.as_mut().unwrap().cover_path = Some("/tmp/shared-cover.png".into());
+        s.view.covers.insert(
+            "/tmp/shared-cover.png".into(),
+            worker::CoverKind::Hero,
+            worker::Cover {
+                tint: [0.2, 0.3, 0.4],
+                ..Default::default()
+            },
+        );
+    }
+    h.gv.refresh_classic_music();
+    let art =
+        h.gv.now_playing
+            .borrow()
+            .snapshot
+            .music_image
+            .clone()
+            .unwrap();
+    {
+        let s = session(&h.gv);
+        assert!(std::sync::Arc::ptr_eq(
+            &art,
+            s.view.covers.get("/tmp/shared-cover.png").unwrap()
+        ));
+    }
+    assert_eq!(art.tint, [0.2, 0.3, 0.4]);
+    let revision = h.gv.classic.desktop.widgets.revision;
+    session_mut(&mut h).state.position_ms += 1000;
+    h.gv.refresh_classic_music();
+    assert_eq!(h.gv.classic.desktop.widgets.revision, revision);
+    h.gv.close_music();
+    assert!(std::sync::Arc::ptr_eq(
+        &art,
+        h.gv.now_playing
+            .borrow()
+            .snapshot
+            .music_image
+            .as_ref()
+            .unwrap()
+    ));
 }
