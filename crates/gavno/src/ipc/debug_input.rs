@@ -144,6 +144,7 @@ fn state(gv: &Gavno) -> Value {
     let mods = gv.seat.get_keyboard().unwrap().modifier_state();
     json!({"outputs_powered_on": !gv.power.is_off(), "rendered_frames": gv.power.rendered_frames,
         "power_frame_timer_firings": gv.power.frame_timer_firings, "shell_mode": gv.classic.mode, "shell_progress": gv.shell_progress(), "settled": gv.classic.settled,
+        "night_light_kelvin": crate::night_light::applied(),
         "overview_open": gv.overview.open(), "outputs": outputs, "focused": focused,
         "launcher_open": gv.launcher.open, "start_open": gv.classic.start.open,
         "music_open": gv.music_open(), "polkit_open": gv.polkit_visible(),

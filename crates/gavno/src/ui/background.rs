@@ -457,7 +457,13 @@ impl Gavno {
             .then(|| now + next_minute(wall_time()));
         // A visible panel already wakes each minute: service theme deadlines
         // there rather than adding a second wake between two clock ticks.
-        let due = bar_due.or(theme_due);
+        let night_due = self.sync_night_light(now);
+        let due = match bar_due.or(theme_due) {
+            // A panel tick services night-light deadlines too; otherwise wake for whichever is first.
+            Some(due) if bar_due.is_some() => Some(due),
+            Some(due) => Some(night_due.map_or(due, |night| due.min(night))),
+            None => night_due,
+        };
         if self
             .background
             .clock_due
@@ -1210,6 +1216,17 @@ mod tests {
         hdr.render(&mut r, &o, &exposed, crate::render::CLEAR_COLOR)
             .unwrap();
         assert!(hdr.needs_scanout());
+        // A night-light step re-encodes the output once, then settles again.
+        hdr.presented();
+        crate::night_light::set_applied_for_test(3400);
+        hdr.render(&mut r, &o, &exposed, crate::render::CLEAR_COLOR)
+            .unwrap();
+        assert!(hdr.needs_scanout());
+        hdr.presented();
+        hdr.render(&mut r, &o, &exposed, crate::render::CLEAR_COLOR)
+            .unwrap();
+        assert!(!hdr.needs_scanout());
+        crate::night_light::set_applied_for_test(crate::night_light::NEUTRAL_K);
     }
 
     /// Deterministic solar deadlines and actual Smithay damage, independent of

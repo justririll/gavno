@@ -57,6 +57,10 @@ pub struct DisplayConfig {
     pub off_after_idle_secs: u32,
     pub brightness_control: crate::brightness::Control,
     pub direct_scanout: bool,
+    /// Warm the HDR white point in the evening, following the theme's sun model.
+    pub night_light: bool,
+    /// Kelvin at full strength (1900-6500).
+    pub night_light_temperature: u32,
     /// Startup-only: when false the session exports GTK_A11Y=none and NO_AT_BRIDGE=1.
     pub accessibility: bool,
     #[serde(flatten)]
@@ -65,7 +69,7 @@ pub struct DisplayConfig {
 
 impl Default for DisplayConfig {
     fn default() -> Self {
-        Self { off_after_idle_secs: 600, brightness_control: Default::default(), direct_scanout: true, accessibility: false, unknown: Default::default() }
+        Self { off_after_idle_secs: 600, brightness_control: Default::default(), direct_scanout: true, night_light: true, night_light_temperature: crate::night_light::DEFAULT_K, accessibility: false, unknown: Default::default() }
     }
 }
 
@@ -305,6 +309,11 @@ impl Config {
             warnings.push(format!("notifications.max_visible {} clamped to {max_visible}", file.notifications.max_visible));
         }
         file.notifications.max_visible = max_visible;
+        let temperature = file.display.night_light_temperature.clamp(crate::night_light::MIN_K, crate::night_light::NEUTRAL_K);
+        if temperature != file.display.night_light_temperature {
+            warnings.push(format!("display.night_light_temperature {} clamped to {temperature}", file.display.night_light_temperature));
+        }
+        file.display.night_light_temperature = temperature;
         if file.output.internal_scale.is_some_and(|scale| !scale.is_finite())
             || file.output.sdr_white_nits.is_some_and(|nits| !nits.is_finite()) {
             warnings.push("invalid config file: output scale and SDR white must be finite".into());
@@ -435,6 +444,24 @@ options = "caps:escape"
         }
         for value in ["'true'", "1", "[]"] {
             assert!(Config::parse_checked(false, &format!("[display]\ndirect_scanout = {value}"), |_| None).is_err());
+        }
+    }
+
+    #[test]
+    fn night_light_defaults_parses_and_clamps() {
+        let defaults = Config::build(false, None, |_| None).0.display;
+        assert!(defaults.night_light);
+        assert_eq!(defaults.night_light_temperature, 3400);
+        let config = Config::parse_checked(false, "[display]\nnight_light = false\nnight_light_temperature = 2700", |_| None).unwrap();
+        assert!(!config.display.night_light);
+        assert_eq!(config.values()["display"]["night_light_temperature"], 2700);
+        for (text, expected) in [(100, 1900), (9000, 6500), (6500, 6500)] {
+            let (config, warnings) = Config::build(false, Some(&format!("[display]\nnight_light_temperature = {text}")), |_| None);
+            assert_eq!(config.display.night_light_temperature, expected);
+            assert_eq!(!warnings.is_empty(), text != expected);
+        }
+        for bad in ["-1", "'warm'", "3400.5"] {
+            assert!(Config::parse_checked(false, &format!("[display]\nnight_light_temperature = {bad}"), |_| None).is_err());
         }
     }
 

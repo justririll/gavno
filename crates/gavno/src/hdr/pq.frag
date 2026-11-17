@@ -12,6 +12,8 @@ uniform sampler2D tex;
 uniform float alpha;
 uniform float white_nits;
 uniform float extended_input;
+// sRGB to BT.2020 with the night-light white point folded in.
+uniform mat3 to2020;
 varying vec2 v_coords;
 #ifdef DEBUG_FLAGS
 uniform float tint;

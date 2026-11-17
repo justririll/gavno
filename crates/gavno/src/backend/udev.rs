@@ -1639,6 +1639,12 @@ fn capture_output_with_cursor_state(gv: &mut Gavno, output: &Output) -> Option<(
     Some((mode.size.w as u32, mode.size.h as u32, bytes))
 }
 
+/// Whether any output currently composes in HDR, i.e. night light has an effect.
+pub(crate) fn any_hdr(gv: &Gavno) -> bool {
+    let Backend::Udev(data) = &gv.backend else { return false };
+    data.gpu.as_ref().is_some_and(|g| g.surfaces.values().any(|s| s.hdr.is_some()))
+}
+
 pub(crate) fn set_sdr_white(gv: &mut Gavno, nits: f32) {
     if let Some(gpu) = udev(gv).and_then(|d| d.gpu.as_mut()) {
         for surface in gpu.surfaces.values_mut() {

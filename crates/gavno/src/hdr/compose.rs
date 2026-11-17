@@ -10,7 +10,7 @@ use smithay::{
             },
             gles::{
                 GlesError, GlesFrame, GlesRenderer, GlesTexProgram, GlesTexture, Uniform,
-                UniformName, UniformType,
+                UniformName, UniformType, UniformValue,
             },
             utils::{CommitCounter, DamageSet, OpaqueRegions},
             Bind, Offscreen,
@@ -28,6 +28,13 @@ pub struct Composition {
     force_damage: bool,
     pending: bool,
     extended: bool,
+    night_k: u32,
+}
+
+/// Column-major sRGB to BT.2020 matrix for GLSL, including the night-light gain.
+fn to2020_values(kelvin: u32) -> [f32; 9] {
+    let m = crate::night_light::matrix(kelvin);
+    std::array::from_fn(|i| m[i % 3][i / 3] as f32)
 }
 
 impl Composition {
@@ -67,7 +74,8 @@ impl Composition {
             .compile_custom_texture_shader(
                 crate::color::output_shader(),
                 &[UniformName::new("white_nits", UniformType::_1f),
-                  UniformName::new("extended_input", UniformType::_1f)],
+                  UniformName::new("extended_input", UniformType::_1f),
+                  UniformName::new("to2020", UniformType::Matrix3x3)],
             )
             .map_err(|e| e.to_string())?;
         crate::perf::startup("hdr.shader.ready");
@@ -89,6 +97,7 @@ impl Composition {
             force_damage: true,
             pending: true,
             extended,
+            night_k: crate::night_light::applied(),
         })
     }
 
@@ -119,6 +128,12 @@ impl Composition {
         }
         let mode = output.current_mode().ok_or("output has no mode")?;
         let mut states = RenderElementStates::default();
+        // A white-point step changes every pixel: encode the whole output once.
+        let night_k = crate::night_light::applied();
+        if night_k != self.night_k {
+            self.night_k = night_k;
+            self.force_damage = true;
+        }
         let force = self.force_damage;
         let mut changed = force || self.pending;
         self.buffer.render().draw(|texture| -> Result<_, String> {
@@ -163,6 +178,7 @@ impl Composition {
                 white_nits: self.white_nits,
                 size: mode.size,
                 extended_input,
+                to2020: to2020_values(night_k),
             },
             states,
         ))
@@ -178,6 +194,7 @@ pub struct PqElement {
     white_nits: f32,
     size: Size<i32, Physical>,
     extended_input: bool,
+    to2020: [f32; 9],
 }
 impl Element for PqElement {
     fn id(&self) -> &Id {
@@ -218,7 +235,8 @@ impl RenderElement<GlesRenderer> for PqElement {
         frame.override_default_tex_program(
             self.program.clone(),
             vec![Uniform::new("white_nits", self.white_nits),
-                 Uniform::new("extended_input", if self.extended_input { 1.0f32 } else { 0.0 })],
+                 Uniform::new("extended_input", if self.extended_input { 1.0f32 } else { 0.0 }),
+                 Uniform::new("to2020", UniformValue::Matrix3x3 { matrices: vec![self.to2020], transpose: false })],
         );
         let result = <TextureRenderElement<GlesTexture> as RenderElement<GlesRenderer>>::draw(
             &self.inner,

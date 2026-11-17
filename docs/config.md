@@ -45,6 +45,8 @@ default": see `terminal` and `launcher` below.
 | `[display] off_after_idle_secs` | u32 seconds, `0` = never | `600` | none |
 | `[display] direct_scanout` | boolean | `true` | none |
 | `[display] accessibility` | boolean | `false` | none |
+| `[display] night_light` | boolean | `true` | none |
+| `[display] night_light_temperature` | u32 kelvin, clamped to 1900-6500 | `3400` | none |
 | `[display] brightness_control` | string, `"auto"`, `"backlight"` or `"software"` | `"auto"` | none |
 | `[output] internal_scale` | float | `1.75` | `GAVNO_SCALE` |
 | `[output] mode` | string, `WIDTHxHEIGHT[@HZ]` | preferred mode, highest refresh among preferred modes | `GAVNO_OUTPUT_MODE` |
@@ -131,6 +133,24 @@ manager shares format preferences across outputs, including later hotplugs. SDR
 client buffers with other formats remain eligible for direct scanout after
 Smithay tests their plane assignment. Unsupported formats or
 HDR setup failures retain the SDR fallback. Runtime HDR toggles remain available.
+
+`[display] night_light = true` (the default) warms the white point of HDR outputs
+in the evening. Its strength follows the living theme's sun model and its
+`[theme] latitude`/`longitude` (or the theme's own fallback): none with the sun
+3 degrees above the horizon or higher, full at 6 degrees below or lower, smooth
+in between. At full strength the white is `night_light_temperature` kelvin
+(1900-6500; 6500 changes nothing). The gain is folded into the sRGB to BT.2020
+matrix of the final PQ encoding pass, so it costs no extra GPU pass, covers
+every HDR pixel (clients, solid colors, the cursor, the greeter and the
+software brightness overlay) and keeps the largest channel at 1.0, so nothing
+clips and nothing gets brighter. The matrix changes in steps of at least 50 K
+(about 60 steps over the evening, each a single full-output redraw) at
+deadlines on the theme's shared one-shot clock; there is no periodic timer, and
+nothing wakes at night or midday. Outputs powered off do not schedule anything.
+Changes reload live. SDR outputs are not adjusted (INFO log once); screenshots
+and screencopy capture the scene before the PQ pass, so they keep original
+colors. `gavno msg night_light '{"preview": true}'` forces full strength until
+`{"preview": false}`; see `docs/debugging.md`.
 
 For OLED panels that ignore backlight writes, select software brightness:
 
@@ -613,6 +633,8 @@ name such as `eDP-1`. Numeric steps describe the editor increments.
 | `output.mode` | string | `unset` | yes |
 | `output.hdr` | bool | `false` | yes |
 | `display.direct_scanout` | boolean | `true` | yes |
+| `display.night_light` | boolean | `true` | yes |
+| `display.night_light_temperature` | int (1900-6500, step 100) | `3400` | yes |
 | `display.accessibility` | boolean | `false` | after re-login |
 | `output.sdr_white_nits` | float (80.0–400.0, step 10.0) | `203.0` | yes |
 | `keyboard.repeat_delay` | int (0–5000, step 1) | `300` | yes |

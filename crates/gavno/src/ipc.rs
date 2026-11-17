@@ -245,6 +245,16 @@ fn dispatch(gv: &mut Gavno, method: &str, params: &Value) -> Result<Value, Strin
         }
         return Ok(json!({"mode": gv.classic.mode, "settled": gv.classic.settled, "progress": gv.shell_progress()}));
     }
+    if method == "night_light" {
+        if let Some(preview) = params.get("preview") {
+            let preview = preview.as_bool().ok_or("preview must be a boolean")?;
+            audit(method, params).map_err(|e| format!("cannot append agent audit log: {e}"))?;
+            gv.night_light.preview = preview;
+            gv.refresh_theme_clock();
+        }
+        return Ok(json!({"enabled": gv.config.display.night_light, "preview": gv.night_light.preview,
+            "temperature": crate::night_light::applied(), "hdr": crate::backend::udev::any_hdr(gv)}));
+    }
     if method == "config_schema" { return crate::config_schema::json(!matches!(gv.backend,crate::backend::Backend::Udev(_))); }
     if method == "reload_config" { return Err("reload_config requires asynchronous IPC".into()); }
     if method == "outputs" {

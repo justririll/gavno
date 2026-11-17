@@ -68,6 +68,8 @@
 
 # [display]
 # off_after_idle_secs = 600 # 0 disables automatic output power-off, independently of locking.
+# night_light = true # Warm the HDR white point in the evening (follows the sun).
+# night_light_temperature = 3400 # Kelvin at full strength, 1900-6500.
 
 # [lock]
 # after_idle_secs = 300 # 0 disables automatic locking; idle inhibitors are respected.

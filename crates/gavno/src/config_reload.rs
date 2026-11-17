@@ -170,6 +170,10 @@ pub(crate) fn apply(gv: &mut Gavno, prepared: Prepared) -> Result<Value, String>
     let power_changed = gv.config.display.off_after_idle_secs != config.display.off_after_idle_secs;
     let icons_changed = gv.config.dock.icon_theme != config.dock.icon_theme;
     let white_changed = gv.config.sdr_white_nits != config.sdr_white_nits;
+    let night_light_changed = gv.config.display.night_light != config.display.night_light
+        || gv.config.display.night_light_temperature != config.display.night_light_temperature
+        || gv.config.theme.latitude != config.theme.latitude
+        || gv.config.theme.longitude != config.theme.longitude;
     let scanout_changed = gv.config.display.direct_scanout != config.display.direct_scanout;
     let pins_changed = gv.config.dock.pinned != config.dock.pinned;
     let scheme_changed = gv.config.theme.app_color_scheme != config.theme.app_color_scheme;
@@ -227,6 +231,9 @@ pub(crate) fn apply(gv: &mut Gavno, prepared: Prepared) -> Result<Value, String>
             }
         }
     }
+    if night_light_changed {
+        gv.refresh_theme_clock();
+    }
     if white_changed {
         crate::backend::udev::set_sdr_white(gv, gv.config.sdr_white_nits);
     }
@@ -248,6 +255,26 @@ pub(crate) fn apply(gv: &mut Gavno, prepared: Prepared) -> Result<Value, String>
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn night_light_reloads_and_applies_at_once() {
+        let mut h = crate::state::tests::Harness::new();
+        h.gv.config.theme.latitude = Some(55.75);
+        h.gv.config.theme.longitude = Some(37.62);
+        let text = "[display]\nnight_light_temperature = 2500\n[theme]\nlatitude = 55.75\nlongitude = 37.62";
+        let config = Config::parse_checked(true, text, |_| None).unwrap();
+        let prepared = Prepared::new(config, &h.gv.config).unwrap();
+        let result = apply(&mut h.gv, prepared).unwrap();
+        assert!(result["applied"].as_array().unwrap().contains(&json!("display.night_light_temperature")));
+        assert_eq!(h.gv.config.display.night_light_temperature, 2500);
+        h.gv.night_light.preview = true;
+        h.gv.refresh_theme_clock();
+        assert_eq!(crate::night_light::applied(), 2500);
+        let config = Config::parse_checked(true, "[display]\nnight_light = false", |_| None).unwrap();
+        let prepared = Prepared::new(config, &h.gv.config).unwrap();
+        apply(&mut h.gv, prepared).unwrap();
+        assert_eq!(crate::night_light::applied(), crate::night_light::NEUTRAL_K);
+    }
+
     #[test]
     fn direct_scanout_reloads_in_both_directions() {
         let mut h = crate::state::tests::Harness::new();

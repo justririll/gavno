@@ -32,14 +32,6 @@ pub fn output_shader() -> String {
     ] {
         definitions.push_str(&format!("const float {name} = {value:.17};\n"));
     }
-    // GLSL matrix constructors list columns, not rows.
-    let values: Vec<_> = (0..3)
-        .flat_map(|column| (0..3).map(move |row| format!("{:.8}", BT709_TO_BT2020[row][column])))
-        .collect();
-    definitions.push_str(&format!(
-        "const mat3 to2020 = mat3({});\n",
-        values.join(", ")
-    ));
     include_str!("hdr/pq.frag").replace("// COLOR_CONSTANTS", &definitions)
 }
 

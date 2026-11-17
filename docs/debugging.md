@@ -171,6 +171,17 @@ occupied workspace to leave; `GAVNO_DEMO_CLIENT` can supply another command.
 A host Wayland or X display and Python 3 (only for safe path encoding in
 the script) are required. Debug input adds no recurring idle timers or workers.
 
+# Night light
+
+`gavno msg night_light` returns `{"enabled", "preview", "temperature", "hdr"}`,
+where `temperature` is the kelvin value currently applied (6500 = unchanged) and
+`hdr` says whether any output composes in HDR. `gavno msg night_light
+'{"preview": true}'` forces the configured `display.night_light_temperature`
+until `{"preview": false}`, so the effect can be checked in daylight; the
+preview is not persisted and schedules no timer. Debug `state` also reports
+`night_light_kelvin`. Only HDR outputs are adjusted, and screenshots keep the
+original colors.
+
 # Output power
 
 These normal IPC methods work without `GAVNO_DEBUG_INPUT`, including while locked:

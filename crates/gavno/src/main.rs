@@ -21,6 +21,7 @@ mod brightness;
 mod config_schema_tests;
 mod crash_log;
 mod color;
+mod night_light;
 mod hdr;
 mod cursor;
 mod debug;
