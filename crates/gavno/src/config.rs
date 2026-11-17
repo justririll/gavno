@@ -55,13 +55,14 @@ pub struct Config {
 pub struct DisplayConfig {
     pub off_after_idle_secs: u32,
     pub brightness_control: crate::brightness::Control,
+    pub direct_scanout: bool,
     #[serde(flatten)]
     unknown: toml::Table,
 }
 
 impl Default for DisplayConfig {
     fn default() -> Self {
-        Self { off_after_idle_secs: 600, brightness_control: Default::default(), unknown: Default::default() }
+        Self { off_after_idle_secs: 600, brightness_control: Default::default(), direct_scanout: true, unknown: Default::default() }
     }
 }
 
@@ -408,6 +409,20 @@ options = "caps:escape"
 
     fn build(nested: bool, text: Option<&str>, vars: &[(&str, &str)]) -> (Config, Vec<String>) {
         Config::build(nested, text, |key| vars.iter().find(|(k, _)| *k == key).map(|(_, v)| (*v).into()))
+    }
+
+    #[test]
+    fn direct_scanout_defaults_parses_and_validates() {
+        assert!(Config::build(false, None, |_| None).0.display.direct_scanout);
+        for value in [true, false] {
+            let text = format!("[display]\ndirect_scanout = {value}");
+            let config = Config::parse_checked(false, &text, |_| None).unwrap();
+            assert_eq!(config.display.direct_scanout, value);
+            assert_eq!(config.values()["display"]["direct_scanout"], value);
+        }
+        for value in ["'true'", "1", "[]"] {
+            assert!(Config::parse_checked(false, &format!("[display]\ndirect_scanout = {value}"), |_| None).is_err());
+        }
     }
 
     #[test]

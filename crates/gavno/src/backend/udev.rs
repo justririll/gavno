@@ -11,7 +11,7 @@
 //! Changes during a wait set `queued` and are drawn right after it. With
 //! nothing changing, no timer is armed and GAVNO sleeps.
 
-use std::{collections::HashMap, path::Path, time::Duration};
+use std::{collections::{HashMap, HashSet}, path::Path, time::Duration};
 
 use smithay::{
     backend::{
@@ -55,7 +55,7 @@ use smithay::{
         presentation::Refresh,
     },
 };
-use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
+use smithay_drm_extras::drm_scanner::{CrtcMapper, DrmScanEvent, DrmScanner, SimpleCrtcMapper};
 use tracing::{debug, error, info, warn};
 
 use super::Backend;
@@ -90,6 +90,7 @@ pub struct UdevData {
     /// DRM devices found at startup while our session was not the active one
     /// yet (no DRM master then); opened on the first activation.
     pending_devices: Vec<(DrmNode, std::path::PathBuf)>,
+    scanout_blocked: HashSet<String>,
 }
 
 impl Drop for UdevData {
@@ -107,7 +108,10 @@ struct Gpu {
     renderer: GlesRenderer,
     manager: GbmDrmOutputManager,
     allocator: GbmAllocator<DrmDeviceFd>,
-    scanner: DrmScanner,
+    scanner: DrmScanner<InternalFirstMapper>,
+    probe_after_present: bool,
+    probe_running: bool,
+    probe_again: bool,
     surfaces: HashMap<crtc::Handle, Surface>,
     disabled_outputs: HashMap<String, Output>,
 }
@@ -132,6 +136,7 @@ struct Surface {
     first_frame_presented: bool,
     /// Consecutive failed page flips; reset by a successful one.
     flip_failures: u32,
+    scanout: Scanout,
 }
 
 impl Drop for Gpu {
@@ -230,6 +235,7 @@ pub fn init(event_loop: &mut EventLoop<'static, Gavno>, gv: &mut Gavno) -> Resul
         gpu: None,
         dmabuf_global: None,
         pending_devices: Vec::new(),
+        scanout_blocked: HashSet::new(),
     });
 
     if active {
@@ -312,8 +318,19 @@ fn device_added(gv: &mut Gavno, node: DrmNode, path: &Path) {
         return;
     }
 
+    if !data.session.is_active() {
+        if !data.pending_devices.iter().any(|(pending, _)| *pending == node) {
+            data.pending_devices.push((node, path.to_owned()));
+        }
+        return;
+    }
     match open_gpu(gv, node, path) {
-        Ok(()) => device_changed(gv, node),
+        Ok(()) => {
+            scan_cached_connectors(gv, node);
+            if udev(gv).and_then(|data| data.gpu.as_ref()).is_some_and(|gpu| gpu.surfaces.is_empty()) {
+                device_changed(gv, node);
+            }
+        },
         Err(err) => error!(?err, ?node, "failed to open GPU"),
     }
 }
@@ -324,14 +341,18 @@ fn open_gpu(gv: &mut Gavno, node: DrmNode, path: &Path) -> Result<(), Box<dyn st
     let fd = data
         .session
         .open(path, OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOCTTY | OFlags::NONBLOCK)?;
+    crate::perf::startup("udev.gpu.session_fd_opened");
+    crate::perf::startup("udev.drm.master.begin");
     let fd = DrmDeviceFd::new(DeviceFd::from(fd));
-
+    crate::perf::startup("udev.drm.master.end");
     crate::perf::startup("udev.gpu.fd_opened");
-    // Keeping the previous master's CRTC state (false) saves about a second
-    // of eDP link training at startup, but on the laptop it left the cursor
-    // composited in software and every pointer move redrew the output, so
-    // reset it until planes are handed over explicitly.
-    let (drm, notifier) = DrmDevice::new(fd.clone(), true)?;
+    // Preserve the link and mode left by the greeter. Smithay's initial full
+    // commit sets the requested timing and resets its claimable cursor/overlays.
+    crate::perf::startup("udev.drm.device.begin");
+    let (drm, notifier) = {
+        let _trace = crate::perf::DrmStartupGuard::new(None);
+        DrmDevice::new(fd.clone(), false)?
+    };
     crate::perf::startup("udev.drm.ready");
     let gbm = GbmDevice::new(fd)?;
 
@@ -359,7 +380,11 @@ fn open_gpu(gv: &mut Gavno, node: DrmNode, path: &Path) -> Result<(), Box<dyn st
         allocator.clone(),
         exporter,
         Some(gbm),
-        SUPPORTED_FORMATS.iter().copied(),
+        // Preferences are shared across outputs and cannot be changed later.
+        // Prefer XR30 so newly configured/hotplugged HDR outputs can also adopt
+        // the initial transaction without an intermediate 8-bit swapchain.
+        // SDR uses the same 32-bit storage with its normal transfer function.
+        std::iter::once(Fourcc::Xrgb2101010).chain(SUPPORTED_FORMATS.iter().copied()),
         render_formats,
     );
 
@@ -387,13 +412,113 @@ fn open_gpu(gv: &mut Gavno, node: DrmNode, path: &Path) -> Result<(), Box<dyn st
         manager,
         allocator,
         scanner: DrmScanner::new(),
+        probe_after_present: true,
+        probe_running: false,
+        probe_again: false,
         surfaces: HashMap::new(),
         disabled_outputs: HashMap::new(),
     });
     Ok(())
 }
 
+fn internal_connector(connector: &connector::Info) -> bool {
+    matches!(connector.interface(), connector::Interface::EmbeddedDisplayPort | connector::Interface::LVDS | connector::Interface::DSI)
+}
+
+/// Order CRTC allocation too, before DrmScanner's internal HashMap order can
+/// give an external connector the panel's only compatible CRTC.
+#[derive(Debug, Default)]
+struct InternalFirstMapper(SimpleCrtcMapper);
+impl CrtcMapper for InternalFirstMapper {
+    fn map<'a>(&mut self, drm: &impl smithay::reexports::drm::control::Device,
+        connectors: impl Iterator<Item = &'a connector::Info> + Clone) {
+        let mut connectors: Vec<_> = connectors.collect();
+        connectors.sort_by_key(|info| !internal_connector(info));
+        self.0.map(drm, connectors.into_iter());
+    }
+    fn crtc_for_connector(&self, connector: &connector::Handle) -> Option<crtc::Handle> {
+        self.0.crtc_for_connector(connector)
+    }
+}
+
+/// DrmScanner always asks for force_probe=true. Override only that ioctl; all
+/// CRTC mapping still goes through Smithay, using the kernel's cached modes.
+struct CachedConnectors<'a, D>(&'a D);
+impl<D: std::os::fd::AsFd> std::os::fd::AsFd for CachedConnectors<'_, D> {
+    fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> { self.0.as_fd() }
+}
+impl<D: smithay::reexports::drm::Device> smithay::reexports::drm::Device for CachedConnectors<'_, D> {}
+impl<D: smithay::reexports::drm::control::Device> smithay::reexports::drm::control::Device for CachedConnectors<'_, D> {
+    fn get_connector(&self, handle: connector::Handle, _: bool) -> std::io::Result<connector::Info> {
+        let name = format!("connector-{}", u32::from(handle));
+        crate::perf::startup_output("udev.connector.cached.begin", &name);
+        let result = self.0.get_connector(handle, false);
+        crate::perf::startup_output("udev.connector.cached.end", &name);
+        // Do not let DrmScanner mark a connected output as handled before its
+        // modes have been filled in by the probe worker.
+        if result.as_ref().is_ok_and(|info| info.state() == connector::State::Connected && info.modes().is_empty()) {
+            debug!(connector = u32::from(handle), "connector modes not cached; waiting for probe worker");
+            return Err(std::io::Error::other("connector modes not cached"));
+        }
+        result
+    }
+}
+
+/// One finite worker per change burst, with at most one rescan coalesced behind
+/// it. No polling or idle timers. Never move the scanner off the main loop.
 fn device_changed(gv: &mut Gavno, node: DrmNode) {
+    use smithay::reexports::{calloop::channel, drm::control::Device};
+    let Some(data) = udev(gv) else { return };
+    if !data.session.is_active() { return; }
+    let Some(gpu) = data.gpu.as_mut().filter(|gpu| gpu.node == node) else { return };
+    if gpu.probe_after_present && !gpu.surfaces.is_empty() { return; }
+    if gpu.probe_running {
+        gpu.probe_again = true;
+        return;
+    }
+    let fd = gpu.manager.device().device_fd().clone();
+    let identity = fd.downgrade();
+    let (sender, receiver) = channel::channel::<()>();
+    let token = match gv.loop_handle.insert_source(receiver, move |event, _, gv| {
+        if let channel::Event::Msg(()) = event {
+            let Some(data) = udev(gv) else { return };
+            let Some(gpu) = data.gpu.as_mut().filter(|gpu| identity == *gpu.manager.device().device_fd()) else { return };
+            gpu.probe_running = false;
+            let again = std::mem::take(&mut gpu.probe_again);
+            scan_cached_connectors(gv, node);
+            if again { device_changed(gv, node); }
+        }
+    }) {
+        Ok(token) => token,
+        Err(error) => { warn!(%error, "could not register connector probe worker"); return; }
+    };
+    if let Some(gpu) = udev(gv).and_then(|data| data.gpu.as_mut()) { gpu.probe_running = true; }
+    if let Err(error) = std::thread::Builder::new().name("drm-connectors".into()).spawn(move || {
+        crate::perf::startup("udev.connectors.probe.begin");
+        if let Ok(resources) = fd.resource_handles() {
+            for handle in resources.connectors() {
+                // Internal panels already have reliable cached modes. External
+                // ports can block for AUX/link timeouts, exclusively here.
+                if fd.get_connector(*handle, false).is_ok_and(|info| internal_connector(&info)
+                    && info.state() == connector::State::Connected && !info.modes().is_empty()) { continue; }
+                let name = format!("connector-{}", u32::from(*handle));
+                crate::perf::startup_output("udev.connector.probe.begin", &name);
+                if let Err(error) = fd.get_connector(*handle, true) {
+                    warn!(%error, connector = u32::from(*handle), "connector probe failed");
+                }
+                crate::perf::startup_output("udev.connector.probe.end", &name);
+            }
+        }
+        crate::perf::startup("udev.connectors.probe.end");
+        let _ = sender.send(());
+    }) {
+        gv.loop_handle.remove(token);
+        if let Some(gpu) = udev(gv).and_then(|data| data.gpu.as_mut()) { gpu.probe_running = false; }
+        warn!(%error, "could not start connector probe worker");
+    }
+}
+
+fn scan_cached_connectors(gv: &mut Gavno, node: DrmNode) {
     // While another VT owns the seat, output setup fails with DeviceInactive
     // but the scanner would still record the connector as handled. Leave the
     // scan to on_session_activate, which calls this again.
@@ -405,7 +530,7 @@ fn device_changed(gv: &mut Gavno, node: DrmNode) {
         return;
     }
     crate::perf::startup("udev.connectors.scan.begin");
-    let mut events: Vec<DrmScanEvent> = match gpu.scanner.scan_connectors(gpu.manager.device()) {
+    let mut events: Vec<DrmScanEvent> = match gpu.scanner.scan_connectors(&CachedConnectors(gpu.manager.device().device_fd())) {
         Ok(result) => result.into_iter().collect(),
         Err(err) => {
             warn!(?err, "connector scan failed");
@@ -416,9 +541,12 @@ fn device_changed(gv: &mut Gavno, node: DrmNode) {
     // Try enabled connectors first, so an explicitly disabled panel is only
     // kept as a safety fallback when no configured output can be initialized.
     events.sort_by_key(|event| match event {
-        DrmScanEvent::Connected { connector, .. } => gv.config.outputs.get(&format!("{}-{}", connector.interface().as_str(), connector.interface_id()))
-            .is_some_and(|o| o.enabled == Some(false)),
-        _ => false,
+        DrmScanEvent::Disconnected { .. } => (false, false),
+        DrmScanEvent::Connected { connector, .. } => (
+            gv.config.outputs.get(&format!("{}-{}", connector.interface().as_str(), connector.interface_id()))
+                .is_some_and(|o| o.enabled == Some(false)),
+            !internal_connector(connector),
+        ),
     });
     for event in events {
         match event {
@@ -433,10 +561,17 @@ fn device_changed(gv: &mut Gavno, node: DrmNode) {
             _ => {}
         }
     }
+    if let Some(gpu) = udev(gv).and_then(|data| data.gpu.as_ref()) {
+        let active: HashSet<_> = gpu.surfaces.keys().copied().collect();
+        if let Err(error) = crate::hdr::startup::clear_unused_outputs(gpu.manager.device(), &active) {
+            warn!(%error, "could not disable inherited unused outputs");
+        }
+    }
 }
 
 fn device_removed(gv: &mut Gavno, node: DrmNode) {
     let Backend::Udev(data) = &mut gv.backend else { return };
+    data.pending_devices.retain(|(pending, _)| *pending != node);
     if data.gpu.as_ref().map(|g| g.node) != Some(node) {
         return;
     }
@@ -492,10 +627,7 @@ fn edid_identity(bytes: &[u8]) -> Option<(String, String)> {
 fn connector_connected(gv: &mut Gavno, connector: connector::Info, crtc: crtc::Handle) {
     let name = format!("{}-{}", connector.interface().as_str(), connector.interface_id());
     crate::perf::startup_output("udev.output.begin", &name);
-    let internal = matches!(
-        connector.interface(),
-        connector::Interface::EmbeddedDisplayPort | connector::Interface::LVDS | connector::Interface::DSI
-    );
+    let internal = internal_connector(&connector);
     let (requested, scale, hdr_requested, enabled) = gv.config.output_settings(&name, internal);
 
     let modes: Vec<_> = connector.modes().iter().map(|m| {
@@ -565,22 +697,78 @@ fn connector_connected(gv: &mut Gavno, connector: connector::Info, crtc: crtc::H
 
     let Backend::Udev(data) = &mut gv.backend else { return };
     let primary = data.primary_gpu;
+    let scanout = Scanout { rejected: data.scanout_blocked.contains(&name), ..Default::default() };
     let Some(gpu) = data.gpu.as_mut() else { return };
+    let mut color = if gpu.manager.device().is_atomic() {
+        ConnectorColor::probe(gpu.manager.device().device_fd().clone(), connector.handle())
+    } else { Err("HDR requires atomic modesetting".into()) };
+    if let Err(reason) = &color { debug!(name, reason, "HDR unavailable on connector"); }
+    crate::perf::startup_output("udev.output.color_probe.ready", &name);
+    let mut initial_hdr = None;
     crate::perf::startup_output("udev.output.initialize.begin", &name);
     let initialized = mode::try_modes(&modes, requested, |index| {
         let wl_mode = WlMode::from(connector.modes()[index]);
         output.change_current_state(Some(wl_mode), None, None, None);
         tracing::info!(target: "gavno::startup", stage = "udev.output.mode_attempt", ms = crate::perf::elapsed_ms(), output = %name, width = wl_mode.size.w, height = wl_mode.size.h, refresh = wl_mode.refresh);
-        match gpu.manager.initialize_output::<_, GavnoRenderElement>(
-            crtc,
-            connector.modes()[index],
-            &[connector.handle()],
-            &output,
-            None,
-            &mut gpu.renderer,
-            &DrmOutputRenderElements::default(),
-        ) {
-            Ok(drm_output) => Some(drm_output),
+        // Allocate the complete HDR pipeline before any commit. If it cannot
+        // be established, initialize SDR without a preliminary SDR modeset.
+        let mut black = None;
+        let mut composition = None;
+        if hdr_requested {
+            let prepared = (|| -> Result<_, String> {
+                let color = color.as_mut().map_err(|e| e.clone())?;
+                let composition = Composition::new(&mut gpu.renderer, &output, white_nits)?;
+                let frame = crate::hdr::startup::initialize(gpu.manager.device(), &mut gpu.allocator,
+                    &mut gpu.renderer, connector.handle(), crtc, connector.modes()[index], color, &name)?;
+                Ok((composition, frame))
+            })();
+            match prepared {
+                Ok((hdr, frame)) => { composition = Some(hdr); black = Some(frame); }
+                Err(error) => warn!(%error, output = %name, "initial HDR unavailable; initializing SDR"),
+            }
+        }
+        if composition.is_none() {
+            if let Ok(color) = &mut color {
+                if let Err(error) = color.restore() {
+                    warn!(%error, output = %name, "could not establish SDR connector state");
+                    return None;
+                }
+            }
+            if let Err(error) = crate::hdr::startup::clear_inherited_planes(gpu.manager.device(), crtc) {
+                warn!(%error, output = %name, "could not clear inherited planes");
+                return None;
+            }
+        }
+        crate::perf::startup_output("udev.output.smithay_initialize.begin", &name);
+        let initialized = {
+            let _trace = crate::perf::DrmStartupGuard::new(Some(&name));
+            gpu.manager.initialize_output::<_, GavnoRenderElement>(
+                crtc,
+                connector.modes()[index],
+                &[connector.handle()],
+                &output,
+                None,
+                &mut gpu.renderer,
+                &DrmOutputRenderElements::default(),
+            )
+        };
+        match initialized {
+            Ok(drm_output) => {
+                crate::perf::startup_output("udev.output.smithay_initialize.end", &name);
+                if composition.is_some() && drm_output.format() != Fourcc::Xrgb2101010 {
+                    // The manager may choose an SDR fallback format. Its initial
+                    // black frame is valid in either transfer function.
+                    if let Ok(color) = &mut color {
+                        if let Err(error) = color.restore() {
+                            warn!(%error, "failed to restore SDR after XR30 rejection");
+                        }
+                    }
+                    composition = None;
+                }
+                initial_hdr = composition;
+                drop(black);
+                Some(drm_output)
+            },
             Err(err) => {
                 warn!(?err, name, width = wl_mode.size.w, height = wl_mode.size.h,
                     refresh = wl_mode.refresh, "output mode rejected; trying fallback");
@@ -602,11 +790,6 @@ fn connector_connected(gv: &mut Gavno, connector: connector::Info, crtc: crtc::H
         refresh_hz = f64::from(wl_mode.refresh) / 1000.0, scale, "selected output mode");
     let feedback = surface_dmabuf_feedback(&drm_output, &gpu.renderer, primary, gpu.render_node);
     crate::perf::startup_output("udev.output.feedback.ready", &name);
-    let color = if gpu.manager.device().is_atomic() {
-        ConnectorColor::probe(gpu.manager.device().device_fd().clone(), connector.handle())
-    } else { Err("HDR requires atomic modesetting".into()) };
-    if let Err(reason) = &color { debug!(name, reason, "HDR unavailable on connector"); }
-    crate::perf::startup_output("udev.output.color_probe.ready", &name);
     let sdr_format = drm_output.format();
 
     gpu.surfaces.insert(
@@ -619,15 +802,20 @@ fn connector_connected(gv: &mut Gavno, connector: connector::Info, crtc: crtc::H
             feedback,
             redraw: RedrawState::Idle,
             color,
-            hdr: None,
-            hdr_requested: Some(hdr_requested),
+            hdr: initial_hdr,
+            hdr_requested: None,
             sdr_format,
             white_nits,
             first_frame_queued: false,
             first_frame_presented: false,
             flip_failures: 0,
+            scanout,
         },
     );
+    if let Some(surface) = gpu.surfaces.get(&crtc) {
+        crate::handlers::color_management::output_changed(&output, surface.hdr.is_some(),
+            surface.color.as_ref().map(|color| color.caps).unwrap_or_default(), white_nits);
+    }
     crate::perf::startup_output("udev.output.hook.begin", &name);
     if gv.power.is_off() { set_power(gv, false); }
     gv.output_added_hook();
@@ -840,11 +1028,12 @@ fn change_hdr(surface: &mut Surface, renderer: &mut GlesRenderer,
     Ok(())
 }
 
-fn draw_frame(surface: &mut Surface, renderer: &mut GlesRenderer,
+fn draw_frame(surface: &mut Surface, renderer: &mut GlesRenderer, direct_scanout: bool,
     elements: &[GavnoRenderElement], stall: &mut crate::perf::Stall<'_>) -> Result<(bool, RenderElementStates), String> {
     use smithay::backend::drm::compositor::PrimaryPlaneElement;
     use crate::render_sanitize::SanitizedElement;
     let scale = surface.output.current_scale().fractional_scale().into();
+    let flags = surface.scanout.frame_flags(direct_scanout, surface.hdr.is_some());
     if let Some(hdr) = &mut surface.hdr {
         let (element, states) = hdr.render(renderer, &surface.output, elements, render::CLEAR_COLOR)?;
         stall.mark("hdr");
@@ -864,7 +1053,7 @@ fn draw_frame(surface: &mut Surface, renderer: &mut GlesRenderer,
         // Borrow the rebuilt scene; only this list allocates, not each wrapper.
         let mut sanitized = Vec::with_capacity(elements.len());
         sanitized.extend(elements.iter().filter_map(|e| SanitizedElement::new(e, scale)));
-        let result = surface.drm_output.render_frame(renderer, &sanitized, render::CLEAR_COLOR, SCANOUT_FLAGS)
+        let result = surface.drm_output.render_frame(renderer, &sanitized, render::CLEAR_COLOR, flags)
             .map_err(|e| format!("SDR render: {e:?}"))?;
         stall.mark("scanout");
         // Legacy KMS cannot take an in-fence: wait before queueing the frame.
@@ -934,11 +1123,39 @@ fn queue_redraw(gv: &mut Gavno, crtc: crtc::Handle) {
     }
 }
 
-/// Everything is composited into the primary plane. On the Snapdragon X
-/// Elite msm driver, plane assignments that passed the atomic test still
-/// failed the real page flip with EINVAL (client buffers, then Firefox's
-/// client cursor), thousands of times a minute, and the pointer lagged.
-const SCANOUT_FLAGS: FrameFlags = FrameFlags::empty();
+// SDR client buffers can have a different format from the XR30 swapchain;
+// Smithay still tests the complete plane assignment before the real flip.
+const SDR_SCANOUT_FLAGS: FrameFlags = FrameFlags::DEFAULT.union(FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY);
+
+/// A driver rejection latches for the output's entire session, across config
+/// changes and VT switches. HDR never allows any plane to bypass PQ encoding.
+#[derive(Debug, Default)]
+struct Scanout {
+    rejected: bool,
+    attempted: bool,
+}
+impl Scanout {
+    fn frame_flags(&mut self, configured: bool, hdr: bool) -> FrameFlags {
+        self.attempted = configured && !hdr && !self.rejected;
+        if self.attempted { SDR_SCANOUT_FLAGS } else { FrameFlags::empty() }
+    }
+
+    /// Returns true exactly once, when the driver first rejects a scanout frame.
+    fn reject(&mut self) -> bool {
+        if !self.attempted || self.rejected { return false; }
+        self.rejected = true;
+        self.attempted = false;
+        true
+    }
+}
+
+pub(crate) fn reset_scanout_buffers(gv: &mut Gavno) {
+    if let Some(gpu) = udev(gv).and_then(|data| data.gpu.as_mut()) {
+        for surface in gpu.surfaces.values_mut() {
+            surface.drm_output.reset_buffers();
+        }
+    }
+}
 
 fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
     if gv.power.is_off() { return; }
@@ -1011,14 +1228,14 @@ fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
     }
     render::dim_output(&mut elements, &mut gv.media.brightness, &output, time);
     stall.mark("elements");
-    let mut result = draw_frame(surface, &mut gpu.renderer, &elements, &mut stall);
+    let mut result = draw_frame(surface, &mut gpu.renderer, gv.config.display.direct_scanout, &elements, &mut stall);
     if result.is_err() && surface.hdr.is_some() {
         warn!(output = output.name(), error = ?result.as_ref().err(), "HDR render failed; falling back to SDR");
         if change_hdr(surface, &mut gpu.renderer, &gpu.allocator, false).is_ok() {
             for element in &mut elements {
                 if let GavnoRenderElement::Color(element) = element { element.fallback_sdr(); }
             }
-            result = draw_frame(surface, &mut gpu.renderer, &elements, &mut stall);
+            result = draw_frame(surface, &mut gpu.renderer, gv.config.display.direct_scanout, &elements, &mut stall);
         }
     }
 
@@ -1054,9 +1271,18 @@ fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
                 gv.protocols.locks.submitted(&output);
             },
             Err(err) => {
+                let scanout_rejected = surface.scanout.reject();
+                if scanout_rejected {
+                    data.scanout_blocked.insert(output.name());
+                    warn!(?err, output = output.name(), "direct scanout rejected; using composition for the rest of this session");
+                    // Discard the plane assignment as well as the buffer damage.
+                    if let Err(error) = surface.drm_output.with_compositor(|c| c.reset_state()) {
+                        warn!(?error, output = output.name(), "DRM state reset failed");
+                    }
+                }
                 surface.flip_failures = surface.flip_failures.saturating_add(1);
                 let failures = surface.flip_failures;
-                if failures == 1 || failures % 600 == 0 {
+                if !scanout_rejected && (failures == 1 || failures % 600 == 0) {
                     warn!(?err, output = output.name(), failures, "queue_frame failed");
                 }
                 // The rejected frame's damage counts as drawn; without this the
@@ -1094,6 +1320,8 @@ fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
     if retry_sdr || gv.is_animating() {
         queue_redraw(gv, crtc);
     }
+    // A deliberately empty scene may never generate the first page flip.
+    if is_empty { probe_after_first_frame(gv); }
 }
 
 /// Arms a one-refresh-period timer; `queued` redraws when it fires.
@@ -1171,6 +1399,16 @@ fn on_vblank(gv: &mut Gavno, crtc: crtc::Handle, metadata: &mut Option<DrmEventM
     if queued {
         queue_redraw(gv, crtc);
     }
+    probe_after_first_frame(gv);
+}
+
+fn probe_after_first_frame(gv: &mut Gavno) {
+    // Keep AUX probing out of the first modeset/frame path, even on drivers
+    // whose connector probe takes modeset locks shared with atomic commits.
+    let probe = udev(gv).and_then(|data| data.gpu.as_mut()).and_then(|gpu| {
+        std::mem::take(&mut gpu.probe_after_present).then_some(gpu.node)
+    });
+    if let Some(node) = probe { device_changed(gv, node); }
 }
 
 fn on_session_pause(gv: &mut Gavno) {
@@ -1223,7 +1461,10 @@ fn on_session_activate(gv: &mut Gavno) {
         if let Err(err) = gpu.manager.activate(false) {
             error!(?err, "failed to reactivate the DRM device");
         }
-        for surface in gpu.surfaces.values_mut() {
+        for (crtc, surface) in &mut gpu.surfaces {
+            if let Err(error) = crate::hdr::startup::clear_inherited_planes(gpu.manager.device(), *crtc) {
+                warn!(%error, "could not clear inherited planes after session activation");
+            }
             surface.drm_output.reset_buffers();
             if let Ok(color) = &mut surface.color {
                 color.invalidate();
@@ -1305,5 +1546,54 @@ pub(crate) fn set_sdr_white(gv: &mut Gavno, nits: f32) {
             surface.white_nits = nits;
             if let Some(hdr) = &mut surface.hdr { hdr.adjust_white(nits - hdr.white_nits); }
         }
+    }
+}
+
+#[cfg(test)]
+mod scanout_tests {
+    use super::*;
+
+    #[test]
+    fn rejection_latches_across_frames_hdr_and_configuration_changes() {
+        let mut state = Scanout::default();
+        assert_eq!(state.frame_flags(true, false), SDR_SCANOUT_FLAGS);
+        assert!(state.reject());
+        assert!(!state.reject());
+        for (configured, hdr) in [(true, false), (false, false), (true, true), (true, false)] {
+            assert!(state.frame_flags(configured, hdr).is_empty());
+            assert!(!state.reject());
+        }
+    }
+
+    #[test]
+    fn hdr_and_disabled_scanout_never_latch_a_scanout_rejection() {
+        let mut state = Scanout::default();
+        for (configured, hdr) in [(true, true), (false, false), (false, true)] {
+            assert!(state.frame_flags(configured, hdr).is_empty());
+            assert!(!state.reject());
+        }
+        assert_eq!(state.frame_flags(true, false), SDR_SCANOUT_FLAGS);
+        // Successful frames do not latch a rejection; HDR leaves SDR enabled.
+        assert!(state.frame_flags(true, true).is_empty());
+        assert_eq!(state.frame_flags(true, false), SDR_SCANOUT_FLAGS);
+        assert!(state.reject());
+    }
+
+    #[test]
+    fn cached_scanner_overrides_force_probe_requests() {
+        use std::{cell::Cell, os::fd::{AsFd, BorrowedFd, OwnedFd}};
+        use smithay::reexports::drm::{self, control::Device};
+        struct Fake { fd: OwnedFd, force: Cell<Option<bool>> }
+        impl AsFd for Fake { fn as_fd(&self) -> BorrowedFd<'_> { self.fd.as_fd() } }
+        impl drm::Device for Fake {}
+        impl Device for Fake {
+            fn get_connector(&self, _: connector::Handle, force: bool) -> std::io::Result<connector::Info> {
+                self.force.set(Some(force));
+                Err(std::io::Error::other("fake connector"))
+            }
+        }
+        let fake = Fake { fd: std::fs::File::open("/dev/null").unwrap().into(), force: Cell::new(None) };
+        assert!(CachedConnectors(&fake).get_connector(std::num::NonZeroU32::new(1).unwrap().into(), true).is_err());
+        assert_eq!(fake.force.get(), Some(false));
     }
 }

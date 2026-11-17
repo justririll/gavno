@@ -5,6 +5,7 @@ pub mod surface;
 pub mod edid;
 pub mod kms;
 pub mod mode;
+pub mod startup;
 
 /// Runtime state reported by the window-management IPC's screen method.
 #[derive(serde::Serialize)]

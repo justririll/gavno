@@ -43,6 +43,7 @@ default": see `terminal` and `launcher` below.
 | `[tiling] default` | boolean | `false` | none |
 | `[lock] after_idle_secs` | integer, seconds | `300` | none |
 | `[display] off_after_idle_secs` | u32 seconds, `0` = never | `600` | none |
+| `[display] direct_scanout` | boolean | `true` | none |
 | `[display] brightness_control` | string, `"auto"`, `"backlight"` or `"software"` | `"auto"` | none |
 | `[output] internal_scale` | float | `1.75` | `GAVNO_SCALE` |
 | `[output] mode` | string, `WIDTHxHEIGHT[@HZ]` | preferred mode, highest refresh among preferred modes | `GAVNO_OUTPUT_MODE` |
@@ -96,6 +97,23 @@ timer, and a mapped idle inhibitor postpones the lock. The timer is not armed
 in greeter mode or while the session is already locked. GAVNO also locks
 before suspend and on a logind Lock request. See [the lock screen](lock.md)
 for authentication, backoff and what is blocked while locked.
+
+On the TTY backend, `[display] direct_scanout = true` allows client and cursor
+buffers on hardware planes in SDR. This setting reloads live. A rejected page
+flip switches that output to composition for the rest of the session, including
+across VT switches, reloads and reconnects; the retry retains refresh-period
+pacing. Setting it back to `true` does not clear a driver rejection. HDR always
+composes clients, the cursor and software brightness before PQ encoding.
+Screenshots still render the original scene offscreen.
+
+Configured HDR is prepared during output initialization. Its initial black XR30
+frame commits mode, planes, BT.2020 colorspace and HDR metadata together; Smithay
+then adopts that mode and format before the first scene frame. XR30 is preferred for SDR outputs as well
+(32 bits per pixel, with SDR transfer unchanged), because Smithay 0.7's output
+manager shares format preferences across outputs, including later hotplugs. SDR
+client buffers with other formats remain eligible for direct scanout after
+Smithay tests their plane assignment. Unsupported formats or
+HDR setup failures retain the SDR fallback. Runtime HDR toggles remain available.
 
 For OLED panels that ignore backlight writes, select software brightness:
 
@@ -515,6 +533,7 @@ name such as `eDP-1`. Numeric steps describe the editor increments.
 | `output.internal_scale` | float (0.5–4.0, step 0.05) | `1.75` | yes |
 | `output.mode` | string | `unset` | yes |
 | `output.hdr` | bool | `false` | yes |
+| `display.direct_scanout` | boolean | `true` | yes |
 | `output.sdr_white_nits` | float (80.0–400.0, step 10.0) | `203.0` | yes |
 | `keyboard.repeat_delay` | int (0–5000, step 1) | `300` | yes |
 | `keyboard.repeat_rate` | int (0–100, step 1) | `30` | yes |

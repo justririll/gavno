@@ -208,7 +208,13 @@ enum BackendChoice {
 fn init_logging() {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, Layer};
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer().with_filter(filter))
+        .with(perf::DrmStartup.with_filter(tracing_subscriber::filter::dynamic_filter_fn(|metadata, _| {
+            perf::drm_startup_trace() && metadata.target().starts_with("smithay::backend::drm")
+        })))
+        .init();
 }
 
 /// D-Bus activated and systemd user services (xdg-desktop-portal and its

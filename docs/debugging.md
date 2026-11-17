@@ -20,7 +20,7 @@ There is no built-in wallpaper image loader in this version: background layers
 come from clients, with a clear color underneath.
 
 For each udev output, `udev.first_commit.begin`/`.submitted` bracket the first
-successful frame submission to KMS (including the initial modeset),
+successful scene-frame submission to KMS (initialization can commit earlier),
 `udev.first_frame.queued` records that submission, and
 `udev.first_frame.presented` records its successful completion in the DRM vblank
 callback. These are separate from output initialization; `listening` does not
@@ -29,6 +29,35 @@ received by the compositor, excluding device-added/removed notifications. It may
 be arbitrarily late if nobody uses an input device.
 `udev.libinput.first_event` also records the first libinput callback, including
 device enumeration, to show when the initial input backlog begins draining.
+
+TTY startup also separates `udev.gpu.session_fd_opened`,
+`udev.drm.master.begin`/`.end` (the `DrmDeviceFd` set-master attempt),
+`udev.drm.device.begin`, `udev.drm.capabilities.begin`,
+`udev.drm.properties.ready`, and `udev.drm.ready`. The latter internal
+checkpoints observe Smithay 0.7 tracing during initialization in the first ten
+seconds, without changing normal log filtering. They are emitted when the API
+call returns, retaining the timestamps captured inside it. The master warning belongs to the set-master
+interval, before `udev.gpu.fd_opened`, rather than the device initialization
+interval. Both startup enumeration and hotplug wait for an active libseat session.
+
+`udev.connector.cached.begin`/`.end` read kernel state without force probing;
+the connector handle in `output` identifies each read.
+External `udev.connector.probe.begin`/`.end` stages run on a finite worker,
+with the connector handle in `output`; startup probing waits for the first
+vblank when a cached output can already be initialized (or after an empty
+first scene). Internal panels are also probed on the worker if their cache has
+no usable modes. Completion reconciles
+`DrmScanner` on the main loop. Udev changes coalesce during a running probe.
+There is no periodic probe timer.
+
+For configured HDR, `hdr.composition.*`, `hdr.offscreen.ready` and
+`hdr.shader.ready` precede `udev.output.hdr.black.*`. The combined HDR atomic
+transaction has separate `udev.output.mode_test.*` and `.mode_commit.*` pairs.
+`udev.output.smithay_initialize.*` then brackets Smithay taking over the same
+mode/format, with internal `format_test.begin`, `commit.prepare`,
+`atomic_test.begin` and `atomic_commit.begin` stages. Output initialization can
+present black before `udev.first_commit.*`, which measures the first scene
+frame. The existing first-frame timestamps do not include that black handoff.
 
 WARN records on `gavno::stall` report `source` and elapsed callback `ms`, plus
 `output` for rendering. The default threshold is 8 ms; set `GAVNO_STALL_MS` before

@@ -170,6 +170,7 @@ pub(crate) fn apply(gv: &mut Gavno, prepared: Prepared) -> Result<Value, String>
     let power_changed = gv.config.display.off_after_idle_secs != config.display.off_after_idle_secs;
     let icons_changed = gv.config.dock.icon_theme != config.dock.icon_theme;
     let white_changed = gv.config.sdr_white_nits != config.sdr_white_nits;
+    let scanout_changed = gv.config.display.direct_scanout != config.display.direct_scanout;
     let pins_changed = gv.config.dock.pinned != config.dock.pinned;
     let classic_changed = gv.config.classic != config.classic;
     // These startup-only settings are not considered effective before re-login.
@@ -184,6 +185,10 @@ pub(crate) fn apply(gv: &mut Gavno, prepared: Prepared) -> Result<Value, String>
         }
     }
     gv.config = config;
+    if scanout_changed {
+        crate::backend::udev::reset_scanout_buffers(gv);
+        gv.queue_redraw_all();
+    }
     gv.sync_brightness();
     if let Some(keyboard) = gv.seat.get_keyboard() {
         keyboard.change_repeat_info(gv.config.repeat_rate, gv.config.repeat_delay);
@@ -235,6 +240,20 @@ pub(crate) fn apply(gv: &mut Gavno, prepared: Prepared) -> Result<Value, String>
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn direct_scanout_reloads_in_both_directions() {
+        let mut h = crate::state::tests::Harness::new();
+        for enabled in [false, true] {
+            let text = format!("[display]\ndirect_scanout={enabled}");
+            let config = Config::parse_checked(true, &text, |_| None).unwrap();
+            let prepared = Prepared::new(config, &h.gv.config).unwrap();
+            let result = apply(&mut h.gv, prepared).unwrap();
+            assert_eq!(h.gv.config.display.direct_scanout, enabled);
+            assert!(result["applied"].as_array().unwrap().contains(&json!("display.direct_scanout")));
+            assert!(!result["needs_relogin"].as_array().unwrap().contains(&json!("display.direct_scanout")));
+        }
+    }
+
     #[test]
     fn reload_changes_registry_resets_and_restores_live_settings() {
         let mut h = crate::state::tests::Harness::new();

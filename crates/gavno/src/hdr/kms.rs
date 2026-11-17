@@ -1,5 +1,5 @@
-//! Extra connector properties are committed separately: Smithay 0.7's atomic
-//! surface only sets connector CRTC_ID and has no arbitrary-property hook.
+//! Connector color properties. Initialization combines them with mode/planes;
+//! runtime toggles commit separately because Smithay 0.7 has no property hook.
 use super::edid::{self, Capabilities};
 use smithay::{
     backend::drm::DrmDeviceFd,
@@ -102,6 +102,27 @@ impl ConnectorColor {
 
     pub fn is_current(&self, hdr: bool) -> bool {
         self.applied.0 == Some(hdr)
+    }
+
+    /// Include color properties in the initial mode/plane transaction. Keep
+    /// metadata alive through both the atomic test and the real commit.
+    pub fn commit_initial_hdr(&mut self, mut req: AtomicModeReq, name: &str) -> io::Result<()> {
+        let blob = self.fd.create_property_blob(&self.caps.metadata())?;
+        req.add_property(self.connector, self.colorspace, Value::Unknown(self.bt2020));
+        req.add_property(self.connector, self.bpc, Value::UnsignedRange(10));
+        req.add_property(self.connector, self.metadata, blob);
+        crate::perf::startup_output("udev.output.mode_test.begin", name);
+        let result = self.fd.atomic_commit(AtomicCommitFlags::ALLOW_MODESET | AtomicCommitFlags::TEST_ONLY, req.clone());
+        crate::perf::startup_output("udev.output.mode_test.end", name);
+        let result = result.and_then(|()| {
+            crate::perf::startup_output("udev.output.mode_commit.begin", name);
+            let result = self.fd.atomic_commit(AtomicCommitFlags::ALLOW_MODESET, req);
+            crate::perf::startup_output("udev.output.mode_commit.end", name);
+            result
+        });
+        let _ = self.fd.destroy_property_blob(blob.into());
+        if result.is_ok() { self.applied.0 = Some(true); }
+        result
     }
 
     pub fn enable(&mut self) -> io::Result<()> {

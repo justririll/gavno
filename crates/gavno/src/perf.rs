@@ -1,9 +1,9 @@
 //! Startup wall time and bounded warnings for work on the compositor thread.
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     convert::Infallible,
     rc::Rc,
-    sync::{Mutex, OnceLock},
+    sync::{atomic::{AtomicUsize, Ordering}, Mutex, OnceLock},
     time::{Duration, Instant},
 };
 
@@ -72,6 +72,70 @@ pub fn startup_output(stage: &'static str, output: &str) {
     } else {
         tracing::debug!(target: "gavno::startup", stage, ms, output);
     }
+}
+
+static DRM_TRACE_DEPTH: AtomicUsize = AtomicUsize::new(0);
+thread_local! {
+    static DRM_CHECKPOINTS: RefCell<Vec<(&'static str, f64)>> = const { RefCell::new(Vec::new()) };
+}
+
+pub fn drm_startup_trace() -> bool {
+    DRM_TRACE_DEPTH.load(Ordering::Relaxed) != 0 && in_startup()
+}
+
+/// Restrict verbose Smithay observation to device/output initialization.
+/// Flush outside the subscriber callback, where tracing permits new events.
+pub struct DrmStartupGuard(Option<String>);
+impl DrmStartupGuard {
+    pub fn new(output: Option<&str>) -> Self {
+        DRM_TRACE_DEPTH.fetch_add(1, Ordering::Relaxed);
+        Self(output.map(str::to_owned))
+    }
+}
+impl Drop for DrmStartupGuard {
+    fn drop(&mut self) {
+        if DRM_TRACE_DEPTH.fetch_sub(1, Ordering::Relaxed) != 1 { return; }
+        let checkpoints = DRM_CHECKPOINTS.with(|queue| std::mem::take(&mut *queue.borrow_mut()));
+        for (stage, ms) in checkpoints {
+            if let Some(output) = self.0.as_deref() {
+                tracing::info!(target: "gavno::startup", stage, ms, output);
+            } else {
+                tracing::info!(target: "gavno::startup", stage, ms);
+            }
+        }
+    }
+}
+
+/// Observe Smithay's internal DRM boundaries without a dependency fork. The
+/// separately filtered layer is active only during startup and emits no timers.
+/// Formatting/logging remains governed by the user's normal RUST_LOG filter.
+pub struct DrmStartup;
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for DrmStartup {
+    fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+        struct Message(Option<&'static str>);
+        impl tracing::field::Visit for Message {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                if field.name() != "message" { return; }
+                let message = format!("{value:?}");
+                self.0 = drm_stage(&message);
+            }
+        }
+        let mut message = Message(None);
+        event.record(&mut message);
+        if let Some(stage) = message.0 {
+            DRM_CHECKPOINTS.with(|queue| queue.borrow_mut().push((stage, elapsed_ms())));
+        }
+    }
+}
+
+fn drm_stage(message: &str) -> Option<&'static str> {
+    if message.starts_with("DrmDevice initializing") { Some("udev.drm.capabilities.begin") }
+    else if message.starts_with("Mapping:") { Some("udev.drm.properties.ready") }
+    else if message.starts_with("Testing color format:") { Some("udev.output.format_test.begin") }
+    else if message.starts_with("Preparing Commit") { Some("udev.output.commit.prepare") }
+    else if message.starts_with("Testing screen config") { Some("udev.output.atomic_test.begin") }
+    else if message.starts_with("Setting screen:") { Some("udev.output.atomic_commit.begin") }
+    else { None }
 }
 
 /// Also records the end of fallible cold paths that return early.
@@ -254,6 +318,55 @@ impl EventSource for DispatchWatch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn smithay_checkpoints_flush_after_the_drm_call_and_preserve_filtering() {
+        use std::sync::Arc;
+        use tracing_subscriber::{layer::SubscriberExt, Layer};
+        struct Capture(Arc<Mutex<Vec<String>>>);
+        impl<S: tracing::Subscriber> Layer<S> for Capture {
+            fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+                struct Stage(Option<String>);
+                impl tracing::field::Visit for Stage {
+                    fn record_debug(&mut self, _: &tracing::field::Field, _: &dyn std::fmt::Debug) {}
+                    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                        if field.name() == "stage" { self.0 = Some(value.into()); }
+                    }
+                }
+                let mut stage = Stage(None);
+                event.record(&mut stage);
+                if let Some(stage) = stage.0 { self.0.lock().unwrap().push(stage); }
+            }
+        }
+        let stages = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::registry()
+            .with(Capture(stages.clone()).with_filter(tracing_subscriber::filter::filter_fn(|metadata| metadata.target() == "gavno::startup")))
+            .with(DrmStartup.with_filter(tracing_subscriber::filter::dynamic_filter_fn(|metadata, _| {
+                drm_startup_trace() && metadata.target().starts_with("smithay::backend::drm")
+            })));
+        fn property_snapshot() {
+            tracing::trace!(target: "smithay::backend::drm::device::atomic", "Mapping: test properties");
+        }
+        tracing::subscriber::with_default(subscriber, || {
+            property_snapshot();
+            {
+                let _guard = DrmStartupGuard::new(Some("test-output"));
+                property_snapshot();
+                assert!(stages.lock().unwrap().is_empty());
+            }
+            property_snapshot();
+        });
+        assert_eq!(*stages.lock().unwrap(), ["udev.drm.properties.ready"]);
+    }
+
+    #[test]
+    fn smithay_drm_checkpoints_use_only_known_messages() {
+        assert_eq!(drm_stage("DrmDevice initializing"), Some("udev.drm.capabilities.begin"));
+        assert_eq!(drm_stage("Mapping: {planes}"), Some("udev.drm.properties.ready"));
+        assert_eq!(drm_stage("Testing color format: XR30"), Some("udev.output.format_test.begin"));
+        assert_eq!(drm_stage("Setting screen: request"), Some("udev.output.atomic_commit.begin"));
+        assert_eq!(drm_stage("unrelated message"), None);
+    }
 
     #[test]
     fn threshold_accepts_fractional_ms_and_rejects_invalid_values() {
