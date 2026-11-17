@@ -80,7 +80,7 @@ impl Gavno {
             if update {
                 changed = true;
                 // Fixed windows send decoration and size together in the refit.
-                if mode_state(w).mode == WindowMode::Floating && t.is_initial_configure_sent() {
+                if mode_state(w).mode == WindowMode::Floating && !self.tiled(w) && t.is_initial_configure_sent() {
                     t.send_pending_configure();
                 }
             }

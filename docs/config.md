@@ -483,6 +483,7 @@ the normal shell and its gestures exclusively.
 ```toml
 [classic]
 start_in_classic = false
+open_maximized = true
 align = "left"                   # "left" (default) or "center"
 # pinned = ["foot", "firefox"]   # omitted: inherit [dock].pinned; []: no pins
 start_pinned = ["@terminal", "@files", "firefox", "@settings"]
@@ -499,6 +500,21 @@ the configured commands. Taskbar Pin/Unpin changes the current session; edit
 `classic.pinned` to keep it across restarts. The taskbar is 48 logical pixels
 high on every output, and fullscreen windows hide it. Fixed window layouts
 refit when the shell transition settles.
+
+Classic floats every workspace, maximizes existing tiles, and restores their
+saved tiling trees when returning to GAVNO. `open_maximized` defaults to `true`
+and applies immediately on reload to new normal windows. Set it to `false`
+to let clients choose their size. Parented dialogs and fixed-size windows are
+exempt. xdg-shell does not provide a utility or splash window type; those
+clients should supply a parent or fixed-size constraints.
+
+On close, Classic remembers each application's last maximized state or floating
+geometry relative to its output work area. Remembered states take precedence
+over `open_maximized`, use an available output, and are clamped to fit. The
+store holds at most 128 application IDs in least-recently-used order and lives
+at `$XDG_STATE_HOME/gavno/classic-windows.json` (default
+`~/.local/state/gavno/classic-windows.json`). Loading and changed-state writes
+run on a worker without polling. Missing or corrupt state starts empty.
 
 IPC `shell_mode` reads the requested mode, settled mode and transition progress.
 Passing `{"mode":"classic"}` or `{"mode":"gavno"}` changes it. A disabled

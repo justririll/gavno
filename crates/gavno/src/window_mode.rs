@@ -35,6 +35,8 @@ pub struct ModeState {
     pub tile_restore: Option<Rectangle<i32, Logical>>,
     /// The first configure was tiled; there is no natural floating geometry yet.
     pub initially_tiled: bool,
+    /// Classic supplied the initial maximize; returning may tile this window.
+    pub(crate) classic_maximized: bool,
     /// Centre only after the client commits the natural-size configure.
     pub natural_float: Option<smithay::utils::Serial>,
     /// Explicit geometry input cancels centring, but still completes the ack.
@@ -378,7 +380,7 @@ impl Gavno {
     }
 }
 
-fn configure_mode(
+pub(crate) fn configure_mode(
     window: &Window,
     mode: WindowMode,
     size: Option<smithay::utils::Size<i32, Logical>>,

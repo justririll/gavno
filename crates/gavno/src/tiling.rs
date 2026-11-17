@@ -36,7 +36,7 @@ impl Axis {
         }
     }
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 enum Node<K> {
     Leaf {
         key: K,
@@ -49,7 +49,7 @@ enum Node<K> {
         second: Box<Node<K>>,
     },
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Tree<K> {
     root: Option<Node<K>>,
 }
@@ -470,6 +470,7 @@ impl Gavno {
     /// Predict the first tile without reserving a ghost slot for a client that
     /// never maps. Reflow uses the same insertion point when its buffer arrives.
     pub(crate) fn initial_tile_rect(&self, window: &Window) -> Option<Rect> {
+        if self.classic_windows_active() || !crate::classic::windows::normal_window(window) { return None; }
         if !self.features.on(crate::module::Feature::Tiling) || self.greeter.is_some() {
             return None;
         }
@@ -509,6 +510,7 @@ impl Gavno {
     fn tiled_feature(&self, window: &Window) -> bool {
         let s = mode_state(window);
         self.tiling_workspace(window)
+            && crate::classic::windows::normal_window(window)
             && !s.tile_floating
             && !s.minimized
             && s.mode == WindowMode::Floating
@@ -530,7 +532,7 @@ impl Gavno {
 
     fn toggle_workspace_tiling_feature(&mut self, output: &Output) {
         // Code mode keeps every workspace tiled; leave it first.
-        if self.code_mode { return; }
+        if self.code_mode || self.classic_windows_active() { return; }
         self.end_window_grab();
         self.workspaces.snapshot(&self.space);
         let owner = self.workspaces.ensure(output);
@@ -677,6 +679,10 @@ impl Gavno {
         if self.greeter.is_some() {
             return;
         }
+        if self.classic_windows_active() {
+            self.enforce_classic_floating();
+            return;
+        }
         // Workspaces created during code mode tile like all the others.
         self.enforce_code_mode_tiling();
         let focus = self.focused_window();
@@ -711,6 +717,7 @@ impl Gavno {
                     .filter(|w| {
                         let s = mode_state(&w.window);
                         !s.minimized && !s.tile_floating && s.mode == WindowMode::Floating
+                            && crate::classic::windows::normal_window(&w.window)
                     })
                     .map(|w| w.window.clone())
                     .collect();

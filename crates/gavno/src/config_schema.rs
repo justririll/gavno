@@ -375,6 +375,14 @@ pub const SCHEMA: &[Key] = &[
         live: false,
     },
     Key {
+        path: "classic.open_maximized",
+        kind: Kind::Bool,
+        default: Default::Bool(true),
+        description: "Open normal Classic windows maximized unless an app state is remembered.",
+        section: "Classic",
+        live: true,
+    },
+    Key {
         path: "classic.align",
         kind: Kind::Enum {
             values: &["left", "center"],

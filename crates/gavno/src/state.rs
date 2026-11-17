@@ -241,6 +241,8 @@ impl Gavno {
             polkit: Default::default(),
         };
         state.sync_bar_hints();
+        #[cfg(not(test))]
+        state.start_classic_window_store();
         state
     }
 
@@ -470,10 +472,11 @@ impl Gavno {
     /// Places a window that just committed its first buffer: centered in the
     /// active output, clamped to it, then focused.
     pub fn map_new_window(&mut self, window: Window) {
+        self.prepare_classic_window(&window);
         let size = window.geometry().size;
-        let output = self.active_output();
+        let output = self.classic_initial_output(&window).or_else(|| self.active_output());
         let mode = crate::window_mode::mode_state(&window).mode;
-        let loc = output
+        let loc = self.classic_initial_rect(&window).map(|r| r.loc).or_else(|| output
             .as_ref()
             .map(|o| match mode {
                 // Asked for maximize/fullscreen before its first buffer.
@@ -490,7 +493,7 @@ impl Gavno {
                     self.cascade(Point::from((x, y)), size, area)
                 }
             })
-            .unwrap_or_default();
+            ).unwrap_or_default();
         let urgent = !self.first_map_focus_allowed(&window);
         self.space.map_element(window.clone(), loc, !urgent && !self.protocols.locks.locked);
         if self.greeter.is_none() {
@@ -500,6 +503,7 @@ impl Gavno {
                 owner.append_empty();
             }
         }
+        self.track_classic_map(&window);
         self.reflow_tiling(true);
         self.features.call(crate::module::Feature::Animations, (), || self.window_animations.open(&window, self.start_time.elapsed()));
         if !urgent { self.focus_window(Some(&window)); }

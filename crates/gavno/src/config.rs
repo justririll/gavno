@@ -1013,3 +1013,20 @@ mod brightness_tests {
         assert!(Config::parse_checked(false, "[display]\nbrightness_control = 'bad'", |_| None).is_err());
     }
 }
+
+#[cfg(test)]
+mod classic_window_tests {
+    use super::*;
+
+    #[test]
+    fn classic_open_maximized_defaults_parses_and_validates() {
+        assert!(Config::build(false, None, |_| None).0.classic.open_maximized);
+        for enabled in [true, false] {
+            let text = format!("[classic]\nopen_maximized = {enabled}");
+            let config = Config::parse_checked(false, &text, |_| None).unwrap();
+            assert_eq!(config.classic.open_maximized, enabled);
+            assert_eq!(config.values()["classic"]["open_maximized"], enabled);
+        }
+        assert!(Config::parse_checked(false, "[classic]\nopen_maximized = 'yes'", |_| None).is_err());
+    }
+}

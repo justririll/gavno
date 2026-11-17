@@ -236,6 +236,7 @@ pub(crate) fn apply(gv: &mut Gavno, prepared: Prepared) -> Result<Value, String>
             }
         }
     }
+    gv.enforce_classic_floating();
     if night_light_changed {
         gv.refresh_theme_clock();
     }

@@ -235,11 +235,12 @@ pub(crate) fn prepare_initial_configure(gv: &Gavno, window: &Window) {
     toplevel.with_pending_state(|state| {
         if state.decoration_mode.is_some() { state.decoration_mode = Some(if ssd { Mode::ServerSide } else { Mode::ClientSide }); }
     });
+    gv.prepare_classic_window(window);
     let tile = gv.initial_tile_rect(window);
     if tile.is_some() {
         crate::window_mode::with_mode_state(window, |s| s.initially_tiled = true);
     }
-    let output = gv.active_output();
+    let output = gv.classic_initial_output(window).or_else(|| gv.active_output());
     let bounds = output.as_ref().map(|output| gv.work_area(output).size);
     let fixed = output.as_ref().and_then(|output| {
         let area = gv.work_area(output);
@@ -292,7 +293,7 @@ pub fn handle_commit(gv: &mut Gavno, surface: &WlSurface) {
                 .initial_configure_sent
         });
 
-        if !initial_configure_sent {
+        if !initial_configure_sent && !gv.delay_classic_configure(&window) {
             prepare_initial_configure(gv, &window);
             window.toplevel().unwrap().send_configure();
         }
@@ -376,6 +377,8 @@ impl Gavno {
     /// membership, and keyboard focus. Used when the toplevel is destroyed and
     /// when it unmaps itself by committing a null buffer.
     pub fn unmap_window(&mut self, window: &Window) {
+        self.remember_classic_window(window);
+        self.forget_classic_window(window);
         let was_focused = self.focused_window().as_ref() == Some(window);
         if self.space.element_location(window).is_some() {
             self.features.call(crate::module::Feature::Animations, (), || {

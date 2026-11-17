@@ -542,6 +542,7 @@ mod classic_tests {
         h.gv.map_new_window(w.clone());
         h.gv.set_window_mode(&w, WindowMode::Maximized, None);
         let old = w.toplevel().unwrap().with_pending_state(|s| s.size);
+        let old_location = h.gv.space.element_location(&w);
         assert!(dispatch(&mut h.gv, "shell_mode", &json!({"mode": "invalid"})).is_err());
         assert!(dispatch(&mut h.gv, "shell_mode", &json!({"mode": 1})).is_err());
         assert_eq!(dispatch(&mut h.gv, "shell_mode", &json!({"mode": "classic"})).unwrap()["mode"], "classic");
@@ -551,8 +552,8 @@ mod classic_tests {
         h.gv.settle_classic();
         assert_eq!(h.gv.classic.settled, ShellMode::Classic);
         assert_eq!(h.gv.work_area(&output), Rectangle::from_size((1646, 878).into()));
-        assert_eq!(h.gv.space.element_location(&w), Some((0, 0).into()));
-        assert_eq!(w.toplevel().unwrap().with_pending_state(|s| s.size), Some((1646, 878).into()));
+        assert_eq!(h.gv.space.element_location(&w), old_location);
+        assert_eq!(w.toplevel().unwrap().with_pending_state(|s| s.size), old);
         assert_eq!(dispatch(&mut h.gv, "shell_mode", &json!({})).unwrap()["settled"], "classic");
         assert!(h.gv.shell_contains((100.0, 910.0).into()));
         h.gv.features.inject_panic(Feature::Classic);
@@ -576,11 +577,12 @@ mod classic_tests {
         h.gv.map_new_window(w.clone());
         h.commit_size(&w, 600, 400);
         h.gv.set_window_mode(&w, WindowMode::Maximized, None);
+        let maximized_size = w.toplevel().unwrap().with_pending_state(|s| s.size).unwrap();
         dispatch(&mut h.gv, "shell_mode", &json!({"mode": "classic"})).unwrap();
         h.gv.classic.progress.jump(1.0);
         h.gv.settle_classic();
-        assert_eq!(w.toplevel().unwrap().with_pending_state(|s| s.size), Some((1646, 878).into()));
-        h.commit_size(&w, 1646, 878);
+        assert_eq!(w.toplevel().unwrap().with_pending_state(|s| s.size), Some(maximized_size));
+        h.commit_size(&w, maximized_size.w, maximized_size.h);
         h.gv.refresh_shell();
         h.gv.window_animations.entries.clear();
         let draw = |gv: &mut Gavno, renderer: &mut GlesRenderer, time| crate::render::output_elements(

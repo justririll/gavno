@@ -421,6 +421,22 @@ it). The clock dot marks unread history. These controls belong to the optional
 The configured Mod key acts as Win. Its unaccompanied tap opens Start in
 Classic. Unlisted chords retain their normal GAVNO action.
 
+Classic leaves code mode and makes every workspace float. Tiles become
+maximized within the work area above the taskbar and outside panels; focus
+and stacking order stay intact. Returning restores each workspace's mode and
+tiling tree, including split axes and ratios. Closed windows drop out; moved
+windows and windows opened in Classic join their current workspace as new
+tiles. Fullscreen windows stay fullscreen, and code mode stays off.
+Existing floating, maximized and minimized windows retain their placement
+and state across the switch.
+
+Normal new windows open maximized by default. Parented dialogs and fixed-size
+windows keep client sizing. Classic remembers the last maximized state or
+floating position, size and output for up to 128 applications when they close.
+The next window of that application uses that state, clamped to an available
+output. `[classic] open_maximized = false` lets other clients choose their own
+size; remembered states still apply. Mod+T cannot enable tiling in Classic.
+
 | Gesture | GAVNO | Classic |
 |---|---|---|
 | Super + three-finger swipe up | Enter Classic | Toggle show desktop |

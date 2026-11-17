@@ -10,6 +10,7 @@ pub(crate) use desktop_io::tests as desktop_tests;
 pub mod start;
 pub mod taskbar;
 pub mod widgets;
+pub(crate) mod windows;
 
 use crate::{
     module::Feature,
@@ -59,6 +60,7 @@ pub enum Align {
 #[serde(default)]
 pub struct ClassicConfig {
     pub start_in_classic: bool,
+    pub open_maximized: bool,
     pub align: Align,
     /// None inherits the dock pins; an explicit empty list means no pins.
     pub pinned: Option<Vec<String>>,
@@ -75,6 +77,7 @@ impl Default for ClassicConfig {
     fn default() -> Self {
         Self {
             start_in_classic: false,
+            open_maximized: true,
             align: Align::Left,
             pinned: None,
             start_pinned: vec![
@@ -99,6 +102,7 @@ impl Default for ClassicConfig {
 }
 
 pub struct Classic {
+    pub(crate) windows: windows::Windows,
     /// Requested mode; work-area changes are applied only after progress settles.
     pub mode: ShellMode,
     pub settled: ShellMode,
@@ -125,6 +129,7 @@ impl Classic {
             ShellMode::Gavno
         };
         Self {
+            windows: windows::Windows::new(enabled),
             mode,
             settled: mode,
             progress: Spring::new(mode.progress(), SpringParams::SMOOTH),
@@ -258,8 +263,9 @@ impl Gavno {
             true
         });
         if changed {
+            self.switch_classic_windows();
             self.sync_classic_decorations();
-            self.refit_fixed_windows();
+            self.refit_classic_transition();
             self.queue_redraw_all();
         }
     }
@@ -298,12 +304,16 @@ impl Gavno {
         });
     }
     pub(crate) fn reset_classic(&mut self) {
+        self.classic.settled = ShellMode::Gavno;
+        self.switch_classic_windows();
         if let Some(t) = self.classic.taskbar.hover_timer.take() {
             self.loop_handle.remove(t);
         }
         self.stop_classic_desktop();
         self.gestures.super_tap.cancel();
+        let windows = std::mem::replace(&mut self.classic.windows, windows::Windows::new(false));
         self.classic = Classic::default();
+        self.classic.windows = windows;
         self.topbar.shell_progress = 0.0;
         self.dock.shell_progress = 0.0;
         self.window_decor.classic = false;
