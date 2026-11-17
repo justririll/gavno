@@ -163,7 +163,8 @@ impl Icons {
 /// Process-wide (theme, name) -> path cache. One uncached theme lookup parses
 /// index.theme files and probes hundreds of paths: up to 44 ms cold on the
 /// laptop, 97 ms for the first launcher page. Misses are cached as well; a
-/// newly installed icon for a name already looked up shows after a restart.
+/// newly installed icon for a name already looked up shows after the icon
+/// theme or dock pins change (which clears this cache) or a restart.
 static PATHS: LazyLock<Mutex<HashMap<(String, String), Option<PathBuf>>>> = LazyLock::new(Default::default);
 const MAX_CACHED_PATHS: usize = 4096;
 

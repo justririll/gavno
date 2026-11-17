@@ -138,6 +138,8 @@ pub(crate) fn init(gv: &mut crate::Gavno) {
 /// Keep the existing configuration reload semantics without allowing an older
 /// in-flight decode to repopulate the replacement cache.
 pub(crate) fn invalidate() {
+    // Theme or pin changes also re-resolve paths, picking up newly installed icons.
+    super::paths().clear();
     if let Some(worker) = WORKER.get() {
         worker.invalidate();
     }
