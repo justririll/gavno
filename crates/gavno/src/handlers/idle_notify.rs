@@ -10,6 +10,8 @@ use smithay::{reexports::wayland_server::Resource, wayland::seat::WaylandFocus};
 #[derive(Default)]
 pub struct IdlePolicy {
     pub inhibitors: Vec<WlSurface>,
+    /// Live `org.freedesktop.ScreenSaver` cookies; ignored while the session is locked.
+    pub external_inhibits: u32,
     activity: bool,
 }
 impl IdlePolicy {
@@ -31,7 +33,7 @@ impl Gavno {
             .idle_policy
             .inhibitors
             .retain(|s| s.is_alive());
-        let inhibited = self.protocols.idle_policy.inhibitors.iter().any(|surface| {
+        let surface_inhibited = self.protocols.idle_policy.inhibitors.iter().any(|surface| {
             let mut root = surface.clone();
             while let Some(parent) = smithay::wayland::compositor::get_parent(&root) {
                 root = parent;
@@ -62,6 +64,9 @@ impl Gavno {
                     .is_some()
             })
         });
+        // A background player must not keep a static lock screen on an OLED all night.
+        let inhibited = surface_inhibited
+            || (self.protocols.idle_policy.external_inhibits > 0 && !self.protocols.locks.locked);
         self.protocols.idle.set_is_inhibited(inhibited);
         let activity = self.protocols.idle_policy.take_activity();
         self.refresh_lock_idle(activity, inhibited);

@@ -624,7 +624,10 @@ of inactivity. Set it to `0` to disable automatic power-off. It is independent
 of `[lock] after_idle_secs`: either timeout can be disabled while the other
 remains active. Keyboard, pointer, touch, gesture and switch activity reset the
 timeout; active idle inhibitors on visible surfaces prevent automatic power-off,
-using the same policy as idle locking. The timeout also applies on the lock
+using the same policy as idle locking. `org.freedesktop.ScreenSaver` inhibits
+from apps (games, Steam, Firefox, Electron, X11 clients) count the same way,
+except while the session is locked; they end when the app calls `UnInhibit` or
+leaves the bus. The timeout also applies on the lock
 screen and greeter. Changes apply on reload; reloading with the value `0` wakes
 sleeping outputs. See [Output power](debugging.md#output-power) for IPC controls
 and wake behavior.

@@ -30,6 +30,7 @@ mod power;
 mod launcher;
 mod launch;
 mod notify;
+mod screensaver;
 mod media;
 mod polkit;
 mod grabs;
@@ -177,6 +178,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // A nested compositor must not repoint the host session's services.
         if backend_choice == BackendChoice::Tty {
             export_session_environment();
+            screensaver::start(&mut state);
             autostart(&mut state);
         }
     }

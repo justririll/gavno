@@ -61,6 +61,10 @@ impl Backoff {
     }
 }
 impl Lock {
+    #[cfg(test)]
+    pub(crate) fn idle_timer_armed(&self) -> bool {
+        self.idle_timer.is_some()
+    }
     pub fn internal(&self) -> bool {
         self.internal
     }

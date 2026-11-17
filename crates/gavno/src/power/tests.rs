@@ -209,3 +209,43 @@ fn reload_rearms_the_timeout_and_zero_wakes() {
     crate::config_reload::apply(&mut h.gv, prepared).unwrap();
     assert!(!h.gv.power.off);
 }
+
+#[test]
+fn dbus_inhibits_keep_the_screen_on_except_while_locked() {
+    let (mut h, _) = setup();
+    h.gv.config.lock.after_idle_secs = 1;
+    h.gv.refresh_idle();
+    assert!(h.gv.power.idle_timer.is_some());
+    assert!(h.gv.lock.idle_timer_armed());
+    h.gv.protocols.idle_policy.external_inhibits = 1;
+    h.gv.refresh_idle();
+    assert!(h.gv.power.idle_timer.is_none());
+    assert!(!h.gv.lock.idle_timer_armed());
+    assert!(h.gv.protocols.idle.is_inhibited());
+    h.gv.protocols.idle_policy.external_inhibits = 0;
+    h.gv.refresh_idle();
+    assert!(h.gv.power.idle_timer.is_some());
+    assert!(h.gv.lock.idle_timer_armed());
+    // While locked the count is ignored.
+    h.gv.protocols.idle_policy.external_inhibits = 2;
+    assert!(h.gv.lock_session());
+    h.gv.refresh_idle();
+    assert!(!h.gv.protocols.idle.is_inhibited());
+    assert!(h.gv.power.idle_timer.is_some());
+}
+
+#[test]
+fn simulated_activity_restarts_countdown_but_never_wakes_outputs() {
+    let (mut h, _) = setup();
+    h.gv.refresh_idle();
+    let deadline = h.gv.power.deadline.unwrap();
+    std::thread::sleep(Duration::from_millis(5));
+    h.gv.protocols.idle_policy.activity();
+    h.gv.refresh_idle();
+    assert!(h.gv.power.deadline.unwrap() > deadline);
+    h.gv.power_off_monitors("test");
+    h.gv.protocols.idle_policy.activity();
+    h.gv.refresh_idle();
+    assert!(h.gv.power.off);
+    assert!(h.gv.power.idle_timer.is_none());
+}
