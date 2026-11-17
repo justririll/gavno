@@ -56,6 +56,8 @@ pub struct Gavno {
     pub classic: crate::classic::Classic,
     pub dock: crate::dock::Dock,
     pub topbar: crate::topbar::TopBar,
+    pub background: crate::ui::background::Background,
+    pub(crate) minute_timer: Option<smithay::reexports::calloop::RegistrationToken>,
     pub media: crate::topbar::control::MediaState,
     pub gestures: crate::gesture::Gestures,
     pub window_gestures: crate::window_gesture::WindowGestures,
@@ -157,6 +159,8 @@ impl Gavno {
             protocols,
             satellite: None,
             start_time: Instant::now(),
+            background: Default::default(),
+            minute_timer: None,
             clock,
             socket_name,
             display_handle: dh.clone(),
@@ -292,6 +296,7 @@ impl Gavno {
         if self.media.brightness.active() { return true; }
         if self.protocols.locks.locked { return self.lock.is_animating() || self.media.osd.is_animating(); }
         if let Some(g) = self.greeter.as_mut() { return g.safe_call(false, |g| g.is_animating()) || self.media.osd.is_animating(); }
+        let theme = self.guard(Feature::Theme, false, |gv| gv.background.active() && gv.theme_visible());
         let animations = self.guard(Feature::Animations, false, |gv| gv.window_animations.is_animating());
         let overlay = self.guard(Feature::Switcher, false, |gv| gv.overlay.is_animating());
         let overview = self.guard(Feature::Overview, false, |gv| gv.overview.progress.is_active()
@@ -303,7 +308,7 @@ impl Gavno {
         let notifications = self.guard(Feature::Notifications, false, |gv| gv.notifications.borrow().animating());
         // Animated named cursors (wait, progress) need frames while shown.
         let cursor = matches!(&self.cursor_status, smithay::input::pointer::CursorImageStatus::Named(icon) if self.cursor.animated(icon.name()));
-        classic || cursor || animations || overlay || self.workspaces.active() || overview || dock || bar || launcher || notifications || self.media.osd.is_animating()
+        theme || classic || cursor || animations || overlay || self.workspaces.active() || overview || dock || bar || launcher || notifications || self.media.osd.is_animating()
     }
 
     pub fn pointer_location(&self) -> Point<f64, Logical> {

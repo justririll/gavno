@@ -25,7 +25,7 @@ pub struct View {
     pub hits: Hits,
     pub visible_rows: usize,
     cached: Vec<crate::classic::cache::CachedElement>,
-    geometry: Option<(Size<i32, Logical>, f64)>,
+    geometry: Option<(Size<i32, Logical>, f64, [f32; 4])>,
 }
 impl View {
     pub fn hit(&self, point: Point<f64, Logical>) -> Option<(Rect, Hit)> {
@@ -119,12 +119,13 @@ impl Session {
         output: &Output,
         size: Size<i32, Logical>,
         scale: f64,
+        accent: [f32; 4],
     ) -> Vec<GavnoRenderElement> {
         if &self.output != output {
             return Vec::new();
         }
         let view = &mut self.view;
-        if !self.dirty && view.geometry == Some((size, scale)) {
+        if !self.dirty && view.geometry == Some((size, scale, accent)) {
             return view
                 .cached
                 .iter()
@@ -133,7 +134,7 @@ impl Session {
                 .collect();
         }
         self.dirty = false;
-        view.geometry = Some((size, scale));
+        view.geometry = Some((size, scale, accent));
         view.canvas.begin(renderer, scale);
         view.hits.clear();
         let panel = panel_rect(size, self.anchor);
@@ -211,7 +212,7 @@ impl Session {
         view.canvas.rect(
             rect(x, seek.loc.y + 6, (w as f64 * fraction) as i32, 5),
             2.5,
-            [0.35, 0.82, 0.58, 1.0],
+            accent,
             0.0,
             LINE,
         );
@@ -246,7 +247,7 @@ impl Session {
                 5,
             ),
             2.5,
-            [0.65, 0.72, 0.94, 1.0],
+            accent,
             0.0,
             LINE,
         );
@@ -272,7 +273,7 @@ impl Session {
         for (i, tab) in ["Home", "Library", "Playlists"].into_iter().enumerate() {
             let r = rect(x + i as i32 * (w / 3), y + 208, w / 3 - 4, 32);
             if i == self.tab {
-                view.canvas.rect(r, 8.0, [0.4, 0.6, 0.9, 0.18], 0.0, LINE);
+                view.canvas.rect(r, 8.0, [accent[0], accent[1], accent[2], 0.18], 0.0, LINE);
             }
             label(
                 view,

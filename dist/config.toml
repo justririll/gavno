@@ -77,3 +77,14 @@
 # Disable to retain the old media capsule click behavior.
 # [media]
 # music_panel = true
+
+# Local sun/season colors. These settings reload live.
+# [theme]
+# background = "living" # or "solid"
+# solid_color = "#0e1016"
+# accent = "living" # or a fixed "#rrggbb"
+# Coordinates are optional: file > GAVNO_LAT/GAVNO_LON > time-zone guess.
+# Latitude range: -90..90. Longitude range: -180..180.
+# Omit each coordinate to use the time zone (or its environment fallback).
+# [modules]
+# theme = true

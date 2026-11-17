@@ -9,6 +9,7 @@ pub enum Kind {
     Int { min: i64, max: i64, step: i64 },
     Float { min: f64, max: f64, step: f64 },
     String,
+    Color { living: bool },
     Enum { values: &'static [&'static str] },
     StringList,
 }
@@ -37,6 +38,12 @@ pub const SCHEMA: &[Key] = &[
     Key { path: "display.brightness_control", kind: Kind::Enum { values: &["auto", "backlight", "software"] }, default: Default::String("auto"), description: "Use a backlight when available (auto), require a backlight, or dim all outputs in software.", section: "Display", live: true },
     Key { path: "display.direct_scanout", kind: Kind::Bool, default: Default::Bool(true), description: "Allow direct scanout in SDR; a rejected flip disables it for that output until the session ends. HDR always uses composition.", section: "Display", live: true },
     Key { path: "media.music_panel", kind: Kind::Bool, default: Default::Bool(true), description: "Open the built-in Spotify panel from the bar media information area.", section: "Media", live: true },
+    Key { path: "theme.background", kind: Kind::Enum { values: &["living", "solid"] }, default: Default::String("living"), description: "Sky colors follow the local sun and season, or use a solid background.", section: "Theme", live: true },
+    Key { path: "theme.solid_color", kind: Kind::Color { living: false }, default: Default::String("#0e1016"), description: "Solid background and safe fallback color (#rrggbb).", section: "Theme", live: true },
+    Key { path: "theme.accent", kind: Kind::Color { living: true }, default: Default::String("living"), description: "Follow the sun or choose a fixed accent for desktop controls.", section: "Theme", live: true },
+    Key { path: "theme.latitude", kind: Kind::Float { min: -90.0, max: 90.0, step: 0.01 }, default: Default::Unset, description: "Latitude in degrees. Leave empty to use GAVNO_LAT, then the time zone.", section: "Theme", live: true },
+    Key { path: "theme.longitude", kind: Kind::Float { min: -180.0, max: 180.0, step: 0.01 }, default: Default::Unset, description: "Longitude in degrees. Leave empty to use GAVNO_LON, then the time zone.", section: "Theme", live: true },
+    Key { path: "modules.theme", kind: Kind::Bool, default: Default::Bool(true), description: "Enable the living theme; disabled or failed themes use solid color and a fixed accent.", section: "Modules", live: true },
     Key {
         path: "mod_key",
         kind: Kind::Enum {

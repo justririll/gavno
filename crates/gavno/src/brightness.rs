@@ -305,7 +305,7 @@ mod tests {
         crate::render::dim_output(&mut elements, &mut state, &output, Duration::ZERO);
         assert!(matches!(
             elements.first(),
-            Some(crate::render::GavnoRenderElement::Brightness(_))
+            Some(crate::render::GavnoRenderElement::Solid(_))
         ));
         let mut texture: GlesTexture = renderer
             .create_buffer(Fourcc::Abgr8888, (16, 8).into())

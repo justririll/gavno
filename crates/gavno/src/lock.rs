@@ -106,9 +106,10 @@ impl Lock {
         size: Size<i32, Logical>,
         scale: f64,
         now: Duration,
+        theme: &crate::config::ThemeConfig,
     ) -> Vec<GavnoRenderElement> {
         let elements = self
-            .ui_call(|ui| ui.elements(renderer, size, scale, now))
+            .ui_call(|ui| { ui.set_location(theme); ui.elements(renderer, size, scale, now) })
             .unwrap_or_default();
         if elements.is_empty() && !self.failed {
             // Shader initialization failure is reported without a panic. Stop

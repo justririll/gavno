@@ -680,10 +680,23 @@ impl Editor {
             }
             model::Control::Entry => {
                 let box_ = gtk::Box::new(gtk::Orientation::Vertical, 0);
+                let entry_text = displayed.as_str().map(str::to_owned).unwrap_or_else(|| {
+                    if displayed.is_number() {
+                        displayed.to_string()
+                    } else {
+                        String::new()
+                    }
+                });
                 let row = adw::EntryRow::builder()
-                    .title(&title)
+                    .title(
+                        if matches!(spec.kind, Kind::Float { .. }) && displayed.is_null() {
+                            format!("{title} (use time zone)")
+                        } else {
+                            title.clone()
+                        },
+                    )
                     .show_apply_button(true)
-                    .text(displayed.as_str().unwrap_or(""))
+                    .text(&entry_text)
                     .build();
                 row.add_suffix(&reset);
                 if !spec.live {
@@ -706,7 +719,7 @@ impl Editor {
                 let pending_reset = reset.downgrade();
                 let default = spec.default.clone();
                 row.connect_changed(move |row| {
-                    let value = json!(row.text().as_str());
+                    let value = model::entry_value(&spec.kind, row.text().as_str());
                     if let Some(button) = pending_reset.upgrade() {
                         button.set_visible(value != default);
                     }
@@ -731,6 +744,99 @@ impl Editor {
                     }
                 });
                 row.add_controller(focus);
+                let wrapper = adw::PreferencesRow::builder().title(&title).build();
+                wrapper.set_activatable(false);
+                wrapper.set_child(Some(&box_));
+                wrapper.upcast()
+            }
+            model::Control::Color => {
+                let Kind::Color { living } = spec.kind else {
+                    unreachable!()
+                };
+                let box_ = gtk::Box::new(gtk::Orientation::Vertical, 6);
+                let row = adw::EntryRow::builder()
+                    .title(&title)
+                    .show_apply_button(true)
+                    .text(
+                        displayed
+                            .as_str()
+                            .filter(|s| *s != "living")
+                            .unwrap_or("#7aa2ff"),
+                    )
+                    .build();
+                row.add_suffix(&reset);
+                let choices = gtk::StringList::new(&["Living", "Custom color"]);
+                if living {
+                    let choice = adw::ComboRow::builder()
+                        .title("Accent source")
+                        .subtitle(&description)
+                        .model(&choices)
+                        .build();
+                    choice.set_selected(if displayed == "living" { 0 } else { 1 });
+                    row.set_sensitive(displayed != "living");
+                    let entry = row.downgrade();
+                    let commit = commit.clone();
+                    let weak = Rc::downgrade(self);
+                    let source_path = entry_path.clone();
+                    choice.connect_selected_notify(move |choice| {
+                        if let Some(e) = weak.upgrade() {
+                            e.text_edits.borrow_mut().remove(&source_path);
+                        }
+                        if let Some(entry) = entry.upgrade() {
+                            let custom = choice.selected() == 1;
+                            entry.set_sensitive(custom);
+                            commit(if custom {
+                                json!(entry.text().as_str())
+                            } else {
+                                json!("living")
+                            });
+                        }
+                    });
+                    box_.append(&choice);
+                }
+                // A static color swatch updates on editing; there is no preview timer.
+                let preview = gtk::DrawingArea::new();
+                preview.set_content_height(24);
+                let entry = row.downgrade();
+                preview.set_draw_func(move |_, cr, w, h| {
+                    let text = entry
+                        .upgrade()
+                        .map(|r| r.text().to_string())
+                        .unwrap_or_default();
+                    let text = text.strip_prefix('#').unwrap_or("");
+                    if let Ok(color) = u32::from_str_radix(text, 16) {
+                        cr.set_source_rgb(
+                            f64::from((color >> 16) & 255) / 255.0,
+                            f64::from((color >> 8) & 255) / 255.0,
+                            f64::from(color & 255) / 255.0,
+                        );
+                        cr.rectangle(0.0, 0.0, f64::from(w), f64::from(h));
+                        let _ = cr.fill();
+                    }
+                });
+                let weak_preview = preview.downgrade();
+                row.connect_changed(move |_| {
+                    if let Some(preview) = weak_preview.upgrade() {
+                        preview.queue_draw();
+                    }
+                });
+                let changed_path = entry_path.clone();
+                let weak = Rc::downgrade(self);
+                row.connect_changed(move |row| {
+                    if let Some(e) = weak.upgrade() {
+                        e.text_edits
+                            .borrow_mut()
+                            .insert(changed_path.clone(), json!(row.text().as_str()));
+                    }
+                });
+                let weak = Rc::downgrade(self);
+                row.connect_apply(move |_| {
+                    if let Some(e) = weak.upgrade() {
+                        e.commit_text(&entry_path);
+                    }
+                });
+                box_.append(&row);
+                box_.append(&preview);
                 let wrapper = adw::PreferencesRow::builder().title(&title).build();
                 wrapper.set_activatable(false);
                 wrapper.set_child(Some(&box_));

@@ -930,6 +930,7 @@ pub fn set_mode(gv: &mut Gavno, output: &Output, mode: WlMode) -> Result<(), Str
     result?;
     output.change_current_state(Some(mode), None, None, None);
     surface.drm_output.reset_buffers();
+    if let Some(hdr) = &mut surface.hdr { hdr.invalidate(); }
     Ok(())
 }
 
@@ -996,6 +997,7 @@ fn set_scanout_format(surface: &mut Surface, renderer: &GlesRenderer,
 fn change_hdr(surface: &mut Surface, renderer: &mut GlesRenderer,
     allocator: &GbmAllocator<DrmDeviceFd>, enabled: bool) -> Result<(), String> {
     if enabled == surface.hdr.is_some() {
+        if let Some(hdr) = &mut surface.hdr { hdr.invalidate(); }
         if let Ok(color) = &mut surface.color {
             if enabled { color.enable() } else { color.restore() }.map_err(|e| e.to_string())?;
         }
@@ -1035,8 +1037,13 @@ fn draw_frame(surface: &mut Surface, renderer: &mut GlesRenderer, direct_scanout
     let scale = surface.output.current_scale().fractional_scale().into();
     let flags = surface.scanout.frame_flags(direct_scanout, surface.hdr.is_some());
     if let Some(hdr) = &mut surface.hdr {
-        let (element, states) = hdr.render(renderer, &surface.output, elements, render::CLEAR_COLOR)?;
-        stall.mark("hdr");
+        let (element, states) = {
+            let rendered = hdr.render(renderer, &surface.output, elements, render::CLEAR_COLOR)?;
+            stall.mark("hdr");
+            // Skip PQ encoding for hidden sky changes, but retain unpresented retries.
+            if !hdr.needs_scanout() && surface.first_frame_queued { return Ok((true, rendered.1)); }
+            rendered
+        };
         // All pixels, including the cursor, must pass through PQ encoding.
         let element = SanitizedElement::new(element, scale);
         let result = surface.drm_output.render_frame(renderer, element.as_slice(), [0.0, 0.0, 0.0, 1.0], FrameFlags::empty())
@@ -1104,6 +1111,12 @@ pub fn queue_redraw_all(gv: &mut Gavno) {
     for crtc in crtcs {
         queue_redraw(gv, crtc);
     }
+}
+
+pub fn queue_redraw_output(gv: &mut Gavno, output: &Output) {
+    let crtc = udev(gv).and_then(|d| d.gpu.as_ref()).and_then(|g| g.surfaces.iter()
+        .find(|(_, s)| &s.output == output).map(|(crtc, _)| *crtc));
+    if let Some(crtc) = crtc { queue_redraw(gv, crtc); }
 }
 
 fn queue_redraw(gv: &mut Gavno, crtc: crtc::Handle) {
@@ -1236,6 +1249,7 @@ fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
         &mut gv.launcher,
         &mut gv.classic,
         &mut gv.polkit,
+        &mut gv.background,
     );
     if !surface.first_frame_queued {
         crate::perf::startup_output("udev.first_frame.elements.ready", &output.name());
@@ -1331,7 +1345,7 @@ fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
     if !is_empty {
         crate::handlers::screencopy::frame_drawn(gv, &output);
     }
-    if retry_sdr || gv.is_animating() {
+    if retry_sdr || gv.is_animating_for(&output) {
         queue_redraw(gv, crtc);
     }
     // A deliberately empty scene may never generate the first page flip.
@@ -1403,6 +1417,7 @@ fn on_vblank(gv: &mut Gavno, crtc: crtc::Handle, metadata: &mut Option<DrmEventM
         Err(err) => warn!(?err, "frame_submitted failed"),
     }
 
+    if presented { if let Some(hdr) = &mut surface.hdr { hdr.presented(); } }
     if frame_completed && surface.first_frame_queued && !surface.first_frame_presented {
         surface.first_frame_presented = true;
         crate::perf::startup_output("udev.first_frame.presented", &lock_output.name());
@@ -1447,6 +1462,7 @@ fn on_session_pause(gv: &mut Gavno) {
 
 fn on_session_activate(gv: &mut Gavno) {
     info!("session activated");
+    gv.resume_theme();
     let Some(data) = udev(gv) else { return };
     // Started on an inactive VT, libinput failed to open its devices, and
     // resume() on a never-suspended context is a no-op. Suspend first so
@@ -1549,6 +1565,7 @@ fn capture_output_with_cursor_state(gv: &mut Gavno, output: &Output) -> Option<(
         &mut gv.launcher,
         &mut gv.classic,
         &mut gv.polkit,
+        &mut gv.background,
     );
     let bytes = render::capture_elements(&mut gpu.renderer, &elements, (mode.size.w, mode.size.h), scale)?;
     Some((mode.size.w as u32, mode.size.h as u32, bytes))

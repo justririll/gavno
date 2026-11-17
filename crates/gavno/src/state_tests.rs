@@ -13,6 +13,7 @@ use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_ba
 struct Client {
     compositor: Option<wl_compositor::WlCompositor>,
     shell: Option<xdg_wm_base::XdgWmBase>,
+    layer_shell: Option<wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_shell_v1::ZwlrLayerShellV1>,
     shm: Option<wl_shm::WlShm>,
     pointer_positions: Vec<(f64, f64)>,
     pointer_buttons: Vec<u32>,
@@ -43,6 +44,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Client {
                     seat.get_pointer(qh, ());
                     seat.get_keyboard(qh, ());
                 }
+                "zwlr_layer_shell_v1" => state.layer_shell = Some(registry.bind(name, version.min(4), qh, ())),
                 "wl_shm" => state.shm = Some(registry.bind(name, version.min(1), qh, ())),
                 "xdg_wm_base" => state.shell = Some(registry.bind(name, version.min(6), qh, ())),
                 _ => {}
@@ -105,6 +107,14 @@ impl Dispatch<xdg_surface::XdgSurface, ()> for Client {
     }
 }
 wayland_client::delegate_noop!(Client: ignore xdg_toplevel::XdgToplevel);
+
+wayland_client::delegate_noop!(Client: ignore wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_shell_v1::ZwlrLayerShellV1);
+impl Dispatch<wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for Client {
+    fn event(_: &mut Self, surface: &wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
+        event: wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+        if let wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::Event::Configure { serial, .. } = event { surface.ack_configure(serial); }
+    }
+}
 
 pub(crate) struct Harness {
     pub gv: Gavno,
@@ -343,6 +353,7 @@ fn crash_feature(h: &mut Harness, id: Feature, output: &Output) {
         Feature::Screencopy => crate::handlers::screencopy::frame_drawn(&mut h.gv, output),
         Feature::Launcher => h.gv.toggle_launcher(),
         Feature::Notifications => h.gv.refresh_notifications(),
+        Feature::Theme => h.gv.update_theme(),
         Feature::Classic => h.gv.set_shell_mode(crate::classic::ShellMode::Classic),
         Feature::Media => h.gv.refresh_media(),
         Feature::ColorManagement => h.gv.guard(Feature::ColorManagement, (), |_| ()),
@@ -490,6 +501,7 @@ fn all_config_switches_disable_features_without_reserves_or_idle_animation() {
             Feature::Media => "media",
             Feature::ColorManagement => "color_management",
             Feature::Polkit => "polkit",
+            Feature::Theme => "theme",
         };
         let mut h = Harness::new();
         let output = feature_output(&mut h);
@@ -590,4 +602,49 @@ fn spawned_commands_detach_and_survive_comments() {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn wallpaper_client_suppresses_only_its_output_and_unmapping_restores_sky() {
+    use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1::Layer, zwlr_layer_surface_v1::Anchor};
+    use std::os::fd::AsFd;
+    let mut h = Harness::new();
+    let make_output = |name: &str| {
+        let output = smithay::output::Output::new(name.into(), smithay::output::PhysicalProperties {
+            size: (0, 0).into(), subpixel: smithay::output::Subpixel::Unknown, make: "test".into(), model: "test".into() });
+        output.change_current_state(Some(smithay::output::Mode { size: (960, 540).into(), refresh: 60000 }), None, None, None);
+        output
+    };
+    let first = make_output("first");
+    let second = make_output("second");
+    h.gv.space.map_output(&first, (0, 0));
+    h.gv.space.map_output(&second, (960, 0));
+    let qh = h.queue.handle();
+    let surface = h.client.compositor.as_ref().unwrap().create_surface(&qh, ());
+    let layer = h.client.layer_shell.as_ref().unwrap().get_layer_surface(&surface, None, Layer::Background, "test-wallpaper".into(), &qh, ());
+    layer.set_size(0, 0);
+    layer.set_anchor(Anchor::Top | Anchor::Bottom | Anchor::Left | Anchor::Right);
+    layer.set_exclusive_zone(-1);
+    surface.commit();
+    h.exchange(); h.exchange();
+    let wallpaper_output = h.gv.space.outputs().find(|o| smithay::desktop::layer_map_for_output(o).layers().next().is_some()).unwrap().clone();
+    assert!(!crate::ui::background::has_wallpaper(&wallpaper_output, (960, 540).into()), "a surface without a buffer is not wallpaper");
+    let path = std::env::temp_dir().join(format!("theme-wallpaper-{}-{:?}", std::process::id(), smithay::utils::SERIAL_COUNTER.next_serial()));
+    let file = std::fs::OpenOptions::new().read(true).write(true).create_new(true).open(&path).unwrap();
+    std::fs::remove_file(path).unwrap();
+    file.set_len(960 * 540 * 4).unwrap();
+    let pool = h.client.shm.as_ref().unwrap().create_pool(file.as_fd(), 960 * 540 * 4, &qh, ());
+    let buffer = pool.create_buffer(0, 960, 540, 960 * 4, wl_shm::Format::Xrgb8888, &qh, ());
+    surface.attach(Some(&buffer), 0, 0);
+    surface.commit();
+    h.exchange(); h.exchange();
+    assert!(crate::ui::background::has_wallpaper(&wallpaper_output, (960, 540).into()));
+    let other = if wallpaper_output == first { &second } else { &first };
+    assert!(!crate::ui::background::has_wallpaper(other, (960, 540).into()));
+    surface.attach(None, 0, 0);
+    surface.commit();
+    h.exchange(); h.exchange();
+    assert!(!crate::ui::background::has_wallpaper(&wallpaper_output, (960, 540).into()));
+    layer.destroy();
+    pool.destroy();
 }

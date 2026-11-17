@@ -5,3 +5,5 @@ pub mod shader;
 pub mod spring;
 pub mod text;
 pub mod theme;
+
+pub mod background;

@@ -96,7 +96,7 @@ pub struct Greeter {
 
     shaders: Option<Shaders>,
     text: TextRenderer,
-    bg: ShaderBox,
+    bg: shader::Sky,
     card_shadow: ShaderBox,
     card: ShaderBox,
     avatar: ShaderBox,
@@ -106,6 +106,7 @@ pub struct Greeter {
     dot_boxes: Vec<ShaderBox>,
     button_boxes: [ShaderBox; 3],
     hits: Vec<(Hit, Rectangle<f64, Logical>)>,
+    configured_location: Option<(Option<f64>, Option<f64>)>,
     lat: f64,
     lon: f64,
     palette: Option<(u32, Palette)>,
@@ -183,7 +184,7 @@ impl Greeter {
             now: Duration::ZERO,
             shaders: None,
             text: TextRenderer::new(),
-            bg: ShaderBox::default(),
+            bg: shader::Sky::default(),
             card_shadow: ShaderBox::default(),
             card: ShaderBox::default(),
             avatar: ShaderBox::default(),
@@ -193,6 +194,7 @@ impl Greeter {
             dot_boxes: Vec::new(),
             button_boxes: Default::default(),
             hits: Vec::new(),
+            configured_location: None,
             lat,
             lon,
             palette: None,
@@ -362,6 +364,18 @@ impl Greeter {
         }
     }
 
+    pub(crate) fn set_location(&mut self, config: &crate::config::ThemeConfig) {
+        let key = (config.latitude, config.longitude);
+        if self.configured_location == Some(key) { return; }
+        self.configured_location = Some(key);
+        let (lat, lon) = config.location(LocalTime::now().utc_offset);
+        if (self.lat, self.lon) != (lat, lon) {
+            self.lat = lat;
+            self.lon = lon;
+            self.palette = None;
+        }
+    }
+
     fn current_palette(&mut self, t: &LocalTime) -> Palette {
         let key = t.yday * 1440 + t.hour * 60 + t.minute;
         match self.palette {
@@ -428,15 +442,8 @@ impl Greeter {
             &shaders.background,
             full,
             if self.lock_tx.is_some() { (intro * (1.0 - fade)).clamp(0.0, 1.0) as f32 } else { 1.0 },
-            vec![
-                ("scale", vec![scale as f32]),
-                ("sky_top", pal.sky_top.to_vec()),
-                ("sky_bottom", pal.sky_bottom.to_vec()),
-                ("blob_a", pal.blob_a.to_vec()),
-                ("blob_b", pal.blob_b.to_vec()),
-                ("glow_color", pal.glow.to_vec()),
-                ("sun", pal.sun.to_vec()),
-            ],
+            scale,
+            pal,
         )));
 
         // Clock and date.
@@ -876,6 +883,25 @@ mod lock_ui_tests {
         assert!(!ui.is_animating(), "a blocked PAM worker must not request frames");
         ui.key(Keysym::from(keysyms::KEY_a), Some('a'), &mods);
         assert!(ui.password.is_empty());
+    }
+    #[test]
+    fn configured_coordinates_invalidate_the_cached_lock_and_greeter_sky() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut ui = Greeter::for_lock(tx, User { name: "test".into(), display: "Test".into() });
+        let mut config = crate::config::ThemeConfig::default();
+        config.latitude = Some(55.75);
+        config.longitude = Some(37.62);
+        let t = LocalTime::now();
+        ui.set_location(&config);
+        assert_eq!((ui.lat, ui.lon), (55.75, 37.62));
+        let first = ui.current_palette(&t);
+        config.latitude = Some(-33.87);
+        config.longitude = Some(151.21);
+        ui.set_location(&config);
+        assert!(ui.palette.is_none());
+        assert_ne!(ui.current_palette(&t), first);
+        ui.set_location(&config);
+        assert!(ui.palette.is_some(), "unchanged settings retain the minute cache");
     }
     #[test]
     fn lock_error_springs_settle_and_success_completes_without_starting_a_session() {

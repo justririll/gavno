@@ -26,6 +26,7 @@ pub struct Composition {
     program: GlesTexProgram,
     pub white_nits: f32,
     force_damage: bool,
+    pending: bool,
     extended: bool,
 }
 
@@ -86,9 +87,16 @@ impl Composition {
             program,
             white_nits,
             force_damage: true,
+            pending: true,
             extended,
         })
     }
+
+    /// KMS buffers or connector state were invalidated even if the scene stayed still.
+    pub fn invalidate(&mut self) { self.force_damage = true; }
+    /// Keep retries alive until KMS confirms that the encoded pixels reached a vblank.
+    pub fn presented(&mut self) { self.pending = false; }
+    pub fn needs_scanout(&self) -> bool { self.pending }
 
     pub fn adjust_white(&mut self, delta: f32) {
         let white = (self.white_nits + delta).clamp(80.0, 400.0);
@@ -112,12 +120,14 @@ impl Composition {
         let mode = output.current_mode().ok_or("output has no mode")?;
         let mut states = RenderElementStates::default();
         let force = self.force_damage;
+        let mut changed = force || self.pending;
         self.buffer.render().draw(|texture| -> Result<_, String> {
             let mut fb = renderer.bind(texture).map_err(|e| e.to_string())?;
             let result = self
                 .tracker
                 .render_output(renderer, &mut fb, 1, elements, clear)
                 .map_err(|e| e.to_string())?;
+            changed |= result.damage.is_some();
             states = result.states;
             // Both passes use the same GLES context: GL command ordering supplies
             // the dependency without a CPU wait or a readback.
@@ -137,6 +147,7 @@ impl Composition {
                 .collect())
         })?;
         self.force_damage = false;
+        self.pending = changed;
         let inner = TextureRenderElement::from_texture_render_buffer(
             (0.0, 0.0),
             &self.buffer,

@@ -253,7 +253,7 @@ fn renderer() -> GlesRenderer {
 fn draw(h: &mut Harness, renderer: &mut GlesRenderer, output: &Output) {
     let mut media = h.gv.now_playing.borrow_mut();
     let s = media.music.session.as_mut().unwrap();
-    let elements = s.elements(renderer, output, (1280, 800).into(), 1.0);
+    let elements = s.elements(renderer, output, (1280, 800).into(), 1.0, h.gv.topbar.accent());
     assert!(!elements.is_empty());
     if let Some(directory) = std::env::var_os("GAVNO_MUSIC_TEST_ARTIFACTS") {
         let bytes = crate::render::capture_elements(renderer, &elements, (1280, 800), 1.0).unwrap();
@@ -1247,11 +1247,12 @@ fn classic_widget_opens_anchored_controls_drag_and_gates() {
     .contains_rect(panel));
     ready(&mut h);
     let mut renderer = renderer();
+    let accent = h.gv.topbar.accent();
     {
         let mut media = h.gv.now_playing.borrow_mut();
         let session = media.music.session.as_mut().unwrap();
         assert!(!session
-            .elements(&mut renderer, &output, size, 1.0)
+            .elements(&mut renderer, &output, size, 1.0, accent)
             .is_empty());
         assert_eq!(
             session

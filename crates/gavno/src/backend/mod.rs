@@ -27,6 +27,15 @@ pub fn queue_redraw_all(gv: &mut Gavno) {
     }
 }
 
+/// Schedule only the output whose visible scene changed.
+pub fn queue_redraw_output(gv: &mut Gavno, output: &smithay::output::Output) {
+    match &mut gv.backend {
+        Backend::None => {},
+        Backend::Winit(data) => { if data.output() == output { data.queue_redraw(); } },
+        Backend::Udev(_) => udev::queue_redraw_output(gv, output),
+    }
+}
+
 /// Imports a client dmabuf into the renderer to check it is usable.
 pub fn import_dmabuf(gv: &mut Gavno, dmabuf: &Dmabuf) -> bool {
     match &mut gv.backend {

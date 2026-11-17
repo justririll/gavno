@@ -7,12 +7,12 @@ use crate::{config::Config, Gavno};
 #[repr(usize)]
 pub enum Feature {
     Dock, Bar, Overview, Tiling, Snap, Switcher, Gestures,
-    WindowGestures, ResizeMode, Animations, Decorations, Ipc, Screencopy, Launcher, Notifications, Media, ColorManagement, Classic, Polkit,
+    WindowGestures, ResizeMode, Animations, Decorations, Ipc, Screencopy, Launcher, Notifications, Media, ColorManagement, Classic, Polkit, Theme,
 }
 impl Feature {
-    pub const ALL: [Self; 19] = [Self::Dock, Self::Bar, Self::Overview, Self::Tiling,
+    pub const ALL: [Self; 20] = [Self::Dock, Self::Bar, Self::Overview, Self::Tiling,
         Self::Snap, Self::Switcher, Self::Gestures, Self::WindowGestures,
-        Self::ResizeMode, Self::Animations, Self::Decorations, Self::Ipc, Self::Screencopy, Self::Launcher, Self::Notifications, Self::Media, Self::ColorManagement, Self::Classic, Self::Polkit];
+        Self::ResizeMode, Self::Animations, Self::Decorations, Self::Ipc, Self::Screencopy, Self::Launcher, Self::Notifications, Self::Media, Self::ColorManagement, Self::Classic, Self::Polkit, Self::Theme];
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -23,25 +23,25 @@ pub enum FeatureState {
 }
 
 pub struct Features {
-    states: [RefCell<FeatureState>; 19],
-    pending: [Cell<bool>; 19],
+    states: [RefCell<FeatureState>; 20],
+    pending: [Cell<bool>; 20],
     resetting: bool,
     #[cfg(test)]
-    injected: [Cell<bool>; 19],
+    injected: [Cell<bool>; 20],
     #[cfg(test)]
-    pub reset_count: [usize; 19],
+    pub reset_count: [usize; 20],
 }
 impl Features {
     pub fn new(config: &Config) -> Self {
         let m = &config.modules;
         let enabled = [m.dock && config.dock.enabled, m.bar && config.bar.enabled,
             m.overview, m.tiling, m.snap, m.switcher, m.gestures, m.window_gestures,
-            m.resize_mode, m.animations, m.decorations, m.ipc, m.screencopy, m.launcher, m.notifications, m.media, m.color_management, m.classic, m.polkit];
+            m.resize_mode, m.animations, m.decorations, m.ipc, m.screencopy, m.launcher, m.notifications, m.media, m.color_management, m.classic, m.polkit, m.theme];
         Self {
             states: enabled.map(|on| RefCell::new(if on { FeatureState::Enabled } else { FeatureState::Disabled })),
             pending: std::array::from_fn(|_| Cell::new(false)), resetting: false,
             #[cfg(test)] injected: std::array::from_fn(|_| Cell::new(false)),
-            #[cfg(test)] reset_count: [0; 19],
+            #[cfg(test)] reset_count: [0; 20],
         }
     }
     pub fn on(&self, id: Feature) -> bool { matches!(*self.states[id as usize].borrow(), FeatureState::Enabled) }
@@ -168,6 +168,7 @@ impl Gavno {
             },
             Feature::Classic => self.reset_classic(),
             Feature::Polkit => self.reset_polkit(),
+            Feature::Theme => self.reset_theme(),
         }
     }
     fn drop_feature_state(&mut self, id: Feature) {
@@ -206,6 +207,7 @@ impl Gavno {
             },
             Feature::Classic => self.reset_classic(),
             Feature::Polkit => self.reset_polkit(),
+            Feature::Theme => self.reset_theme(),
             Feature::Snap | Feature::Tiling => (),
         }
     }
@@ -234,6 +236,7 @@ impl Gavno {
             *self.features.states[id as usize].borrow_mut() = if enabled { FeatureState::Enabled } else { FeatureState::Disabled };
             if !enabled { self.features.pending[id as usize].set(true); }
             if enabled && self.greeter.is_none() {
+                if id == Feature::Theme { self.background.initialized = false; }
                 if id == Feature::Screencopy { crate::handlers::screencopy::init(self); }
                 if id == Feature::ColorManagement { self.protocols.color_management.enable(&self.display_handle); }
                 if id == Feature::Ipc {

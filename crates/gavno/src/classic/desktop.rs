@@ -318,7 +318,7 @@ pub struct Desktop {
     pub layer: Layer,
     pub overlay: Layer,
     pub revision: u64,
-    prepared: Option<(u64, u64, i32, i32, u64)>,
+    prepared: Option<(u64, u64, i32, i32, u64, [u32; 4])>,
     overlay_prepared: Option<(u64, u64)>,
     pub last_click: Option<(usize, Duration)>,
 }
@@ -578,6 +578,7 @@ impl Desktop {
             self.size.w,
             self.size.h,
             self.widgets.revision,
+            accent.map(f32::to_bits),
         );
         if self.prepared != Some(key) {
             self.layer.begin(scale);

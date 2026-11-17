@@ -194,6 +194,7 @@ pub(crate) fn apply(gv: &mut Gavno, prepared: Prepared) -> Result<Value, String>
         keyboard.change_repeat_info(gv.config.repeat_rate, gv.config.repeat_delay);
     }
     gv.reload_features();
+    gv.update_theme();
     if classic_changed && gv.classic.desktop.active {
         gv.classic.desktop.widgets.configure(&gv.config.classic.widgets);
         gv.request_desktop_scan();

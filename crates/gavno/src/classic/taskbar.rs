@@ -81,7 +81,7 @@ struct View {
     hits: Vec<(Rect, Hit)>,
     visible: bool,
     cached: Vec<CachedElement>,
-    key: Option<(u64, u64, u64, (i32, i32), usize, usize, u8, u64)>,
+    key: Option<(u64, u64, u64, (i32, i32), usize, usize, u8, u64, [u32; 4])>,
     status: crate::topbar::status::Snapshot,
 }
 #[derive(Default)]
@@ -296,6 +296,7 @@ impl Taskbar {
             self.offset,
             align as u8,
             minute,
+            accent.map(f32::to_bits),
         );
         let v = &mut self.views[index];
         if v.key == Some(key) && v.status == *status {

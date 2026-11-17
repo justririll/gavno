@@ -16,10 +16,6 @@ use smithay::{
         gles::GlesRenderer,
     },
     output::Output,
-    reexports::calloop::{
-        timer::{TimeoutAction, Timer},
-        RegistrationToken,
-    },
     utils::{Logical, Rectangle},
 };
 use std::{
@@ -48,7 +44,7 @@ use smithay::utils::Point;
 pub fn next_minute(now: Duration) -> Duration {
     Duration::from_secs(60) - Duration::from_nanos((now.as_nanos() % 60_000_000_000) as u64)
 }
-fn wall_time() -> Duration {
+pub(crate) fn wall_time() -> Duration {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -428,7 +424,6 @@ pub struct TopBar {
     popover_output: Option<Output>,
     opening: Spring,
     month: (i32, u32),
-    clock_timer: Option<RegistrationToken>,
     pub scroll: f64,
     status: status::Snapshot,
     drag: Option<(Output, BarAction)>,
@@ -462,7 +457,6 @@ impl Default for TopBar {
             popover_output: None,
             opening: Spring::new(0.0, SpringParams::SNAPPY),
             month: (today.year, today.month),
-            clock_timer: None,
             scroll: 0.0,
             status: Default::default(),
             drag: None,
@@ -479,13 +473,13 @@ impl TopBar {
     pub fn accent(&self) -> [f32; 4] {
         self.accent
     }
-    fn update_clock(&mut self) {
-        self.clock = clock_label();
-        let t = theme::LocalTime::now();
-        let (lat, lon) = theme::location(t.utc_offset);
-        let a = theme::palette(&t, lat, lon).accent;
-        self.accent = [a[0], a[1], a[2], 1.0];
+    pub(crate) fn update_clock(&mut self) -> bool {
+        let next = clock_label();
+        let changed = self.clock != next;
+        self.clock = next;
+        changed
     }
+    pub(crate) fn set_accent(&mut self, accent: [f32; 4]) { self.accent = accent; }
     pub fn active(&self) -> bool {
         self.opening.is_active()
             || self
@@ -1109,9 +1103,11 @@ fn draw_calendar(
 }
 
 impl Gavno {
-    /// Re-evaluate visibility after protocol/input events; no source wakes a hidden panel.
+    /// Re-evaluate shell visibility and share one minute source with the theme.
     pub fn refresh_shell(&mut self) {
         let outputs: Vec<_> = self.space.outputs().cloned().collect();
+        self.background.retain_outputs(&outputs);
+        self.refresh_theme_clock();
         let progress = self.shell_progress();
         self.topbar.shell_progress = progress;
         self.dock.shell_progress = progress;
@@ -1190,43 +1186,8 @@ impl Gavno {
             self.topbar.opening.jump(0.0);
             self.guard(crate::module::Feature::Dock, (), |gv| gv.dock.close_menu());
         }
-        if visible && self.config.bar.enabled && !self.power.is_off() {
-            if self.topbar.clock_timer.is_none() {
-                self.topbar.update_clock();
-                self.schedule_bar_clock();
-            }
-        } else {
-            if let Some(token) = self.topbar.clock_timer.take() {
-                self.loop_handle.remove(token);
-            }
-        }
         if changed && visible {
             self.queue_redraw_all();
-        }
-    }
-    fn schedule_bar_clock(&mut self) {
-        self.guard(crate::module::Feature::Bar, Default::default(), |gv| gv.schedule_bar_clock_feature())
-    }
-
-    fn schedule_bar_clock_feature(&mut self) {
-        match self.loop_handle.insert_source(
-            Timer::from_duration(next_minute(wall_time())),
-            |_, _, gv| {
-                let _stall = crate::perf::Stall::new("timer.bar_clock");
-                gv.guard(crate::module::Feature::Bar, (), |gv| {
-                    gv.topbar.clock_timer = None;
-                    gv.topbar.update_clock();
-                    gv.queue_redraw_all();
-                    if !gv.power.is_off() && gv.space.outputs().any(|o| gv.shell_visible(o)) {
-                        gv.schedule_bar_clock();
-                    }
-
-                });
-                TimeoutAction::Drop
-            },
-        ) {
-            Ok(t) => self.topbar.clock_timer = Some(t),
-            Err(error) => tracing::warn!(%error,"cannot schedule panel clock"),
         }
     }
     pub fn bar_action(&mut self, output: &Output, action: BarAction) {
@@ -1420,7 +1381,6 @@ mod tests {
 
 impl Gavno {
     pub(crate) fn reset_bar(&mut self) {
-        if let Some(token) = self.topbar.clock_timer.take() { self.loop_handle.remove(token); }
         if let Some((_, _, token)) = self.media.repeat.take() { self.loop_handle.remove(token); }
         self.refresh_bar_status(false);
         self.topbar = Default::default();
@@ -1483,12 +1443,12 @@ mod power_clock_tests {
         output.change_current_state(Some(smithay::output::Mode { size: (1280, 800).into(), refresh: 60000 }), None, None, None);
         h.gv.space.map_output(&output, (0, 0));
         h.gv.refresh_shell();
-        assert!(h.gv.topbar.clock_timer.is_some());
+        assert!(h.gv.minute_timer.is_some());
         h.gv.power_off_monitors("test");
         h.gv.refresh_shell();
-        assert!(h.gv.topbar.clock_timer.is_none());
+        assert!(h.gv.minute_timer.is_none());
         h.gv.power_on_monitors("test");
         h.gv.refresh_shell();
-        assert!(h.gv.topbar.clock_timer.is_some());
+        assert!(h.gv.minute_timer.is_some());
     }
 }

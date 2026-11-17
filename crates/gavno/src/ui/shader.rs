@@ -128,20 +128,89 @@ impl Shaders {
             ],
         )?;
         crate::perf::startup("shaders.shadow.ready");
-        let background = renderer.compile_custom_pixel_shader(
-            format!("{HEADER}{BACKGROUND}"),
-            &[
-                u("scale", UniformType::_1f),
-                u("sky_top", UniformType::_3f),
-                u("sky_bottom", UniformType::_3f),
-                u("blob_a", UniformType::_3f),
-                u("blob_b", UniformType::_3f),
-                u("glow_color", UniformType::_3f),
-                u("sun", UniformType::_3f),
-            ],
-        )?;
+        let background = compile_background(renderer)?;
         crate::perf::startup("shaders.background.ready");
         Ok(Self { rrect, shadow, background })
+    }
+}
+
+#[derive(Default)]
+struct BackgroundProgram(std::cell::RefCell<Option<GlesPixelProgram>>);
+
+/// Share one sky program per EGL context across desktop, greeter and shell UI.
+pub fn compile_background(
+    renderer: &mut GlesRenderer,
+) -> Result<GlesPixelProgram, smithay::backend::renderer::gles::GlesError> {
+    if let Some(program) = renderer.egl_context().user_data().get::<BackgroundProgram>()
+        .and_then(|cached| cached.0.borrow().clone()) {
+        return Ok(program);
+    }
+    let u = |name: &'static str, t: UniformType| UniformName::new(name, t);
+    let program = renderer.compile_custom_pixel_shader(
+        format!("{HEADER}{BACKGROUND}"),
+        &[
+            u("scale", UniformType::_1f),
+            u("sky_top", UniformType::_3f),
+            u("sky_bottom", UniformType::_3f),
+            u("blob_a", UniformType::_3f),
+            u("blob_b", UniformType::_3f),
+            u("glow_color", UniformType::_3f),
+            u("sun", UniformType::_3f),
+        ],
+    )?;
+    renderer.egl_context().user_data().get_or_insert(BackgroundProgram::default)
+        .0.replace(Some(program.clone()));
+    Ok(program)
+}
+
+/// A persistent sky element: uniform changes increment its commit; settled
+/// renders retain both identity and commit. No output-sized texture is stored.
+#[derive(Default)]
+pub struct Sky {
+    elem: Option<PixelShaderElement>,
+    key: Option<(crate::ui::theme::Palette, f64, f32)>,
+}
+impl Sky {
+    pub fn element(
+        &mut self,
+        program: &GlesPixelProgram,
+        area: Rectangle<i32, Logical>,
+        alpha: f32,
+        scale: f64,
+        pal: crate::ui::theme::Palette,
+    ) -> PixelShaderElement {
+        // Accent is consumed by shell controls, never by the sky program.
+        let mut pal = pal;
+        pal.accent = [0.0; 3];
+        let key = (pal, scale, alpha);
+        if self.key != Some(key) {
+            let uniforms = vec![
+                Uniform::new("scale", scale as f32),
+                Uniform::new("sky_top", pal.sky_top),
+                Uniform::new("sky_bottom", pal.sky_bottom),
+                Uniform::new("blob_a", pal.blob_a),
+                Uniform::new("blob_b", pal.blob_b),
+                Uniform::new("glow_color", pal.glow),
+                Uniform::new("sun", pal.sun),
+            ];
+            if self.key.is_some_and(|(_, _, a)| a == alpha) {
+                self.elem.as_mut().unwrap().update_uniforms(uniforms);
+            } else {
+                self.elem = Some(PixelShaderElement::new(
+                    program.clone(),
+                    area,
+                    if alpha == 1.0 { Some(vec![area]) } else { None },
+                    alpha,
+                    uniforms,
+                    Kind::Unspecified,
+                ));
+            }
+            self.key = Some(key);
+        }
+        let opaque = if alpha == 1.0 { Some(vec![area]) } else { None };
+        let elem = self.elem.as_mut().unwrap();
+        elem.resize(area, opaque);
+        elem.clone()
     }
 }
 

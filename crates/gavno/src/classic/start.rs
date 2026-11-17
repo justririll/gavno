@@ -55,7 +55,7 @@ pub struct Start {
     user: String,
     revision: u64,
     cached: Vec<CachedElement>,
-    cache_key: Option<(u64, u64, i32, i32, u64)>,
+    cache_key: Option<(u64, u64, i32, i32, u64, [u32; 4])>,
 }
 impl Start {
     /// Drop render caches after leaving Classic. The app list stays, so the
@@ -299,6 +299,7 @@ impl Start {
             size.w,
             size.h,
             output.current_scale().fractional_scale().to_bits(),
+            accent.map(f32::to_bits),
         );
         if self.cache_key == Some(key) {
             out.extend(self.cached.iter().cloned().map(GavnoRenderElement::Desktop));

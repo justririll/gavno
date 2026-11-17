@@ -18,6 +18,7 @@ pub enum Kind {
     Int { min: i64, max: i64, step: i64 },
     Float { min: f64, max: f64, step: f64 },
     String,
+    Color { living: bool },
     Enum { values: Vec<String> },
     StringList,
 }
@@ -27,13 +28,16 @@ pub enum Control {
     Spin,
     Entry,
     Combo,
+    Color,
     List,
 }
 impl Spec {
     pub fn control(&self) -> Control {
         match self.kind {
             Kind::Bool => Control::Switch,
+            Kind::Float { .. } if self.default.is_null() => Control::Entry,
             Kind::Int { .. } | Kind::Float { .. } => Control::Spin,
+            Kind::Color { .. } => Control::Color,
             Kind::String => Control::Entry,
             Kind::Enum { .. } => Control::Combo,
             Kind::StringList => Control::List,
@@ -46,6 +50,9 @@ impl Spec {
         match &self.kind {
             Kind::Bool => value.is_boolean(),
             Kind::String => value.is_string(),
+            Kind::Color { living } => value
+                .as_str()
+                .is_some_and(|s| (*living && s == "living") || valid_color(s)),
             Kind::StringList => value
                 .as_array()
                 .is_some_and(|a| a.iter().all(Value::is_string)),
@@ -59,6 +66,25 @@ impl Spec {
                 .as_f64()
                 .is_some_and(|n| n.is_finite() && (*min..=*max).contains(&n)),
         }
+    }
+}
+pub fn valid_color(text: &str) -> bool {
+    text.strip_prefix('#')
+        .is_some_and(|s| s.len() == 6 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+/// Entries with an unset numeric default preserve an empty inherited state.
+pub fn entry_value(kind: &Kind, text: &str) -> Value {
+    if matches!(kind, Kind::Float { .. }) {
+        if text.trim().is_empty() {
+            Value::Null
+        } else {
+            text.parse::<f64>()
+                .ok()
+                .filter(|n| n.is_finite())
+                .map_or_else(|| json!(text), |n| json!(n))
+        }
+    } else {
+        json!(text)
     }
 }
 pub fn schema(value: Value) -> Result<Vec<Spec>, String> {
@@ -211,6 +237,10 @@ mod tests {
             ("terminal", Control::Entry),
             ("mod_key", Control::Combo),
             ("dock.pinned", Control::List),
+            ("theme.background", Control::Combo),
+            ("theme.accent", Control::Color),
+            ("theme.solid_color", Control::Color),
+            ("theme.latitude", Control::Entry),
         ] {
             assert_eq!(
                 specs.iter().find(|s| s.path == name).unwrap().control(),
@@ -219,6 +249,19 @@ mod tests {
         }
         assert!(specs.iter().any(|s| !s.live));
         assert!(schema(json!([{"path":"x","kind":{"type":"int","min":2,"max":1,"step":1},"default":null,"description":"x","section":"x","live":true}])).is_err());
+    }
+    #[test]
+    fn theme_empty_coordinates_and_color_choices() {
+        let specs = fallback().unwrap();
+        let latitude = specs.iter().find(|s| s.path == "theme.latitude").unwrap();
+        assert_eq!(entry_value(&latitude.kind, ""), Value::Null);
+        assert!(latitude.accepts(&entry_value(&latitude.kind, "-33.87")));
+        assert!(!latitude.accepts(&entry_value(&latitude.kind, "bad")));
+        assert!(validate(
+            "[theme]\naccent='living'\nbackground='solid'\nsolid_color='#123abc'",
+            &specs
+        )
+        .is_ok());
     }
     #[test]
     fn raw_validation_accepts_unknown_keys_and_rejects_bad_known_values() {
@@ -236,6 +279,10 @@ mod tests {
             "mod_key='ctrl'",
             "[dock]\npinned=[1]",
             "dock=true",
+            "[theme]\nlatitude=91.0",
+            "[theme]\nlongitude=-181.0",
+            "[theme]\nsolid_color='#abc'",
+            "[theme]\naccent='blue'",
             "[outputs.'eDP-1']\nscale=nan",
         ] {
             let error = validate(bad, &specs).unwrap_err();

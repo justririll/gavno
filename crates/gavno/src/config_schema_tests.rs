@@ -64,6 +64,7 @@ fn every_key_loads_a_non_default_valid_value_together() {
             }),
             Kind::Enum { values } => json!(values.iter().find(|v| default != **v).unwrap()),
             Kind::StringList => json!(["kitty"]),
+            Kind::Color { .. } => json!("#123456"),
             Kind::String => json!(match key.path {
                 "output.mode" | "outputs.*.mode" => "1920x1080@59.94",
                 "keyboard.layout" => "de",

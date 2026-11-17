@@ -41,7 +41,7 @@ use xcursor::parser::Image;
 
 use crate::{cursor::Cursor, module::{Feature, Features}, Gavno};
 
-/// Background behind all windows until the wallpaper module exists.
+/// Safe fallback for trusted screens and failed theme initialization.
 pub const CLEAR_COLOR: [f32; 4] = [0.055, 0.063, 0.086, 1.0];
 
 render_elements! {
@@ -49,10 +49,10 @@ render_elements! {
     Space = SpaceRenderElements<GlesRenderer, WaylandSurfaceRenderElement<GlesRenderer>>,
     Surface = WaylandSurfaceRenderElement<GlesRenderer>,
     Memory = MemoryRenderBufferRenderElement<GlesRenderer>,
-    Brightness = smithay::backend::renderer::element::solid::SolidColorRenderElement,
     Desktop = crate::classic::cache::CachedElement,
     Color = crate::hdr::surface::ManagedElement,
     Window = crate::decor::WindowElement,
+    Solid = smithay::backend::renderer::element::solid::SolidColorRenderElement,
     Shader = smithay::backend::renderer::gles::element::PixelShaderElement,
     Thumbnail = crate::overview::ThumbnailElement,
     Plain = RelocateRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>,
@@ -136,7 +136,11 @@ pub fn output_elements(
     launcher: &mut crate::launcher::Launcher,
     classic: &mut crate::classic::Classic,
     polkit: &mut crate::polkit::Polkit,
+    background: &mut crate::ui::background::Background,
 ) -> Vec<GavnoRenderElement> {
+    let accent = features.call(Feature::Theme, crate::ui::background::FIXED_ACCENT,
+        || background.accent_for(output, &config.theme, time));
+    topbar.set_accent(accent);
     let mut descriptions = std::collections::HashMap::new();
     if features.on(Feature::ColorManagement) && crate::handlers::color_management::any_tagged() {
         // The walks below hold each surface's lock: read the locked states,
@@ -152,7 +156,7 @@ pub fn output_elements(
         if let CursorImageStatus::Surface(surface) = cursor_status { with_surfaces_surface_tree(surface, |s, states| collect(s, states)); }
         if let Some(surface) = locks.surface(output) { with_surfaces_surface_tree(surface, |s, states| collect(s, states)); }
     }
-    let elements = output_elements_inner(renderer, space, output, pointer_pos, cursor_status, cursor, time, greeter, lock, overlay, window_decor, animations, locks, workspaces, overview, dock, topbar, config, features, osd, launcher, classic, polkit);
+    let elements = output_elements_inner(renderer, space, output, pointer_pos, cursor_status, cursor, time, greeter, lock, overlay, window_decor, animations, locks, workspaces, overview, dock, topbar, config, features, osd, launcher, classic, polkit, background);
     if descriptions.is_empty() { crate::hdr::surface::reset(output); return elements; }
     let hdr = crate::handlers::color_management::is_hdr(output);
     if !hdr { descriptions.retain(|_, d| d.tf != crate::color::Transfer::Srgb || d.primaries != crate::color::SRGB); }
@@ -178,7 +182,7 @@ pub fn output_elements(
 /// `output_elements` directly and therefore retain the original pixel values.
 pub fn dim_output(elements: &mut Vec<GavnoRenderElement>, brightness: &mut crate::brightness::State, output: &Output, time: Duration) {
     if let Some(element) = brightness.element(output, time) {
-        elements.insert(0, GavnoRenderElement::Brightness(element));
+        elements.insert(0, GavnoRenderElement::Solid(element));
     }
 }
 
@@ -206,6 +210,7 @@ fn output_elements_inner(
     launcher: &mut crate::launcher::Launcher,
     classic: &mut crate::classic::Classic,
     polkit: &mut crate::polkit::Polkit,
+    background: &mut crate::ui::background::Background,
 ) -> Vec<GavnoRenderElement> {
     let mut elements: Vec<GavnoRenderElement> = Vec::new();
     let Some(output_geo) = space.output_geometry(output) else {
@@ -229,7 +234,7 @@ fn output_elements_inner(
                 ) { elements.push(GavnoRenderElement::Memory(cursor)); }
             }
             elements.extend(osd.elements(renderer, output, output_geo.size, time, &config.dock.icon_theme, topbar.accent()));
-            let lock_elements = lock.elements(renderer, output_geo.size, scale.x, time);
+            let lock_elements = lock.elements(renderer, output_geo.size, scale.x, time, &config.theme);
             let media_elements = features.call(Feature::Media, Vec::new(), || {
                 lock.media_elements(renderer, output_geo.size, scale.x, &topbar.now_playing.borrow().snapshot, &config.dock.icon_theme)
             });
@@ -298,7 +303,7 @@ fn output_elements_inner(
 
     if let Some(greeter) = greeter {
         let size = output_geo.size;
-        elements.extend(greeter.safe_call(Vec::new(), |g| g.elements(renderer, size, scale.x, time)));
+        elements.extend(greeter.safe_call(Vec::new(), |g| { g.set_location(&config.theme); g.elements(renderer, size, scale.x, time) }));
         return elements;
     }
 
@@ -323,7 +328,7 @@ fn output_elements_inner(
     if !locks.locked && !lock.internal() {
         elements.extend(features.call(Feature::Media, Vec::new(), || {
             topbar.now_playing.borrow_mut().music.session.as_mut()
-                .map(|s| s.elements(renderer, output, output_geo.size, scale.x)).unwrap_or_default()
+                .map(|s| s.elements(renderer, output, output_geo.size, scale.x, topbar.accent())).unwrap_or_default()
         }));
     }
 
@@ -370,7 +375,7 @@ fn output_elements_inner(
     };
     features.call(Feature::Dock, (), || dock.minimize_scene(space, output, time, &mut scene));
     elements.extend(features.call(Feature::Overview, Vec::new(), || overview.chrome(renderer, workspaces, space, output)));
-    let accent = features.call(Feature::Bar, [0.95, 0.64, 0.42, 1.0], || topbar.accent());
+    let accent = topbar.accent();
     let overview_visible = features.on(Feature::Overview) && overview.visible();
     elements.extend(features.call(Feature::Tiling, Vec::new(), || {
         let mut line = Vec::new();
@@ -393,7 +398,15 @@ fn output_elements_inner(
         plain_elements(renderer, space, output, scene.as_deref())
     }));
     features.call(Feature::Classic, (), || classic.desktop.append(renderer, output, &mut elements, p, scale.x, accent, &config.dock.icon_theme));
-    elements.extend(background_elements(renderer, output));
+    elements.extend(background_elements(renderer, output, smithay::wayland::shell::wlr_layer::Layer::Bottom));
+    background.record_visibility(output, &elements, output_geo.size, scale.x);
+    elements.extend(background_elements(renderer, output, smithay::wayland::shell::wlr_layer::Layer::Background));
+    if !crate::ui::background::has_wallpaper(output, output_geo.size) {
+        let sky = features.call(Feature::Theme, None, || {
+            background.elements(renderer, output, output_geo.size, scale.x, &config.theme, time)
+        });
+        elements.push(sky.unwrap_or_else(|| background.solid(output, output_geo.size, config.theme.solid())));
+    }
     elements
 }
 
@@ -442,12 +455,11 @@ pub(crate) fn plain_elements(
     result
 }
 
-fn background_elements(renderer: &mut GlesRenderer, output: &Output) -> Vec<GavnoRenderElement> {
-    use smithay::wayland::shell::wlr_layer::Layer;
+fn background_elements(renderer: &mut GlesRenderer, output: &Output, selected: smithay::wayland::shell::wlr_layer::Layer) -> Vec<GavnoRenderElement> {
     let layers = layer_map_for_output(output);
     let scale = Scale::from(output.current_scale().fractional_scale());
     let mut result = Vec::new();
-    for layer in layers.layers().rev().filter(|l| matches!(l.layer(), Layer::Bottom | Layer::Background)) {
+    for layer in layers.layers().rev().filter(|l| l.layer() == selected) {
         if let Some(geometry) = layers.layer_geometry(layer) {
             result.extend(layer.render_elements::<WaylandSurfaceRenderElement<_>>(
                 renderer, geometry.loc.to_physical_precise_round(scale), scale, 1.0,

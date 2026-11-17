@@ -25,7 +25,7 @@ Values are merged in increasing priority:
 2. The config file.
 3. `GAVNO_*` environment variables.
 
-The environment always wins. An empty environment variable counts as unset, so
+The environment wins except for theme coordinates, where explicit file values take precedence. An empty environment variable counts as unset, so
 it does not override the file. Some empty strings in the file also mean "use the
 default": see `terminal` and `launcher` below.
 
@@ -178,6 +178,52 @@ names such as `"us,ru"`; `variant` takes one variant per layout and is empty by
 default. Set `options = ""` in the file to disable XKB options; an empty
 `GAVNO_XKB_OPTIONS` counts as unset, so the file is the way to turn them off.
 
+
+## Living theme
+
+All theme settings reload live in both TTY and nested sessions:
+
+```toml
+[theme]
+background = "living" # "living" or "solid"
+solid_color = "#0e1016"
+accent = "living" # or any "#rrggbb"
+# latitude = 55.75
+# longitude = 37.62
+
+[modules]
+theme = true
+```
+
+The living sky follows the local sun and season without network access. Each
+coordinate is optional: an explicit value wins, then a valid `GAVNO_LAT` or
+`GAVNO_LON`, then the time-zone city guess (or longitude derived from UTC offset).
+Latitude must be finite and within −90..90; longitude within −180..180.
+The lock screen and greeter retain their own skies with these same coordinates.
+Settings exposes a Theme page, color swatches and empty coordinate entries labeled
+“use time zone”. Empty entries remove the override; environment fallbacks still apply.
+
+A mapped background-layer wallpaper surface covering an output suppresses the
+built-in sky on that output. Classic icons and widgets remain above both kinds
+of wallpaper. Fixed accents apply to every shell control, including the OSD.
+Disabling `modules.theme`, or a guarded theme panic, uses `solid_color` and the
+fixed default accent until re-enabled (panic recovery requires restart).
+
+Theme scheduling shares one one-shot clock with the panel. It predicts the first
+future solar sample whose OKLab color difference reaches 0.02, comparing sky
+keyframe colors, the accent and sampled glow/field colors. Samples are at least
+one minute apart; flat periods can sleep for six hours. The visible panel clock
+still updates at minute boundaries, without resampling the theme on skipped minutes.
+
+Ordinary clock updates apply directly and request at most one frame per exposed
+output. Only large jumps (OKLab distance at least 0.08) after configuration,
+coordinates, startup or resume/late wake use the approximately two-second spring.
+Opaque coverage uses the actual render elements' regions, including unions,
+transparency and rounded corners. Covered outputs receive no theme frame requests,
+and keep their cached accent. HDR preserves composition damage/commit and skips
+PQ scanout when nothing visible changed; retries remain pending until a vblank.
+No theme image buffer, worker, network access or separate animation timer is used.
+See [the measurement report](theme-report.md) for hourly counts and validation.
 
 ## Optional modules
 

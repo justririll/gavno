@@ -39,6 +39,7 @@ pub struct Config {
     pub xkb_options: Option<String>,
     /// Gap between a new window and the work area edge, logical px.
     pub gap: i32,
+    pub theme: ThemeConfig,
     pub modules: ModulesConfig,
     pub classic: crate::classic::ClassicConfig,
     pub dock: DockConfig,
@@ -158,6 +159,7 @@ struct FileConfig {
     output: Output,
     outputs: BTreeMap<String, OutputConfig>,
     keyboard: Keyboard,
+    theme: ThemeConfig,
     modules: ModulesConfig,
     classic: crate::classic::ClassicConfig,
     dock: DockConfig,
@@ -242,6 +244,7 @@ impl Config {
             let line=text.lines().position(|line|line.split_once('=').is_some_and(|(name,_)|name.trim()==key)).map_or(1,|i|i+1);
             return Err(format!("output.{key} must be finite (line {line}, column 1)"));
         }
+        file.theme.validate()?;
         let (config, warnings) = Self::build(nested, Some(text), env);
         for warning in warnings { tracing::warn!(%warning, "configuration warning"); }
         Ok(config)
@@ -253,7 +256,7 @@ impl Config {
         use serde_json::json;
         let mode = self.output_mode.map(|m| format!("{}x{}{}", m.width, m.height,
             m.refresh.map(|r| format!("@{}", f64::from(r)/1000.0)).unwrap_or_default()));
-        json!({"mod_key":self.mod_key, "terminal":self.terminal, "launcher":self.launcher,
+        json!({"theme":self.theme,"mod_key":self.mod_key, "terminal":self.terminal, "launcher":self.launcher,
             "file_manager":self.file_manager,"polkit_agent":self.polkit_agent,"autostart":self.autostart,"gap":self.gap,
             "output":{"internal_scale":self.internal_scale,"mode":mode,"hdr":self.output_hdr,"sdr_white_nits":self.sdr_white_nits},
             "keyboard":{"layout":self.xkb_layout,"variant":self.xkb_variant,"options":self.xkb_options,"repeat_delay":self.repeat_delay,"repeat_rate":self.repeat_rate},
@@ -278,6 +281,7 @@ impl Config {
         {
             unknown.extend(extra.keys().map(|key| format!("{prefix}{key}")));
         }
+        unknown.extend(file.theme.unknown.keys().map(|key| format!("theme.{key}")));
         for (name, output) in &file.outputs {
             unknown.extend(output.unknown.keys().map(|key| format!("outputs.{name}.{key}")));
         }
@@ -304,6 +308,12 @@ impl Config {
             warnings.push("invalid config file: output scale and SDR white must be finite".into());
             file = FileConfig::default();
         }
+        if let Err(error) = file.theme.validate() {
+            warnings.push(error);
+            file.theme = ThemeConfig::default();
+        }
+        file.theme.latitude = file.theme.latitude.or_else(|| coordinate(env("GAVNO_LAT"), 90.0));
+        file.theme.longitude = file.theme.longitude.or_else(|| coordinate(env("GAVNO_LON"), 180.0));
         let var = |name| env(name).filter(|value| !value.is_empty());
         let default_mod = if nested { ModKey::Alt } else { ModKey::Super };
         let scale =
@@ -364,6 +374,7 @@ impl Config {
                     var("GAVNO_XKB_OPTIONS").or(file.keyboard.options).unwrap_or_else(|| "grp:alt_shift_toggle".into()),
                 ),
                 gap: gap.clamp(0, 64) as i32,
+                theme: file.theme,
                 modules: file.modules,
                 classic: file.classic,
                 dock: file.dock,
@@ -437,6 +448,7 @@ options = "caps:escape"
     #[test]
     fn defaults_and_example() {
         let expected = Config {
+            theme: Default::default(),
             modules: Default::default(),
             mod_key: ModKey::Super,
             terminal: "foot".into(),
@@ -479,8 +491,29 @@ options = "caps:escape"
     }
 
     #[test]
+    fn theme_validation_and_coordinate_precedence() {
+        let env = |key: &str| match key { "GAVNO_LAT" => Some("-33.87".into()), "GAVNO_LON" => Some("151.21".into()), _ => None };
+        let c = Config::parse_checked(true, "[theme]\nbackground='solid'\nsolid_color='#123AbC'\naccent='#c0ffee'\nlatitude=12.5", env).unwrap();
+        assert_eq!(c.theme.latitude, Some(12.5));
+        assert_eq!(c.theme.longitude, Some(151.21));
+        assert_eq!(c.theme.solid()[0], 18.0 / 255.0);
+        assert_eq!(Config::parse_checked(true, "", env).unwrap().theme.latitude, Some(-33.87));
+        for bad in ["background='image'", "solid_color='#abc'", "accent='blue'", "latitude=90.1", "longitude=-180.1", "latitude=nan", "longitude=inf"] {
+            assert!(Config::parse_checked(true, &format!("[theme]\n{bad}"), |_| None).is_err(), "{bad}");
+        }
+        for bad in ["nan", "inf", "999", "", "bad"] {
+            let c = Config::parse_checked(true, "", |_| Some(bad.into())).unwrap();
+            assert_eq!(c.theme.latitude, None);
+            assert_eq!(c.theme.longitude, None);
+        }
+        assert!(parse_color("#abcdef").is_some());
+        assert!(parse_color("#é1234").is_none());
+    }
+
+    #[test]
     fn full_and_partial_files() {
         let expected = Config {
+            theme: Default::default(),
             modules: Default::default(),
             mod_key: ModKey::Alt,
             terminal: "kitty".into(),
@@ -687,9 +720,60 @@ options = "caps:escape"
     }
 }
 
+/// Local-only theme settings. Explicit coordinates take precedence over the environment.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct ThemeConfig {
+    pub background: String,
+    pub solid_color: String,
+    pub accent: String,
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
+    #[serde(flatten)]
+    unknown: toml::Table,
+}
+impl Default for ThemeConfig {
+    fn default() -> Self {
+        Self { background: "living".into(), solid_color: "#0e1016".into(), accent: "living".into(),
+            latitude: None, longitude: None, unknown: Default::default() }
+    }
+}
+pub(crate) fn parse_color(text: &str) -> Option<[f32; 4]> {
+    let digits = text.strip_prefix('#')?;
+    if digits.len() != 6 || !digits.bytes().all(|b| b.is_ascii_hexdigit()) { return None; }
+    let n = u32::from_str_radix(digits, 16).ok()?;
+    Some([((n >> 16) & 255) as f32 / 255.0, ((n >> 8) & 255) as f32 / 255.0, (n & 255) as f32 / 255.0, 1.0])
+}
+fn coordinate(text: Option<String>, limit: f64) -> Option<f64> {
+    text?.parse::<f64>().ok().filter(|v| v.is_finite() && (-limit..=limit).contains(v))
+}
+impl ThemeConfig {
+    fn validate(&self) -> Result<(), String> {
+        for (key, valid) in [
+            ("background", matches!(self.background.as_str(), "living" | "solid")),
+            ("solid_color", parse_color(&self.solid_color).is_some()),
+            ("accent", self.accent == "living" || parse_color(&self.accent).is_some()),
+            ("latitude", self.latitude.is_none_or(|v| v.is_finite() && (-90.0..=90.0).contains(&v))),
+            ("longitude", self.longitude.is_none_or(|v| v.is_finite() && (-180.0..=180.0).contains(&v))),
+        ] {
+            if !valid { return Err(format!("invalid theme.{key}")); }
+        }
+        Ok(())
+    }
+    pub fn location(&self, utc_offset: i64) -> (f64, f64) {
+        if let (Some(lat), Some(lon)) = (self.latitude, self.longitude) { return (lat, lon); }
+        let (lat, lon) = crate::ui::theme::location(utc_offset);
+        (self.latitude.unwrap_or(lat), self.longitude.unwrap_or(lon))
+    }
+    pub fn solid(&self) -> [f32; 4] {
+        parse_color(&self.solid_color).unwrap_or(crate::render::CLEAR_COLOR)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct ModulesConfig {
+    pub theme: bool,
     pub classic: bool,
     pub polkit: bool,
     pub color_management: bool,
@@ -714,7 +798,7 @@ pub struct ModulesConfig {
 }
 impl Default for ModulesConfig {
     fn default() -> Self {
-        Self { classic: true, polkit: true, dock: true, bar: true, overview: true, tiling: true, snap: true, switcher: true, gestures: true, window_gestures: true, resize_mode: true, animations: true, decorations: true, ipc: true, screencopy: true, launcher: true, notifications: true, media: true, color_management: true, unknown: Default::default() }
+        Self { theme: true, classic: true, polkit: true, dock: true, bar: true, overview: true, tiling: true, snap: true, switcher: true, gestures: true, window_gestures: true, resize_mode: true, animations: true, decorations: true, ipc: true, screencopy: true, launcher: true, notifications: true, media: true, color_management: true, unknown: Default::default() }
     }
 }
 
