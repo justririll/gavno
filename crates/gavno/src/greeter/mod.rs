@@ -216,6 +216,12 @@ impl Greeter {
             || (self.lock_tx.is_none() && self.phase == Phase::Checking)
     }
 
+    /// GAVNO's own session sets the panel colour state itself; any other
+    /// session gets the SDR state that non-HDR compositors expect.
+    pub fn hands_off_to_gavno(&self) -> bool {
+        session_is_gavno(&self.session_cmd)
+    }
+
     pub fn on_reply(&mut self, reply: Reply) {
         tracing::info!(?reply, "greetd");
         match reply {
@@ -891,5 +897,26 @@ mod lock_ui_tests {
         }
         assert!(ui.quit_requested); assert_eq!(ui.phase, Phase::Starting);
         assert!(!ui.is_animating());
+    }
+}
+
+fn session_is_gavno(cmd: &[String]) -> bool {
+    cmd.first()
+        .and_then(|program| std::path::Path::new(program).file_name())
+        .is_some_and(|name| name.to_string_lossy().starts_with("gavno"))
+}
+
+#[cfg(test)]
+mod handoff_tests {
+    use super::session_is_gavno;
+
+    #[test]
+    fn only_gavno_sessions_keep_the_panel_colour_state() {
+        let cmd = |s: &str| s.split_whitespace().map(str::to_owned).collect::<Vec<_>>();
+        assert!(session_is_gavno(&cmd("gavno-session")));
+        assert!(session_is_gavno(&cmd("/usr/local/bin/gavno --tty")));
+        assert!(!session_is_gavno(&cmd("startplasma-wayland")));
+        assert!(!session_is_gavno(&cmd("/opt/gavno/bin/sway")));
+        assert!(!session_is_gavno(&[]));
     }
 }

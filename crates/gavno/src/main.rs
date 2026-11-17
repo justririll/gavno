@@ -196,6 +196,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         perf::finish_dispatch(&dispatch_start);
     })?;
+    if backend::udev::panel_kept_on_exit() {
+        tracing::info!("handing the panel to the session without DRM teardown");
+        // No destructors: they would restore SDR and the boot-time KMS state.
+        std::process::exit(0);
+    }
     Ok(())
 }
 

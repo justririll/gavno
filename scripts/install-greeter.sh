@@ -38,6 +38,19 @@ install -D -m 755 target/release/gavno /usr/local/bin/gavno
 install -D -m 755 dist/gavno-session /usr/local/bin/gavno-session
 install -D -m 644 dist/wayland-sessions/gavno.desktop /usr/share/wayland-sessions/gavno.desktop
 
+# The greeter hands the panel to the session. With the user's output settings
+# (mode, HDR) the session adopts the greeter's state at login without a modeset.
+user_config=/home/kirill/.config/gavno/config.toml
+greeter_home=$(getent passwd greetd | cut -d: -f6)
+if [ -r "$user_config" ] && [ -n "$greeter_home" ]; then
+    greeter_config=$greeter_home/.config/gavno/config.toml
+    install -d -o greetd -g greetd "$greeter_home/.config" "$greeter_home/.config/gavno"
+    awk '/^\[/ { keep = ($0 ~ /^\[outputs[].]/) } keep' "$user_config" > "$greeter_config.new"
+    chown greetd:greetd "$greeter_config.new"
+    chmod 644 "$greeter_config.new"
+    mv "$greeter_config.new" "$greeter_config"
+fi
+
 if [ ! -e /etc/pam.d/gavno-lock ]; then
     install -D -m 644 dist/pam.d/gavno-lock /etc/pam.d/gavno-lock
 fi

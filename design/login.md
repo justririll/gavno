@@ -59,6 +59,13 @@ boot -> greetd (root, VT 1)
   design/agent.md).
 - There is no autologin by default. It can be enabled explicitly in
   `/etc/greetd/config.toml` (`initial_session`).
+- The greeter reads `~greetd/.config/gavno/config.toml`.
+  `scripts/install-greeter.sh` fills it with the user's `[outputs]` sections,
+  so the greeter already runs the panel in the session's mode and HDR state.
+  When it hands off to `gavno-session`, it exits without DRM teardown, so it
+  restores neither SDR nor the boot-time KMS state. The session then adopts the panel without a
+  modeset: about 0.13 s to the first frame instead of 1.2 s. A different
+  session command still gets SDR.
 
 ## Steps
 

@@ -95,6 +95,9 @@ impl Ipc {
                     if let Some(greeter) = gv.greeter.as_mut() {
                         greeter.safe_call((), |g| g.on_reply(reply));
                         if greeter.quit_requested {
+                            if greeter.hands_off_to_gavno() {
+                                crate::backend::udev::keep_panel_on_exit();
+                            }
                             gv.quit();
                         }
                     }

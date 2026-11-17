@@ -1149,6 +1149,20 @@ impl Scanout {
     }
 }
 
+static KEEP_PANEL_ON_EXIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The greeter hands the panel to GAVNO's own session, which sets the mode and
+/// connector colour state itself. Exiting without DRM teardown skips both the
+/// SDR restore and Smithay's restore of the boot-time state: two full modesets
+/// (about a second each on the laptop's OLED) at every login.
+pub fn keep_panel_on_exit() {
+    KEEP_PANEL_ON_EXIT.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn panel_kept_on_exit() -> bool {
+    KEEP_PANEL_ON_EXIT.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub(crate) fn reset_scanout_buffers(gv: &mut Gavno) {
     if let Some(gpu) = udev(gv).and_then(|data| data.gpu.as_mut()) {
         for surface in gpu.surfaces.values_mut() {
