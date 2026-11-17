@@ -18,7 +18,6 @@ use crate::{
     grabs::{resize_grab::ResizeEdge, MoveSurfaceGrab, ResizeSurfaceGrab},
     module::Feature,
     snap::Direction,
-    state::spawn_shell,
     window_mode::{mode_state, WindowMode},
     Gavno,
 };
@@ -445,7 +444,7 @@ impl Gavno {
             Action::ToggleOverview => self.toggle_overview(),
             Action::CloseOverview => self.close_overview(),
             Action::Quit => self.quit(),
-            Action::Spawn(cmd) => spawn_shell(&cmd),
+            Action::Spawn(cmd) => self.launch_shell(&cmd, None),
             Action::CloseWindow => self.close_focused(),
             Action::Minimize => { if let Some(window) = self.focused_window() { self.minimize_window(&window); } }
             Action::ToggleMaximize => self.toggle_window_mode(WindowMode::Maximized),

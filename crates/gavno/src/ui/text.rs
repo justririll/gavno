@@ -4,7 +4,7 @@
 //! minute), so each string is rasterized once per (text, size, weight,
 //! scale) and cached as a GPU-uploadable buffer.
 
-use std::{collections::{HashMap, HashSet}, path::PathBuf, sync::Arc};
+use std::{cell::RefCell, collections::{HashMap, HashSet}, path::PathBuf, sync::{Arc, Weak}};
 
 use fontdue::{
     layout::{CoordinateSystem, Layout, LayoutSettings, TextStyle},
@@ -23,6 +23,13 @@ pub enum Weight {
     Regular,
     Medium,
     SemiBold,
+}
+
+// Canvases live on the renderer thread. Share immutable parsed fonts there,
+// without locks or retaining fonts after the last canvas releases them. A new
+// window's labels must not rescan/read/parse fonts the shell already uses.
+thread_local! {
+    static SHARED_FONTS: RefCell<HashMap<Weight, Weak<Font>>> = RefCell::new(HashMap::new());
 }
 
 /// Font files by weight. IBM Plex Sans first, Liberation Sans as the fallback
@@ -128,6 +135,10 @@ impl TextRenderer {
         if let Some(f) = self.fonts.get(&weight) {
             return Some(f.clone());
         }
+        if let Some(font) = SHARED_FONTS.with(|fonts| fonts.borrow().get(&weight).and_then(Weak::upgrade)) {
+            self.fonts.insert(weight, font.clone());
+            return Some(font);
+        }
         let _startup = crate::perf::Startup::new("font.load.begin", "font.load.end");
         let font = candidates(weight).iter().find_map(|stem| {
             let path = find_font_file(stem)?;
@@ -139,6 +150,7 @@ impl TextRenderer {
             tracing::debug!(?path, ?weight, "font loaded");
             Some(Arc::new(font))
         })?;
+        SHARED_FONTS.with(|fonts| { fonts.borrow_mut().insert(weight, Arc::downgrade(&font)); });
         self.fonts.insert(weight, font.clone());
         Some(font)
     }
@@ -268,6 +280,17 @@ impl TextRenderer {
 #[cfg(test)]
 mod measure_tests {
     use super::*;
+    #[test]
+    fn canvases_share_parsed_fonts_and_release_them_with_their_last_owner() {
+        let mut first = TextRenderer::new();
+        let mut second = TextRenderer::new();
+        let Some(font) = first.font(Weight::Medium) else { return };
+        let shared = second.font(Weight::Medium).unwrap();
+        assert!(Arc::ptr_eq(&font, &shared));
+        let weak = Arc::downgrade(&font);
+        drop(font); drop(shared); drop(first); drop(second);
+        assert!(weak.upgrade().is_none());
+    }
     #[test]
     fn measure_never_underestimates_the_rendered_width() {
         let mut t = TextRenderer::new();

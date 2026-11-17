@@ -60,6 +60,7 @@ impl CompositorHandler for Gavno {
                 let window = self.unmapped[idx].clone();
                 window.on_commit();
                 if has_buffer {
+                    self.launch_commit(&window);
                     self.unmapped.remove(idx);
                     self.map_new_window(window);
                 }

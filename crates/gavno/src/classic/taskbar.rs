@@ -347,6 +347,7 @@ impl Taskbar {
                 LINE,
             );
         }
+        self.icons.nonblocking_apps();
         for (app, r) in self.apps.iter().skip(self.offset).zip(&l.apps) {
             let r = button(c, *r, Hit::App(app.id.clone()));
             let active = focused.is_some_and(|w| app.windows.contains(w));
@@ -509,6 +510,7 @@ impl Taskbar {
 }
 impl Gavno {
     pub fn classic_activate(&mut self, index: usize, new: bool) {
+        let action = std::time::Instant::now();
         self.guard(Feature::Classic, (), |gv| {
             let Some(app) = gv.classic.taskbar.apps.get(index).cloned() else {
                 return;
@@ -524,7 +526,7 @@ impl Gavno {
             } {
                 Click::Launch => {
                     if let Some(cmd) = app.entry.and_then(|e| e.command(&gv.config.terminal)) {
-                        crate::state::spawn_shell(&cmd);
+                        gv.launch_shell_at(action, &cmd, Some(&app.id));
                     }
                 }
                 Click::Minimize => gv.minimize_window(&windows[0]),

@@ -467,6 +467,31 @@ impl<K: Clone + PartialEq> Tree<K> {
 }
 
 impl Gavno {
+    /// Predict the first tile without reserving a ghost slot for a client that
+    /// never maps. Reflow uses the same insertion point when its buffer arrives.
+    pub(crate) fn initial_tile_rect(&self, window: &Window) -> Option<Rect> {
+        if !self.features.on(crate::module::Feature::Tiling) || self.greeter.is_some() {
+            return None;
+        }
+        let state = mode_state(window);
+        if state.mode != WindowMode::Floating || state.tile_floating || state.minimized {
+            return None;
+        }
+        let (output, index) = self.workspaces.membership(window).or_else(|| {
+            let output = self.active_output()?;
+            let index = self.workspaces.get(&output)?.list.active;
+            Some((output, index))
+        })?;
+        let owner = self.workspaces.get(&output)?;
+        let workspace = &owner.list.items[index];
+        if !workspace.tiling { return None; }
+        let area = self.work_area(&output);
+        let mut tree = workspace.tree.clone();
+        tree.insert(window.clone(), self.focused_window().as_ref(), area, self.config.gap);
+        tree.layout(area, self.config.gap).0.into_iter()
+            .find_map(|(w, rect)| (w == *window).then_some(rect))
+    }
+
     pub fn tiling_workspace(&self, window: &Window) -> bool {
         self.features.read(crate::module::Feature::Tiling, Default::default(), || self.tiling_workspace_feature(window))
     }
@@ -1091,6 +1116,73 @@ mod tests {
         h.gv.save_workspace_location(&w, rect.loc);
         w
     }
+    #[test]
+    fn first_configure_matches_first_and_subsequent_tiles_without_resize() {
+        use smithay::wayland::{compositor::with_states, shell::xdg::XdgToplevelSurfaceData};
+        use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State;
+        let mut h = crate::state::tests::Harness::new();
+        let output = output(&mut h);
+        h.gv.workspaces.ensure(&output).list.items[0].tiling = true;
+        for _ in 0..3 {
+            let window = h.window();
+            let expected = h.gv.initial_tile_rect(&window).unwrap();
+            crate::handlers::xdg_shell::prepare_initial_configure(&h.gv, &window);
+            let t = window.toplevel().unwrap();
+            t.with_pending_state(|s| {
+                assert_eq!(s.size, Some(expected.size));
+                assert!(s.states.contains(State::TiledLeft));
+                assert!(s.states.contains(State::Activated));
+            });
+            t.send_configure();
+            h.gv.map_new_window(window.clone());
+            assert_eq!(h.gv.space.element_location(&window), Some(expected.loc));
+            assert_eq!(t.with_pending_state(|s| s.size), Some(expected.size));
+            with_states(t.wl_surface(), |states| {
+                assert_eq!(states.data_map.get::<XdgToplevelSurfaceData>().unwrap().lock().unwrap().pending_configures().len(), 1,
+                    "the new client must not receive a second configure when it maps");
+            });
+        }
+    }
+
+    #[test]
+    fn initial_configure_preserves_floating_size_and_pre_map_maximize() {
+        let mut h = crate::state::tests::Harness::new();
+        let output = output(&mut h);
+        h.gv.workspaces.ensure(&output);
+        let window = h.window();
+        crate::handlers::xdg_shell::prepare_initial_configure(&h.gv, &window);
+        assert_eq!(window.toplevel().unwrap().with_pending_state(|s| s.size), None);
+        h.gv.set_window_mode(&window, WindowMode::Maximized, Some(output));
+        let size = window.toplevel().unwrap().with_pending_state(|s| s.size);
+        assert!(size.is_some());
+        crate::handlers::xdg_shell::prepare_initial_configure(&h.gv, &window);
+        assert_eq!(window.toplevel().unwrap().with_pending_state(|s| s.size), size);
+    }
+
+    #[test]
+    fn initial_classic_configure_includes_final_decoration_and_maximized_size() {
+        use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode;
+        let mut h = crate::state::tests::Harness::new();
+        let output = output(&mut h);
+        h.gv.classic.settled = crate::classic::ShellMode::Classic;
+        h.gv.workspaces.ensure(&output);
+        let window = h.window();
+        let t = window.toplevel().unwrap();
+        t.with_pending_state(|s| s.decoration_mode = Some(Mode::ClientSide));
+        h.gv.set_window_mode(&window, WindowMode::Maximized, Some(output.clone()));
+        crate::handlers::xdg_shell::prepare_initial_configure(&h.gv, &window);
+        let expected = h.gv.classic_client_rect(&window, Zone::Maximized.rect(h.gv.work_area(&output), 0));
+        t.with_pending_state(|s| {
+            assert_eq!(s.decoration_mode, Some(Mode::ServerSide));
+            assert_eq!(s.size, Some(expected.size));
+        });
+        t.send_configure();
+        assert!(!h.gv.sync_classic_decorations());
+        h.gv.map_new_window(window.clone());
+        assert_eq!(h.gv.space.element_location(&window), Some(expected.loc));
+        assert!(t.send_pending_configure().is_none());
+    }
+
     #[test]
     fn workspace_toggle_round_trip_restores_floating_geometry_and_settles() {
         let mut h = crate::state::tests::Harness::new();

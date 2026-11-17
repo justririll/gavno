@@ -221,9 +221,51 @@ pub fn check_grab(
     Some(start_data)
 }
 
+/// Include the final tile/state in the handshake instead of resizing a client
+/// immediately after its first buffer. Floating clients still choose their size.
+pub(crate) fn prepare_initial_configure(gv: &Gavno, window: &Window) {
+    let Some(toplevel) = window.toplevel() else { return };
+    use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode;
+    let classic = gv.features.on(crate::module::Feature::Classic)
+        && gv.classic.settled == crate::classic::ShellMode::Classic;
+    // Negotiate the same style as sync_classic_decorations before sizing. Its
+    // idle callback must not change decoration/size after the first configure.
+    let ssd = classic && gv.features.on(crate::module::Feature::Decorations) && gv.greeter.is_none();
+    toplevel.with_pending_state(|state| {
+        if state.decoration_mode.is_some() { state.decoration_mode = Some(if ssd { Mode::ServerSide } else { Mode::ClientSide }); }
+    });
+    let tile = gv.initial_tile_rect(window);
+    let output = gv.active_output();
+    let bounds = output.as_ref().map(|output| gv.work_area(output).size);
+    let fixed = output.as_ref().and_then(|output| {
+        let area = gv.work_area(output);
+        let rect = match crate::window_mode::mode_state(window).mode {
+            WindowMode::Maximized => crate::snap::Zone::Maximized.rect(area, if classic { 0 } else { gv.config.gap }),
+            WindowMode::Snapped(zone) => zone.rect(area, gv.config.gap),
+            // Fullscreen already carries the requested output size; floating
+            // clients choose their natural size unless a tiling slot exists.
+            WindowMode::Fullscreen | WindowMode::Floating => return None,
+        };
+        Some(gv.classic_client_rect(window, rect))
+    });
+    let activate = !gv.protocols.locks.locked && gv.greeter.is_none()
+        && !crate::handlers::xdg_activation::is_urgent(window);
+    toplevel.with_pending_state(|state| {
+        state.bounds = bounds;
+        if let Some(rect) = fixed { state.size = Some(rect.size); }
+        if activate { state.states.set(xdg_toplevel::State::Activated); }
+        if let Some(rect) = tile {
+            state.size = Some(rect.size);
+            for flag in [xdg_toplevel::State::TiledLeft, xdg_toplevel::State::TiledRight,
+                xdg_toplevel::State::TiledTop, xdg_toplevel::State::TiledBottom] {
+                state.states.set(flag);
+            }
+        }
+    });
+}
+
 /// Should be called on `WlSurface::commit`
 pub fn handle_commit(gv: &mut Gavno, surface: &WlSurface) {
-    let popups = &mut gv.popups;
     // Handle toplevel commits: the initial configure goes out on the first
     // commit, while the window is still unmapped.
     // Windows on hidden workspaces are neither unmapped nor in the Space but
@@ -247,13 +289,14 @@ pub fn handle_commit(gv: &mut Gavno, surface: &WlSurface) {
         });
 
         if !initial_configure_sent {
+            prepare_initial_configure(gv, &window);
             window.toplevel().unwrap().send_configure();
         }
     }
 
     // Handle popup commits.
-    popups.commit(surface);
-    if let Some(popup) = popups.find_popup(surface) {
+    gv.popups.commit(surface);
+    if let Some(popup) = gv.popups.find_popup(surface) {
         match popup {
             PopupKind::Xdg(ref xdg) => {
                 if !xdg.is_initial_configure_sent() {

@@ -20,7 +20,7 @@ use smithay::{
                 AsRenderElements, Element, Id, Kind, RenderElement, UnderlyingStorage,
             },
             gles::{
-                GlesError, GlesFrame, GlesPixelProgram, GlesRenderer, GlesTexProgram, GlesTexture,
+                GlesError, GlesFrame, GlesPixelProgram, GlesRenderer, GlesTexProgram, GlesTexture, GlesTarget,
                 Uniform, UniformName, UniformType,
             },
             utils::{CommitCounter, DamageSet, OpaqueRegions},
@@ -364,6 +364,7 @@ struct Cache {
     mode: WindowMode,
     focused: bool,
     visibility: f64,
+    window_scale: f64,
     snapshot: Option<(TextureBuffer<GlesTexture>, Rectangle<i32, Physical>)>,
     trackers: HashMap<Id, Tracker>,
     border: ShaderBox,
@@ -379,6 +380,7 @@ struct WindowCache {
 #[derive(Default)]
 pub struct WindowDecor {
     programs: Option<Programs>,
+    pub(crate) warm_on_output: bool,
     shaders: Option<Shaders>,
     failed: bool,
     caches: Vec<WindowCache>,
@@ -486,6 +488,50 @@ fn snapshot(
     )))
 }
 
+/// GLSL compilation alone can leave driver JIT work until the first draw.
+/// Exercise rounded content, border and shadow once on a tiny throwaway target
+/// while initializing chrome, before an application's first buffer can arrive.
+fn warm_window_elements(renderer: &mut GlesRenderer, programs: &Programs, shaders: &Shaders) -> Result<Vec<GavnoRenderElement>, GlesError> {
+    let mut cache = Cache::default();
+    let mut elements = Vec::new();
+    // Client window buffers normally have non-power-of-two dimensions. Some
+    // drivers specialize sampling code for that case even with the same format.
+    for (x, format) in [(8, Fourcc::Argb8888), (40, Fourcc::Xrgb8888)] {
+        let buffer = TextureBuffer::from_memory(renderer, &[255; 36], format,
+            (3, 3), false, 1, Transform::Normal, None)?;
+        let texture = Arc::new(TextureRenderElement::from_texture_buffer((0.0, 0.0), &buffer,
+            None, None, None, Kind::Unspecified));
+        let rect = Rectangle::new((x, 8).into(), (16, 16).into());
+        let content = wrap(&mut cache, programs, Content::Texture(texture), Appearance {
+            geometry: rect, clip: rect, radius: 4.0, opacity: 1.0,
+        }, Scale::from(1.0));
+        let (border, shadows) = decorations(&mut cache, shaders, rect.to_f64().to_logical(1.0),
+            WindowMode::Floating, true, 1.0, 1.0);
+        elements.extend(border);
+        elements.push(GavnoRenderElement::Window(content));
+        elements.extend(shadows);
+    }
+    Ok(elements)
+}
+
+fn draw_warm_window_elements(renderer: &mut GlesRenderer, fb: &mut GlesTarget<'_>, size: smithay::utils::Size<i32, Physical>, elements: &[GavnoRenderElement]) -> Result<(), GlesError> {
+    OutputDamageTracker::new(size, 1.0, Transform::Normal)
+        .render_output(renderer, fb, 0, elements, [0.0; 4])
+        .map_err(|error| match error {
+            smithay::backend::renderer::damage::Error::Rendering(error) => error,
+            _ => GlesError::UnknownSize,
+        })?;
+    Ok(())
+}
+
+fn warm_window_programs(renderer: &mut GlesRenderer, programs: &Programs, shaders: &Shaders) -> Result<(), GlesError> {
+    let _startup = crate::perf::Startup::new("decor.warmup.begin", "decor.warmup.end");
+    let elements = warm_window_elements(renderer, programs, shaders)?;
+    let mut target: GlesTexture = renderer.create_buffer(Fourcc::Abgr8888, (64, 32).into())?;
+    let mut fb = renderer.bind(&mut target)?;
+    draw_warm_window_elements(renderer, &mut fb, (64, 32).into(), &elements)
+}
+
 fn decorations(
     cache: &mut Cache,
     shaders: &Shaders,
@@ -543,6 +589,16 @@ fn decorations(
 }
 
 impl WindowDecor {
+    /// Window-system framebuffer formats can select a different driver pipeline
+    /// from an offscreen texture. The backend overwrites this entire warmup draw
+    /// before submitting any pixels to the host.
+    pub(crate) fn warm_framebuffer(&self, renderer: &mut GlesRenderer, fb: &mut GlesTarget<'_>, size: smithay::utils::Size<i32, Physical>) -> Result<bool, GlesError> {
+        let (Some(programs), Some(shaders)) = (&self.programs, &self.shaders) else { return Ok(false) };
+        let _startup = crate::perf::Startup::new("decor.output_warmup.begin", "decor.output_warmup.end");
+        let elements = warm_window_elements(renderer, programs, shaders)?;
+        draw_warm_window_elements(renderer, fb, size, &elements)?;
+        Ok(true)
+    }
     pub fn focus(&mut self, window: Option<&Window>) {
         self.focused = window.cloned();
     }
@@ -567,6 +623,11 @@ impl WindowDecor {
                 .and_then(|p| Shaders::compile(renderer).map(|s| (p, s)))
             {
                 Ok((p, s)) => {
+                    if !self.warm_on_output {
+                        if let Err(error) = warm_window_programs(renderer, &p, &s) {
+                            tracing::debug!(?error, "window shader warmup unavailable");
+                        }
+                    }
                     self.programs = Some(p);
                     self.shaders = Some(s);
                 }
@@ -662,7 +723,7 @@ impl WindowDecor {
                 let source = rect.to_physical_precise_round(scale);
                 let target = visual_rect(
                     rect,
-                    motion.map(|m| m.scale()).unwrap_or(1.0) / (0.94 + 0.06 * cache.visibility),
+                    motion.map(|m| m.scale()).unwrap_or(1.0) / cache.window_scale.max(0.0001),
                 )
                 .to_physical_precise_round(scale);
                 let geo = transformed_rect(*bounds, source, target);
@@ -675,7 +736,7 @@ impl WindowDecor {
                     Kind::Unspecified,
                 ));
                 let opacity = motion
-                    .map(|m| m.visibility.value as f32)
+                    .map(|m| m.opacity() as f32)
                     .unwrap_or(0.0)
                     .clamp(0.0, 1.0);
                 let texture_opacity =
@@ -752,7 +813,7 @@ impl WindowDecor {
             let source = rect.to_physical_precise_round(scale);
             let target = shown.to_physical_precise_round(scale);
             let opacity = motion
-                .map(|m| m.visibility.value as f32)
+                .map(|m| m.opacity() as f32)
                 .unwrap_or(1.0)
                 .clamp(0.0, 1.0);
             let mode = mode_state(window).mode;
@@ -822,6 +883,7 @@ impl WindowDecor {
             cache.mode = mode;
             cache.focused = focused;
             cache.visibility = opacity as f64;
+            cache.window_scale = motion.map(|m| m.scale()).unwrap_or(1.0);
             cache
                 .trackers
                 .retain(|id, _| content.iter().any(|e| e.id() == id));
@@ -838,6 +900,7 @@ impl WindowDecor {
                 c.alpha = opacity;
                 c.rect(r, 0.0, [0.065, 0.075, 0.10, 1.0], 0.0, crate::topbar::LINE);
                 let (title, app) = crate::overlay::window_labels(window);
+                cache.icons.nonblocking_apps();
                 // App IDs commonly double as themed icon names; use the same fallback as the dock.
                 c.icon(renderer, &mut cache.icons, &[&app, "application-x-executable-symbolic"], "Adwaita", crate::topbar::geometry::rect(r.loc.x + 8, r.loc.y + 7, 18, 18));
                 c.label(renderer, &title, r.loc.x + 34, r.loc.y + 9, r.size.w - 180, 12.0);

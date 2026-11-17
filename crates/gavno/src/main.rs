@@ -28,6 +28,7 @@ mod greeter;
 mod lock;
 mod power;
 mod launcher;
+mod launch;
 mod notify;
 mod media;
 mod polkit;
@@ -171,6 +172,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::env::set_var("XDG_SESSION_TYPE", "wayland");
     if !greeter_mode {
         xwayland::start(&mut state);
+        launch::init(&mut state);
         start_polkit_agent(&mut state, backend_choice == BackendChoice::Tty);
         // A nested compositor must not repoint the host session's services.
         if backend_choice == BackendChoice::Tty {

@@ -33,6 +33,7 @@ pub struct Motion {
     pub visibility: Spring,
     geometry: Option<(Rect, Rect, Spring)>,
     pub closing: bool,
+    closing_visibility: f64,
 }
 impl Motion {
     pub fn open(now: Duration) -> Self {
@@ -43,11 +44,13 @@ impl Motion {
             visibility,
             geometry: None,
             closing: false,
+            closing_visibility: 1.0,
         }
     }
     pub fn close(&mut self, now: Duration) {
         self.advance(now);
         self.geometry = None;
+        self.closing_visibility = self.visibility.value.max(f64::EPSILON);
         self.closing = true;
         self.visibility.set(0.0);
     }
@@ -109,6 +112,10 @@ impl Motion {
     }
     pub fn finished(&self) -> bool {
         self.closing && !self.active()
+    }
+    /// Opening scales the already visible buffer; never fade its first frame out.
+    pub fn opacity(&self) -> f64 {
+        if self.closing { (self.visibility.value / self.closing_visibility).clamp(0.0, 1.0) } else { 1.0 }
     }
     pub fn scale(&self) -> f64 {
         0.94 + 0.06 * self.visibility.value.clamp(0.0, 1.0)
@@ -236,6 +243,20 @@ mod tests {
     use super::*;
     fn r(x: f64, w: f64) -> Rect {
         Rectangle::new((x, 20.0).into(), (w, 100.0).into())
+    }
+    #[test]
+    fn opening_content_is_visible_in_its_first_frame_while_scale_still_animates() {
+        let mut motion = Motion::open(Duration::ZERO);
+        assert_eq!(motion.opacity(), 1.0);
+        assert!(motion.scale() < 1.0);
+        assert!(motion.active());
+        motion.advance(Duration::from_millis(8));
+        assert_eq!(motion.opacity(), 1.0);
+        motion.close(Duration::from_millis(8));
+        assert_eq!(motion.opacity(), 1.0);
+        for i in 2..300 { motion.advance(Duration::from_millis(i * 8)); }
+        assert_eq!(motion.opacity(), 0.0);
+        assert!(motion.finished());
     }
     #[test]
     fn immediate_geometry_scales_late_buffers_without_scheduling_frames() {

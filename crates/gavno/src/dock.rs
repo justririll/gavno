@@ -480,6 +480,7 @@ impl Dock {
             let rect = Rectangle::new((x, bottom - 9.0 - sz - bounce).into(), (sz, sz).into());
             v.hits.push((id.clone(), rect));
             let px = (DOCK_BASE * DOCK_MAG * fit * c.scale).ceil() as u32;
+            self.icons.nonblocking_apps();
             if let Some(buffer) = self.icons.get(&app.icon, px, &self.config.icon_theme) {
                 if let Ok(e) = MemoryRenderBufferRenderElement::from_buffer(
                     renderer,
@@ -935,6 +936,7 @@ impl Gavno {
     }
 
     fn launch_dock_app_feature(&mut self, id: &str) {
+        let action = std::time::Instant::now();
         let Some(app) = self.dock.apps.iter().find(|a| a.id == id) else {
             return;
         };
@@ -951,7 +953,7 @@ impl Gavno {
             return;
         };
         let baseline = app.windows.len();
-        crate::state::spawn_shell(&command);
+        self.launch_shell_at(action, &command, Some(id));
         if let Some(index) = self.dock.launches.iter().position(|l| l.id == id) {
             if let Some(t) = self.dock.launches.remove(index).timer {
                 self.loop_handle.remove(t);
@@ -1355,6 +1357,7 @@ impl Gavno {
 impl Dock {
     /// Re-read pins and drop theme caches without restoring minimized windows.
     pub(crate) fn configuration_changed(&mut self) {
+        crate::icons::app_worker::invalidate();
         self.initialized = false;
         self.icons = Default::default();
         self.entries = Default::default();

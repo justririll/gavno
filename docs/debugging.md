@@ -197,3 +197,61 @@ counters, wait, and read state again: rendered frames must remain constant;
 callback timer firings increase only when clients request callbacks. Injecting
 any supported input wakes the outputs and rendering resumes. INFO records
 `outputs powered off` and `outputs powered on` include the transition reason.
+
+# Application launch latency
+
+Every matched application launch emits one INFO record on `gavno::launch`.
+`command` and `app_id` identify the launch. All `*_ms` values are monotonic
+milliseconds from the launch action (Enter/click/keybinding), including any wait
+for the launcher's desktop-entry worker after an early Enter:
+
+- `dispatch_ms`: command preparation and handing the request to the spawner.
+- `spawn_ms`: the worker's `Command::spawn` returned, after the shell's exec
+  handshake; includes worker scheduling. This does not timestamp the app's own
+  later exec inside the detached shell.
+- `commit_ms`: the new toplevel's first buffer commit.
+- `mapped_ms`: placement, tiling and focus handling completed.
+- `presented_ms`: the first successful submission containing visible surface
+  content completed. `presentation="drm-vblank"` records KMS flip completion;
+  `presentation="nested-submit"` records submission to the host, whose eventual
+  on-screen presentation is not observable through this backend.
+- `commit_to_present_ms`: the interval between the last two relevant events,
+  first buffer commit and first presentation/submission.
+
+The matcher uses the compositor-issued `XDG_ACTIVATION_TOKEN`, desktop app ID,
+or executable/app-ID identity. Repeated app-ID matches use launch order; an
+activation token can override a tentative match before logging. The detached
+wrapper shell's PID is deliberately not treated as the app's PID. Apps that
+ignore activation and advertise an unrelated app ID may remain unmatched.
+Unmatched launches expire silently after 30 seconds. Tokens also expire, with
+one deadline timer that is removed when no launches or tokens remain. There
+are no periodic launch polls or unconditional redraws. One sleeping worker handles spawning,
+environment copying and reaping the short-lived shells; app lifetime does not
+hold the worker. Application chrome uses a separate bounded icon worker so decoding
+cannot delay spawning. Cold icons use the existing fallback and trigger a
+redraw only when their result arrives. Parsed fonts are shared across canvases;
+`decor.warmup.begin/end` (DRM offscreen) and `decor.output_warmup.begin/end`
+(nested output framebuffer) bracket one startup pass that exercises the window
+shaders with non-power-of-two alpha/opaque textures. Nested mode fully redraws
+the real scene before submission, so the warmup is never visible. The bounded
+`winit.elements`, `winit.draw`, and `winit.submit` stall watches distinguish
+scene construction, rendering and host submission. `--screenshots` captures the
+first mapped window of each benchmark app after measuring it.
+
+Run the GTK/Qt launcher benchmark against a built development binary:
+
+```sh
+export CARGO_TARGET_DIR=/home/kirill/HDD/ds-build/target-launch
+export CARGO_HOME=/home/kirill/HDD/ds-build/cargo-home
+python3 scripts/launch-benchmark.py /tmp/gavno-launch-after --runs 10
+```
+
+The script creates a private HOME/config/runtime/D-Bus session, warms the
+launcher assets, then taps Super, types `zenity` or `konsole`, presses Enter and
+polls `gavno msg state` until focus changes. Every iteration launches a fresh
+process (`konsole --separate --nofork`) and closes it through Super+Q. The first
+application launch is included, so cold client/render caches affect the worst
+case. `focus_poll_ms` includes IPC process startup and polling overhead; use the
+compositor logs for stage timings. The output directory contains the raw log,
+per-run JSON and the private environment for inspection. Use a new directory
+for each comparison; `--binary` selects an instrumented baseline binary.

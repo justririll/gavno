@@ -20,6 +20,7 @@ pub struct WinitData {
     output: Output,
     damage_tracker: OutputDamageTracker,
     redraw_queued: bool,
+    window_shaders_warmed: bool,
 }
 
 impl WinitData {
@@ -81,12 +82,14 @@ pub fn init(event_loop: &mut EventLoop<'static, Gavno>, gv: &mut Gavno) -> Resul
         }
     }
 
+    gv.window_decor.warm_on_output = true;
     let damage_tracker = OutputDamageTracker::from_output(&output);
     gv.backend = Backend::Winit(WinitData {
         backend,
         output,
         damage_tracker,
         redraw_queued: true,
+        window_shaders_warmed: false,
     });
 
     event_loop.handle().insert_source(winit, |event, _, gv| match event {
@@ -124,11 +127,12 @@ fn render(gv: &mut Gavno) {
     gv.power.rendered_frames += 1;
     let output = data.output.clone();
 
-    let age = data.backend.buffer_age().unwrap_or(0);
+    let mut age = data.backend.buffer_age().unwrap_or(0);
     let result = {
         let Ok((renderer, mut framebuffer)) = data.backend.bind() else {
             return;
         };
+        let elements_stall = crate::perf::Stall::new("winit.elements");
         let mut elements = render::output_elements(
             renderer,
             &gv.space,
@@ -155,16 +159,32 @@ fn render(gv: &mut Gavno) {
         &mut gv.polkit,
         &mut gv.background,
         );
+        drop(elements_stall);
+        if !data.window_shaders_warmed {
+            match gv.window_decor.warm_framebuffer(renderer, &mut framebuffer, output.current_mode().unwrap().size) {
+                Ok(true) => { data.window_shaders_warmed = true; age = 0; }
+                Ok(false) => {}
+                Err(error) => {
+                    data.window_shaders_warmed = true;
+                    age = 0;
+                    tracing::debug!(?error, "output shader warmup unavailable");
+                }
+            }
+        }
         render::dim_output(&mut elements, &mut gv.media.brightness, &output, time);
-        data.damage_tracker
+        let draw_stall = crate::perf::Stall::new("winit.draw");
+        let result = data.damage_tracker
             .render_output(renderer, &mut framebuffer, age, &elements, render::CLEAR_COLOR)
-            .map(|r| (r.damage.cloned(), r.states))
+            .map(|r| (r.damage.cloned(), r.states));
+        drop(draw_stall);
+        result
     };
     match result {
         Ok((damage, states)) => {
             let mut submitted = true;
-            if let Some(damage) = damage {
-                if let Err(err) = data.backend.submit(Some(&damage)) {
+            if let Some(ref damage) = damage {
+                let _stall = crate::perf::Stall::new("winit.submit");
+                if let Err(err) = data.backend.submit(Some(damage)) {
                     submitted = false;
                     tracing::warn!(?err, "winit submit failed");
                 }
@@ -172,6 +192,10 @@ fn render(gv: &mut Gavno) {
             if submitted {
                 gv.protocols.locks.submitted(&output);
                 gv.protocols.locks.presented(&output);
+            }
+            if submitted && damage.is_some() {
+                gv.launch_submitted(&output, &states);
+                gv.launch_presented(&output, "nested-submit");
             }
             render::post_render(gv, &output, &states, None);
             if gv.is_animating_for(&output) {

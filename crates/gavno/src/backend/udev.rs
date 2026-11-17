@@ -155,7 +155,18 @@ enum RedrawState {
     Idle,
     Queued,
     WaitingForVBlank { queued: bool },
-    WaitingForTimer { token: RegistrationToken, queued: bool },
+    WaitingForTimer { token: RegistrationToken, queued: bool, retry: bool },
+}
+
+impl RedrawState {
+    fn release_empty_frame_throttle(&mut self) -> Option<RegistrationToken> {
+        if let Self::WaitingForTimer { token, retry: false, .. } = *self {
+            *self = Self::Idle;
+            Some(token)
+        } else {
+            None
+        }
+    }
 }
 
 impl UdevData {
@@ -1154,6 +1165,19 @@ pub fn queue_redraw_output(gv: &mut Gavno, output: &Output) {
     if let Some(crtc) = crtc { queue_redraw(gv, crtc); }
 }
 
+/// A first buffer must not wait for the empty-frame callback throttle before
+/// drawing. Actual KMS retries and outstanding page flips retain their pacing.
+pub(crate) fn queue_first_window_frame(gv: &mut Gavno, output: &Output) {
+    let crtc = udev(gv).and_then(|d| d.gpu.as_ref())
+        .and_then(|g| g.surfaces.iter().find(|(_, s)| &s.output == output).map(|(crtc, _)| *crtc));
+    let Some(crtc) = crtc else { return };
+    if let Some(timer) = surface_mut(&mut gv.backend, crtc)
+        .and_then(|s| s.redraw.release_empty_frame_throttle()) {
+        gv.loop_handle.remove(timer);
+    }
+    queue_redraw(gv, crtc);
+}
+
 fn queue_redraw(gv: &mut Gavno, crtc: crtc::Handle) {
     if gv.power.is_off() { gv.schedule_power_frames(); return; }
     let Some(surface) = surface_mut(&mut gv.backend, crtc) else {
@@ -1314,6 +1338,7 @@ fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
     if !surface.first_frame_queued {
         crate::perf::startup_output("udev.first_frame.drawn", &output.name());
     }
+    let mut launch_submitted = false;
     let mut retry_sdr = false;
     let mut first_submit_failed = false;
     if !is_empty {
@@ -1325,6 +1350,7 @@ fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
         stall.mark("queue");
         match queued {
             Ok(()) => {
+                launch_submitted = true;
                 surface.flip_failures = 0;
                 if !surface.first_frame_queued {
                     surface.first_frame_queued = true;
@@ -1379,6 +1405,7 @@ fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
     }
 
     let feedback = surface.feedback.clone();
+    if launch_submitted { gv.launch_submitted(&output, &states); }
     render::post_render(gv, &output, &states, feedback.as_ref());
     if !is_empty {
         crate::handlers::screencopy::frame_drawn(gv, &output);
@@ -1401,7 +1428,7 @@ fn frame_timer(handle: &smithay::reexports::calloop::LoopHandle<'static, Gavno>,
             TimeoutAction::Drop
         })
         .ok()
-        .map_or(RedrawState::Idle, |token| RedrawState::WaitingForTimer { token, queued })
+        .map_or(RedrawState::Idle, |token| RedrawState::WaitingForTimer { token, queued, retry: queued })
 }
 
 fn on_timer(gv: &mut Gavno, crtc: crtc::Handle) {
@@ -1462,7 +1489,10 @@ fn on_vblank(gv: &mut Gavno, crtc: crtc::Handle, metadata: &mut Option<DrmEventM
     }
     let queued = matches!(surface.redraw, RedrawState::WaitingForVBlank { queued: true });
     surface.redraw = RedrawState::Idle;
-    if presented { gv.protocols.locks.presented(&lock_output); }
+    if presented {
+        gv.protocols.locks.presented(&lock_output);
+        gv.launch_presented(&lock_output, "drm-vblank");
+    }
     if queued {
         queue_redraw(gv, crtc);
     }
@@ -1666,5 +1696,26 @@ mod scanout_tests {
         // a real connector would be read with force_probe = false.
         assert!(CachedConnectors(&fake, None).get_connector(std::num::NonZeroU32::new(1).unwrap().into(), true).is_err());
         assert_ne!(fake.force.get(), Some(true));
+    }
+}
+
+#[cfg(test)]
+mod launch_tests {
+    use super::*;
+
+    #[test]
+    fn first_window_bypasses_empty_frame_throttle_but_preserves_kms_pacing() {
+        let event_loop = EventLoop::<()>::try_new().unwrap();
+        let token = event_loop.handle().insert_source(Timer::from_duration(Duration::from_secs(60)),
+            |_, _, _| TimeoutAction::Drop).unwrap();
+        let mut empty = RedrawState::WaitingForTimer { token, queued: true, retry: false };
+        assert!(empty.release_empty_frame_throttle().is_some());
+        assert!(matches!(empty, RedrawState::Idle));
+        let mut retry = RedrawState::WaitingForTimer { token, queued: true, retry: true };
+        assert!(retry.release_empty_frame_throttle().is_none());
+        assert!(matches!(retry, RedrawState::WaitingForTimer { retry: true, .. }));
+        let mut flip = RedrawState::WaitingForVBlank { queued: true };
+        assert!(flip.release_empty_frame_throttle().is_none());
+        assert!(matches!(flip, RedrawState::WaitingForVBlank { queued: true }));
     }
 }

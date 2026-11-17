@@ -81,8 +81,8 @@ impl Gavno {
                 Start => gv.toggle_start(),
                 ShowDesktop => gv.show_classic_desktop(true),
                 MinimizeAll => gv.show_classic_desktop(false),
-                Settings => crate::state::spawn_shell(&gv.config.classic.settings_command),
-                TaskManager => crate::state::spawn_shell(&gv.config.classic.task_manager),
+                Settings => gv.launch_shell(&gv.config.classic.settings_command.clone(), None),
+                TaskManager => gv.launch_shell(&gv.config.classic.task_manager.clone(), None),
                 Quick | Notifications => {
                     if let Some(o) = gv.active_output() {
                         gv.classic.start.close();

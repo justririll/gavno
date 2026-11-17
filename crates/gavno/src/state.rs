@@ -97,6 +97,7 @@ pub struct Gavno {
     pub lock: crate::lock::Lock,
     pub power: crate::power::Power,
     pub launcher: crate::launcher::Launcher,
+    pub(crate) launches: crate::launch::Launches,
     pub polkit: crate::polkit::Polkit,
     pub notifications: crate::notify::Shared,
     pub now_playing: crate::media::Shared,
@@ -214,6 +215,7 @@ impl Gavno {
             lock: Default::default(),
             power: Default::default(),
             launcher: Default::default(),
+            launches: Default::default(),
             polkit: Default::default(),
         }
     }
@@ -474,6 +476,8 @@ impl Gavno {
         self.reflow_tiling(true);
         self.features.call(crate::module::Feature::Animations, (), || self.window_animations.open(&window, self.start_time.elapsed()));
         if !urgent { self.focus_window(Some(&window)); }
+        self.launch_mapped(&window);
+        if let Some(output) = &output { crate::backend::udev::queue_first_window_frame(self, output); }
     }
 
     /// Called by backends after a new output was mapped.
@@ -501,22 +505,14 @@ impl Gavno {
 /// The shell script that runs `cmd` in a background subshell, so the shell
 /// exits at once and the app is adopted by init (or the session's subreaper).
 /// Newlines keep a trailing `#` comment in `cmd` from swallowing the `) &`.
-fn detached_script(cmd: &str) -> String {
+pub(crate) fn detached_script(cmd: &str) -> String {
     format!("(\n{cmd}\n) &")
 }
 
 /// Runs `cmd` through `sh -c`, detached from GAVNO. Only the short-lived shell
 /// is GAVNO's child: no thread per running app waits for it to exit.
 pub fn spawn_shell(cmd: &str) {
-    tracing::info!(cmd, "spawning");
-    match std::process::Command::new("sh").arg("-c").arg(detached_script(cmd)).spawn() {
-        Ok(mut child) => {
-            std::thread::spawn(move || {
-                let _ = child.wait();
-            });
-        }
-        Err(err) => tracing::warn!(?err, cmd, "spawn failed"),
-    }
+    crate::launch::spawn(cmd, None, None);
 }
 
 #[derive(Default)]

@@ -57,6 +57,7 @@ impl XdgActivationHandler for Gavno {
         data: XdgActivationTokenData,
         surface: WlSurface,
     ) {
+        self.launch_activation(token.as_str(), &surface);
         self.protocols.activation.remove_token(&token);
         let window = self.window_for_surface(&surface).or_else(|| {
             self.unmapped

@@ -1,4 +1,5 @@
 //! Icon theme lookup and bounded, size-specific premultiplied raster caches.
+pub(crate) mod app_worker;
 use smithay::{
     backend::{allocator::Fourcc, renderer::element::memory::MemoryRenderBuffer},
     utils::Transform,
@@ -100,10 +101,12 @@ pub fn lookup(name: &str, theme: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
 #[derive(Default)]
 pub struct Icons {
     cache: HashMap<(String, u32, bool), Option<MemoryRenderBuffer>>,
+    async_apps: bool,
     paths: HashMap<String, Option<PathBuf>>,
     colored: HashMap<(String, u32, [u8; 3]), Option<MemoryRenderBuffer>>,
 }
 impl Icons {
+    pub(crate) fn nonblocking_apps(&mut self) { self.async_apps = true; }
     pub fn get(&mut self, name: &str, size: u32, theme: &str) -> Option<MemoryRenderBuffer> {
         self.load(name, size, theme, false)
     }
@@ -116,6 +119,12 @@ impl Icons {
         let size = size.clamp(1, 1024);
         let key = (name.to_owned(), size, color);
         if let Some(buffer) = self.colored.get(&key) { return buffer.clone(); }
+        if self.async_apps && app_worker::enabled() {
+            let buffer = app_worker::request(name, size, theme, true, Some(color))?;
+            if self.colored.len() > 128 { self.colored.clear(); }
+            self.colored.insert(key, buffer.clone());
+            return buffer;
+        }
         self.get_tinted(name, size, theme)?;
         let buffer = self.paths.get(name).and_then(Option::as_ref).and_then(|p| raster_color(p, size, true, Some(color)));
         if self.colored.len() > 128 { self.colored.clear(); }
@@ -134,15 +143,13 @@ impl Icons {
         if let Some(buffer) = self.cache.get(&key) {
             return buffer.clone();
         }
-        let path = self.paths.entry(name.into()).or_insert_with(|| {
-            let _startup = crate::perf::Startup::new("icon.theme_lookup.begin", "icon.theme_lookup.end");
-            let mut dirs = crate::desktop_entry::data_dirs();
-            if let Some(home) = std::env::var_os("HOME") {
-                dirs.insert(0, PathBuf::from(home).join(".icons").parent()?.to_owned());
-            }
-            // Legacy ~/.icons is searched as an icons root via ~/.
-            lookup(name, theme, &dirs)
-        });
+        if self.async_apps && app_worker::enabled() {
+            let buffer = app_worker::request(name, size, theme, tint, None)?;
+            if self.cache.len() > 512 { self.cache.clear(); }
+            self.cache.insert(key, buffer.clone());
+            return buffer;
+        }
+        let path = self.paths.entry(name.into()).or_insert_with(|| lookup_icon(name, theme));
         let buffer = path.as_ref().and_then(|p| raster(p, size, tint));
         // Magnification uses a stable maximum raster, so this remains small.
         if self.cache.len() > 512 {
@@ -151,6 +158,14 @@ impl Icons {
         self.cache.insert(key, buffer.clone());
         buffer
     }
+}
+fn lookup_icon(name: &str, theme: &str) -> Option<PathBuf> {
+    let _startup = crate::perf::Startup::new("icon.theme_lookup.begin", "icon.theme_lookup.end");
+    let mut dirs = crate::desktop_entry::data_dirs();
+    if let Some(home) = std::env::var_os("HOME") {
+        dirs.insert(0, PathBuf::from(home).join(".icons").parent()?.to_owned());
+    }
+    lookup(name, theme, &dirs)
 }
 /// Replace premultiplied RGBA color with white while keeping the original alpha.
 fn tint_white(pixels: &mut [u8]) {

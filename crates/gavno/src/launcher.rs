@@ -22,7 +22,7 @@ use smithay::{
     },
     utils::{Logical, Point, Size},
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Rows visible at once.
 const ROWS: usize = 8;
@@ -41,6 +41,7 @@ pub struct Launcher {
     pub run_style: bool,
     loading: bool,
     launch_after_load: bool,
+    launch_action: Option<Instant>,
     query: String,
     selected: usize,
     apps: Option<Vec<App>>,
@@ -63,6 +64,7 @@ impl Default for Launcher {
             run_style: false,
             loading: false,
             launch_after_load: false,
+            launch_action: None,
             query: String::new(),
             selected: 0,
             apps: None,
@@ -145,6 +147,7 @@ impl Launcher {
         self.open = true;
         self.run_style = false;
         self.launch_after_load = false;
+        self.launch_action = None;
         self.query.clear();
         self.refilter();
         self.output = output;
@@ -154,6 +157,7 @@ impl Launcher {
     fn hide(&mut self) {
         self.open = false;
         self.launch_after_load = false;
+        self.launch_action = None;
         self.fade.set(0.0);
     }
 
@@ -321,16 +325,18 @@ impl Gavno {
     }
 
     fn launch_selected(&mut self) {
+        let action = *self.launcher.launch_action.get_or_insert_with(Instant::now);
         if !self.launcher.run_style && self.launcher.loading && self.launcher.results.is_empty() {
             self.launcher.launch_after_load=true;
             return;
         }
+        let app_id = self.launcher.selected_entry().map(|e| e.id.clone());
         let command = if self.launcher.run_style {
             Some(self.launcher.query.trim().to_owned()).filter(|s| !s.is_empty())
         } else { self.launcher.selected_entry().and_then(|e| e.command(&self.config.terminal)) };
         self.launcher.hide();
         if let Some(command) = command {
-            crate::state::spawn_shell(&command);
+            self.launch_shell_at(action, &command, app_id.as_deref());
         }
         self.queue_redraw_all();
     }
@@ -340,7 +346,7 @@ impl Gavno {
         let mods = *mods;
         self.guard(crate::module::Feature::Launcher, (), |gv| {
             let l = &mut gv.launcher;
-            if !matches!(sym.raw(), keysyms::KEY_Return | keysyms::KEY_KP_Enter) { l.launch_after_load=false; }
+            if !matches!(sym.raw(), keysyms::KEY_Return | keysyms::KEY_KP_Enter) { l.launch_after_load=false; l.launch_action=None; }
             match sym.raw() {
                 keysyms::KEY_Escape => l.hide(),
                 keysyms::KEY_Return | keysyms::KEY_KP_Enter => return gv.launch_selected(),

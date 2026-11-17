@@ -569,6 +569,7 @@ impl Gavno {
         });
     }
     fn launch_start_entry(&mut self, index: usize) {
+        let action = std::time::Instant::now();
         if let Some(entry) = self.classic.start.apps.get(index).map(|a| &a.entry) {
             // Configured commands are shell commands, whereas desktop Exec is parsed.
             let command = match entry.id.as_str() {
@@ -577,8 +578,9 @@ impl Gavno {
                 "@settings" => Some(self.config.classic.settings_command.clone()),
                 _ => entry.command(&self.config.terminal),
             };
+            let app_id = entry.id.clone();
             if let Some(cmd) = command {
-                crate::state::spawn_shell(&cmd);
+                self.launch_shell_at(action, &cmd, Some(&app_id));
             }
         }
         self.classic.start.close();
