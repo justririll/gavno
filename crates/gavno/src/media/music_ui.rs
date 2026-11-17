@@ -488,30 +488,39 @@ impl Session {
             let list_top = y + 330 + if status.is_empty() { 0 } else { 22 };
             let bottom = y + p.size.h - 12;
             if !self.state.logged_in {
-                // Centre the complete login block in the available list area.
-                let cy = list_top + (bottom - list_top - 164).max(0) / 2;
-                icon(
-                    view,
-                    renderer,
-                    "audio-x-generic-symbolic",
-                    rect(x + w / 2 - 20, cy, 40, 40),
-                    white(0.35),
-                );
-                centered(
-                    view,
-                    renderer,
-                    "Connect Spotify",
-                    rect(x + 12, cy + 52, w - 24, 24),
-                    style(15.0, Weight::SemiBold, white(0.95)),
-                );
-                centered(
-                    view,
-                    renderer,
-                    "Sign in once to play your music here.",
-                    rect(x + 12, cy + 80, w - 24, 20),
-                    style(11.5, Weight::Regular, white(0.58)),
-                );
-                let button = rect(x + (w - 140) / 2, cy + 116, 140, 36);
+                let available = bottom - list_top;
+                // Keep the full card on tall outputs and a reachable button
+                // when there is too little room for its illustration and copy.
+                let cy = list_top + (available - 164).max(0) / 2;
+                if available >= 164 {
+                    icon(
+                        view,
+                        renderer,
+                        "audio-x-generic-symbolic",
+                        rect(x + w / 2 - 20, cy, 40, 40),
+                        white(0.35),
+                    );
+                    centered(
+                        view,
+                        renderer,
+                        "Connect Spotify",
+                        rect(x + 12, cy + 52, w - 24, 24),
+                        style(15.0, Weight::SemiBold, white(0.95)),
+                    );
+                    centered(
+                        view,
+                        renderer,
+                        "Sign in once to play your music here.",
+                        rect(x + 12, cy + 80, w - 24, 20),
+                        style(11.5, Weight::Regular, white(0.58)),
+                    );
+                }
+                let button_y = if available >= 164 {
+                    cy + 116
+                } else {
+                    (list_top + (available - 36) / 2).min(bottom - 36)
+                };
+                let button = rect(x + (w - 140) / 2, button_y, 140, 36);
                 view.canvas.rect(
                     button,
                     18.0,

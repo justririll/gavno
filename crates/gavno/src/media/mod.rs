@@ -107,6 +107,8 @@ pub struct Snapshot {
 pub struct Media {
     pub music: music::Panel,
     pub snapshot: Snapshot,
+    /// Last authoritative MPRIS update, before applying the daemon overlay.
+    mpris_snapshot: Option<Snapshot>,
     pub worker: Option<mpsc::Sender<mpris::Request>>,
     started: bool,
 }
@@ -123,6 +125,13 @@ impl Media {
     /// Publish session art once, so bar, popover and widgets share its buffer.
     pub(crate) fn sync_music_session(&mut self) {
         let Some((player, image)) = self.session_music() else {
+            if let Some(snapshot) = &self.mpris_snapshot {
+                self.snapshot = snapshot.clone();
+            } else if self.music.session.is_some() {
+                // An unavailable daemon must not leave its old player behind,
+                // even if the first MPRIS snapshot has not arrived yet.
+                self.snapshot = Snapshot::default();
+            }
             return;
         };
         if self
@@ -207,7 +216,11 @@ impl Gavno {
     }
     pub(crate) fn media_update(&mut self, snapshot: Snapshot) {
         self.guard(Feature::Media, (), |gv| {
-            gv.now_playing.borrow_mut().snapshot = snapshot;
+            {
+                let mut media = gv.now_playing.borrow_mut();
+                media.mpris_snapshot = Some(snapshot.clone());
+                media.snapshot = snapshot;
+            }
             gv.refresh_classic_music();
             gv.queue_redraw_all();
         });
@@ -256,7 +269,11 @@ impl Gavno {
     }
     pub(crate) fn reset_media(&mut self) {
         self.close_music();
-        self.now_playing.borrow_mut().snapshot = Snapshot::default();
+        {
+            let mut media = self.now_playing.borrow_mut();
+            media.snapshot = Snapshot::default();
+            media.mpris_snapshot = None;
+        }
         self.refresh_classic_music();
         self.topbar.clear_media_hits();
         self.lock.clear_media();

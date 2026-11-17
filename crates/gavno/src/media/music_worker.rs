@@ -29,7 +29,8 @@ pub enum Event {
     State(State),
     Unavailable,
     Page(u64, bool, Result<Page, String>),
-    Cover(String, String, CoverKind, Option<Cover>),
+    CoverReady(String, String),
+    Cover(String, CoverKind, Option<Cover>),
     Error(String),
 }
 pub fn spawn(
@@ -160,7 +161,7 @@ fn run(
             Wake::Request(Err(_)) | Wake::Signal(None) | Wake::Owner(None) => break,
             Wake::Request(Ok(Request::Cover(path, kind))) => {
                 let cover = decode_cover(&path, kind);
-                let _ = events.send(Event::Cover(String::new(), path, kind, cover));
+                let _ = events.send(Event::Cover(path, kind, cover));
             }
             Wake::Request(Ok(Request::Browse(id, view, arg))) => {
                 if needs_state && state.is_none() {
@@ -264,7 +265,7 @@ fn run(
                     Some("CoverReady") if images.logged_in => {
                         if let Ok((url, path)) = message.body().deserialize::<(String, String)>() {
                             images.ready(url.clone(), path.clone());
-                            let _ = events.send(Event::Cover(url, path, CoverKind::List, None));
+                            let _ = events.send(Event::CoverReady(url, path));
                         }
                     }
                     _ => (),

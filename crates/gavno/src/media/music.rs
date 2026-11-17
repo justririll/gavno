@@ -555,9 +555,12 @@ impl Gavno {
                 s.has_state = false;
                 s.error = "Music daemon unavailable".into();
             }
-            worker::Event::Cover(_, _, _, _) if !s.state.logged_in => return,
-            worker::Event::Cover(url, path, kind, image) => {
+            worker::Event::CoverReady(..) | worker::Event::Cover(..) if !s.state.logged_in => return,
+            worker::Event::CoverReady(url, path) => {
                 s.cover_ready(&url, &path);
+                s.view.covers.allow_retry(&path);
+            }
+            worker::Event::Cover(path, kind, image) => {
                 if let Some(image) = image {
                     if kind != worker::CoverKind::Hero
                         || s.state.item.as_ref().and_then(|i| i.cover_path.as_deref())
@@ -896,6 +899,11 @@ impl Covers {
         self.hero = None;
         self.requested
             .retain(|(_, k)| *k != worker::CoverKind::Hero);
+    }
+    /// A daemon readiness signal permits retrying failed variants. Successful
+    /// variants remain cached; decode failures alone never trigger retries.
+    fn allow_retry(&mut self, path: &str) {
+        self.requested.retain(|(p, _)| p != path);
     }
     fn request(
         &mut self,

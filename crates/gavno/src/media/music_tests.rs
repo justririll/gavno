@@ -2070,3 +2070,203 @@ fn current_cover_and_tint_are_shared_with_snapshot_and_survive_panel_close() {
             .unwrap()
     ));
 }
+
+#[test]
+fn daemon_disappearance_restores_mpris_snapshot_in_either_event_order() {
+    let Some((_bus, address)) = bus() else { return };
+    let (_fake, _connection) = fake(&address, true);
+    for (mpris_first, close_first) in [(true, false), (false, false), (true, true)] {
+        let (mut h, output) = setup(&address);
+        h.gv.toggle_music(&output);
+        ready(&mut h);
+        let generation = session(&h.gv).generation;
+        {
+            let mut s = session_mut(&mut h);
+            s.state.item.as_mut().unwrap().cover_path = Some("/tmp/gone-cover.png".into());
+            s.view.covers.insert(
+                "/tmp/gone-cover.png".into(),
+                worker::CoverKind::Hero,
+                worker::Cover::default(),
+            );
+        }
+        h.gv.media_update(crate::media::Snapshot {
+            player: Some(crate::media::ui::artifacts::player()),
+            music_player: Some(crate::media::ui::artifacts::player()),
+            music_available: true,
+            ..Default::default()
+        });
+        assert!(h.gv.now_playing.borrow().snapshot.music_image.is_some());
+        let gone = crate::media::Snapshot {
+            music_available: true,
+            ..Default::default()
+        };
+        if mpris_first {
+            h.gv.media_update(gone.clone());
+        }
+        if close_first {
+            h.gv.close_music();
+        }
+        h.gv.music_event(generation, worker::Event::Unavailable);
+        if !mpris_first {
+            h.gv.media_update(gone);
+        }
+        {
+            let media = h.gv.now_playing.borrow();
+            assert!(
+                media.snapshot.player.is_none(),
+                "MPRIS first: {mpris_first}"
+            );
+            assert!(media.snapshot.music_player.is_none());
+            assert!(media.snapshot.music_image.is_none());
+            assert!(media.music_now().0.is_none());
+            assert!(media.music_now().1.is_none());
+            assert!(media.music.session.as_ref().is_none_or(|s| s.tick.is_none()));
+        }
+        let revision = h.gv.classic.desktop.widgets.revision;
+        h.gv.refresh_classic_music();
+        assert_eq!(h.gv.classic.desktop.widgets.revision, revision);
+        h.gv.close_music();
+        assert!(h.gv.now_playing.borrow().snapshot.player.is_none());
+    }
+}
+
+#[test]
+fn cover_ready_retries_a_missing_cover_without_polling() {
+    let Some((_bus, address)) = bus() else { return };
+    let (fake, connection) = fake(&address, true);
+    let path = std::env::temp_dir().join(format!("gavno-late-cover-{}.png", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let path_str = path.to_str().unwrap();
+    fake.0
+        .lock()
+        .unwrap()
+        .state
+        .item
+        .as_mut()
+        .unwrap()
+        .cover_path = Some(path_str.into());
+    let (mut h, output) = setup(&address);
+    h.gv.toggle_music(&output);
+    ready(&mut h);
+    // The command follows the cover request on the worker's FIFO channel.
+    // Waiting for it ensures the missing-file decode has already completed.
+    session(&h.gv).send(worker::Command::Control("cover-barrier".into()));
+    pump(&mut h, |_| !fake.calls("Control").is_empty());
+    h.event_loop
+        .dispatch(Some(Duration::ZERO), &mut h.gv)
+        .unwrap();
+    assert!(session(&h.gv).view.covers.get(path_str).is_none());
+    assert!(session(&h.gv)
+        .view
+        .covers
+        .requested
+        .iter()
+        .any(|(p, k)| p == path_str && *k == worker::CoverKind::Hero));
+    {
+        let mut encoder = png::Encoder::new(std::fs::File::create(&path).unwrap(), 1, 1);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder
+            .write_header()
+            .unwrap()
+            .write_image_data(&[40, 80, 120, 255])
+            .unwrap();
+    }
+    connection
+        .emit_signal(
+            None::<&str>,
+            "/org/gavno/Music",
+            "org.gavno.Music1",
+            "CoverReady",
+            &("https://test.invalid/cover", path_str),
+        )
+        .unwrap();
+    pump(&mut h, |gv| {
+        let s = session(gv);
+        s.view.covers.get(path_str).is_some()
+            && s.view
+                .covers
+                .variant(path_str, worker::CoverKind::List)
+                .is_some()
+    });
+    assert!(session(&h.gv).tick.is_none());
+    let revision = h.gv.classic.desktop.widgets.revision;
+    h.gv.refresh_classic_music();
+    assert_eq!(h.gv.classic.desktop.widgets.revision, revision);
+    h.gv.close_music();
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn login_is_reachable_on_short_outputs_and_keeps_the_tall_card() {
+    let Some((_bus, address)) = bus() else { return };
+    let (fake, _connection) = fake(&address, false);
+    let (mut h, output) = setup(&address);
+    h.gv.toggle_music(&output);
+    pump(&mut h, |gv| session(gv).has_state && !session(gv).loading);
+    let mut renderer = renderer();
+    let accent = h.gv.topbar.accent();
+    for size in [(640, 480), (1280, 800)] {
+        output.change_current_state(
+            Some(Mode {
+                size: size.into(),
+                refresh: 60000,
+            }),
+            None,
+            None,
+            None,
+        );
+        for anchor in [None, Some(crate::topbar::geometry::rect(0, 0, 280, 128))] {
+            for message in ["", "Please sign in"] {
+                let area = {
+                    let mut s = session_mut(&mut h);
+                    s.anchor = anchor;
+                    s.state.message = message.into();
+                    s.dirty = true;
+                    s.elements(&mut renderer, &output, size.into(), 1.0, accent);
+                    let panel = ui::panel_rect(size.into(), anchor);
+                    let area = s
+                        .view
+                        .hits
+                        .iter()
+                        .find(|(_, hit)| *hit == Hit::Login)
+                        .unwrap()
+                        .0;
+                    assert!(
+                        panel.contains_rect(area),
+                        "{size:?}, {anchor:?}, {message:?}: {area:?}"
+                    );
+                    assert!(smithay::utils::Rectangle::from_size(size.into()).contains_rect(area));
+                    let heading = s
+                        .view
+                        .labels
+                        .iter()
+                        .find(|(text, _, _)| text == "Connect Spotify");
+                    if size.1 == 800 {
+                        let list_top = panel.loc.y + 330 + if message.is_empty() { 0 } else { 22 };
+                        let bottom = panel.loc.y + panel.size.h - 12;
+                        let cy = list_top + (bottom - list_top - 164) / 2;
+                        assert_eq!(heading.unwrap().1.loc.y, cy + 52);
+                        assert_eq!(area.loc.y, cy + 116);
+                        assert!(s
+                            .view
+                            .labels
+                            .iter()
+                            .any(|(text, _, _)| text == "Sign in once to play your music here."));
+                    }
+                    let point = (area.loc.x as f64 + 70.0, area.loc.y as f64 + 18.0).into();
+                    assert_eq!(s.view.hit(point).unwrap().1, Hit::Login);
+                    assert!(s.tick.is_none());
+                    area
+                };
+                let calls = fake.calls("Login").len();
+                h.gv.music_button(
+                    (area.loc.x as f64 + 70.0, area.loc.y as f64 + 18.0).into(),
+                    true,
+                );
+                pump(&mut h, |_| fake.calls("Login").len() > calls);
+            }
+        }
+    }
+    h.gv.close_music();
+}
