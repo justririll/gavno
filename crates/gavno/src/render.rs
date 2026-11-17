@@ -343,6 +343,11 @@ fn output_elements_inner(
     }
 
     if !locks.locked && !lock.internal() {
+        let accent = topbar.accent();
+        elements.extend(features.call(Feature::Bar, Vec::new(), || topbar.controls.elements(renderer, output, output_geo.size, scale.x, accent, &config.dock.icon_theme, classic.progress.value > 0.5)));
+    }
+
+    if !locks.locked && !lock.internal() {
         elements.extend(features.call(Feature::Media, Vec::new(), || {
             topbar.now_playing.borrow_mut().music.session.as_mut()
                 .map(|s| s.elements(renderer, output, output_geo.size, scale.x, topbar.accent())).unwrap_or_default()

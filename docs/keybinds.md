@@ -209,7 +209,7 @@ swap modifier held. The other aliases do not collide with existing binds.
 
 ## Window hints
 
-Mod+F shows accent-coloured letter badges at the centre of each non-minimized
+Mod+G shows accent-coloured letter badges at the centre of each non-minimized
 window on the active output's current workspace, including floating and
 maximized windows. Type its letter to focus and raise it. Letters use the
 Latin layout even when Russian is active, in this order:
@@ -516,3 +516,17 @@ before shortcut inhibitors and the lock gate, and send once per physical press.
 The bar's now-playing capsule also toggles playback. Quick settings and the
 built-in lock screen offer previous / play-pause / next buttons. Track text on
 the lock screen is read-only; these buttons do not change authentication state.
+
+### Wi-Fi, Bluetooth and volume mixer
+
+| Chord | Action |
+| --- | --- |
+| Mod+Shift+N | Open Wi-Fi controls. |
+| Mod+Shift+B | Open Bluetooth controls. |
+| Mod+Shift+V | Open the volume mixer. |
+
+These chords work in both shells and in code mode. Within a popover, Up/Down or
+j/k selects a row, Left/Right or h/l adjusts a slider by 5%, Space or Enter
+activates or toggles, and Escape closes. A Wi-Fi password entry consumes text;
+Enter connects and Escape clears it. See [top bar controls](bar.md) for backend
+requirements and discovery lifetimes.

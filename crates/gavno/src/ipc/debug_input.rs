@@ -151,6 +151,7 @@ fn state(gv: &Gavno) -> Value {
         "overview_selected": gv.overview.selected.as_ref().map(|w| crate::overlay::window_labels(w).0), "outputs": outputs, "focused": focused,
         "code_mode": gv.code_mode, "pointer_hidden": gv.pointer_hidden,
         "launcher_open": gv.launcher.open, "start_open": gv.classic.start.open,
+        "panel_controls_open": gv.panel_controls_open(),
         "music_open": gv.music_open(), "polkit_open": gv.polkit_visible(),
         "pointer": {"x": pos.x, "y": pos.y},
         "modifiers": {"super": mods.logo, "ctrl": mods.ctrl, "alt": mods.alt, "shift": mods.shift,

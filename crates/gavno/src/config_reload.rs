@@ -192,10 +192,12 @@ pub(crate) fn apply(gv: &mut Gavno, prepared: Prepared) -> Result<Value, String>
             config.outputs.entry(name.clone()).or_default().enabled = old.enabled;
         }
     }
+    let old_hint_items = gv.topbar.hint_items.clone();
     gv.config = config;
+    gv.reload_features();
     if code_mode_changed { gv.set_code_mode(gv.config.code_mode); }
     gv.sync_bar_hints();
-    if bar_hints_changed { gv.queue_redraw_all(); }
+    if bar_hints_changed || !(old_hint_items.len() == gv.topbar.hint_items.len() && old_hint_items.iter().zip(&gv.topbar.hint_items).all(|(a, b)| std::ptr::eq(*a, *b))) { gv.queue_redraw_all(); }
     if scanout_changed {
         crate::backend::udev::reset_scanout_buffers(gv);
         gv.queue_redraw_all();
@@ -204,7 +206,6 @@ pub(crate) fn apply(gv: &mut Gavno, prepared: Prepared) -> Result<Value, String>
     if let Some(keyboard) = gv.seat.get_keyboard() {
         keyboard.change_repeat_info(gv.config.repeat_rate, gv.config.repeat_delay);
     }
-    gv.reload_features();
     gv.update_theme();
     if scheme_changed {
         if let Some(portal) = &mut gv.portal {

@@ -31,7 +31,8 @@ impl Gavno {
     }
     pub(crate) fn refresh_bar_status(&mut self, visible: bool) {
         self.sync_brightness();
-        if !self.media.worker_started && !matches!(self.backend, crate::backend::Backend::None) {
+        self.start_panel_controls();
+        if !crate::panel_controls::fake_enabled() && !self.media.worker_started && !matches!(self.backend, crate::backend::Backend::None) {
             self.media.worker_started = true;
             self.media.status_visible = !visible;
             self.media.worker = status::spawn(&self.loop_handle);
@@ -336,6 +337,7 @@ impl Gavno {
             return false;
         };
         if l.volume.to_f64().contains(p) {
+            if self.topbar.controls.master_step(delta) { return true; }
             if delta != 0.0 {
                 self.bar_media(if delta < 0.0 {
                     Media::VolumeUp

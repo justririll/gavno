@@ -13,6 +13,7 @@ pub(crate) enum Consumer {
     Chrome = 1,
     Launcher = 2,
     Start = 4,
+    Panel = 8,
 }
 #[derive(Clone, Hash, PartialEq, Eq)]
 struct Key {
@@ -263,7 +264,8 @@ impl Delivery {
             .then(|| gv.classic.start.icon_ready())
             .flatten();
         (
-            self.consumers & Consumer::Chrome as u8 != 0,
+            self.consumers & Consumer::Chrome as u8 != 0
+                || (self.consumers & Consumer::Panel as u8 != 0 && gv.panel_controls_open()),
             launcher,
             start,
         )
@@ -518,4 +520,12 @@ pub(crate) mod tests {
         };
         assert_eq!(stale.targets(&mut h.gv), (false, None, None));
     }
+}
+
+#[cfg(test)]
+#[test]
+fn closed_panel_icon_delivery_does_not_redraw() {
+    let mut h = crate::state::tests::Harness::new();
+    let delivery = Delivery { consumers: Consumer::Panel as u8, generation: generation() };
+    assert!(!delivery.targets(&mut h.gv).0);
 }

@@ -37,6 +37,7 @@ mod notify;
 mod portal;
 mod screensaver;
 mod media;
+mod panel_controls;
 mod polkit;
 mod grabs;
 mod handlers;

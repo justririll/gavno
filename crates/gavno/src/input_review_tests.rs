@@ -1126,7 +1126,7 @@ fn modal_releases_cancel_volume_brightness_and_launcher_repeats() {
 
 #[test]
 fn modal_opening_mod_release_preserves_the_next_standalone_mod_tap() {
-    for (kind, code) in [("overview", 38), ("hints", 41), ("sheet", 67)] {
+    for (kind, code) in [("overview", 38), ("hints", 42), ("sheet", 67)] {
         let (mut h, _) = setup();
         dispatch_key(&mut h, 64, KeyState::Pressed); // Alt is Mod in the harness.
         tap_key(&mut h, code);
@@ -1253,4 +1253,30 @@ fn settled_overview_ignored_keys_and_missing_candidates_request_no_redraws() {
     tap_key(&mut h, 23);
     assert!(h.gv.redraw_requests > 0, "a changed selection must redraw");
     assert_eq!(h.gv.overview.selected, Some(second));
+}
+
+#[test]
+fn disabled_overview_is_hidden_from_the_cheat_sheet_and_the_bar_hints() {
+    use crate::config::Config;
+    use crate::config_reload::{apply, Prepared};
+    use crate::hints::HintContext;
+    let (mut h, _) = setup();
+    h.gv.set_code_mode(true);
+    h.gv.refresh_shell();
+    let has_overview = |gv: &crate::Gavno| {
+        gv.topbar.hint_items.iter().any(|hint| hint.label == "overview")
+            || crate::hints::cheat_rows(gv).iter().any(|(_, label)| label.to_lowercase().contains("overview"))
+    };
+    assert!(has_overview(&h.gv));
+    let next = Config::build(true, Some("[modules]\noverview=false"), |_| None).0;
+    let prepared = Prepared::new(next, &h.gv.config).unwrap();
+    apply(&mut h.gv, prepared).unwrap();
+    assert_eq!(h.gv.topbar.hint_context, Some(HintContext::Code));
+    assert!(!has_overview(&h.gv));
+    assert!(h.gv.visible_hints(HintContext::Overview).is_empty());
+    // Hints stay bound to Mod+G; Mod+F does nothing.
+    assert!(h.gv.topbar.hint_items.iter().any(|hint| hint.label == "hints" && hint.keys == "G"));
+    let mods = crate::hints::modifiers(h.gv.config.mod_key, crate::hints::MAIN_FOR_TESTS);
+    assert_eq!(h.gv.bind_for(smithay::input::keyboard::Keysym::from(smithay::input::keyboard::keysyms::KEY_f), &mods), None);
+    assert_eq!(h.gv.bind_for(smithay::input::keyboard::Keysym::from(smithay::input::keyboard::keysyms::KEY_g), &mods), Some(crate::input::Action::WindowHints));
 }

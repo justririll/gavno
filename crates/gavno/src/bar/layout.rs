@@ -16,17 +16,18 @@ pub struct Layout {
     pub layout: Option<Rect>,
     pub network: Rect,
     pub volume: Rect,
+    pub bluetooth: Rect,
     pub battery: Rect,
 }
 impl Layout {
     pub fn new(width: i32, workspace_width: i32, layouts: bool) -> Self {
-        let clock = rect((width - 184) / 2, 4, 184, 24);
         let status = rect(
-            width - if layouts { 176 } else { 144 },
+            width - if layouts { 236 } else { 204 },
             4,
-            if layouts { 168 } else { 136 },
+            if layouts { 228 } else { 196 },
             24,
         );
+        let clock = rect(((width - 184) / 2).min(status.loc.x - 192).max(0), 4, 184, 24);
         let workspaces = rect(8, 4, workspace_width.min((clock.loc.x - 104).max(24)), 24);
         let toggle = rect(workspaces.loc.x + workspaces.size.w + 8, 4, 32, 24);
         let app = rect(toggle.loc.x + 40, 8, 16, 16);
@@ -48,7 +49,8 @@ impl Layout {
             layout: layouts.then(|| rect(status.loc.x + 8, 4, 28, 24)),
             network: rect(x, 8, 16, 16),
             volume: rect(x + 32, 8, 16, 16),
-            battery: rect(x + 64, 8, 56, 16),
+            bluetooth: rect(x + 64, 8, 16, 16),
+            battery: rect(x + 124, 8, 56, 16),
         }
     }
     pub fn with_media(mut self, enabled: bool) -> Self {
@@ -70,6 +72,7 @@ pub enum Item {
     Volume,
     Brightness,
     Network,
+    Bluetooth,
     Battery,
     Power(usize),
     Previous,
@@ -107,7 +110,8 @@ impl PopoverLayout {
             0
         };
         items.push((Item::Network, rect(x + 16, y + 68 + offset, 288, 40)));
-        items.push((Item::Battery, rect(x + 16, y + 116 + offset, 288, 40)));
+        items.push((Item::Battery, rect(x + 16, y + 116 + offset, 140, 40)));
+        items.push((Item::Bluetooth, rect(x + 164, y + 116 + offset, 140, 40)));
         for i in 0..5 {
             items.push((
                 Item::Power(i),

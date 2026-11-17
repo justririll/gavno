@@ -269,3 +269,9 @@ case. `focus_poll_ms` includes IPC process startup and polling overhead; use the
 compositor logs for stage timings. The output directory contains the raw log,
 per-run JSON and the private environment for inspection. Use a new directory
 for each comparison; `--binary` selects an instrumented baseline binary.
+
+For top-bar Wi-Fi, Bluetooth and mixer checks, also set `GAVNO_PANEL_FAKE=1`
+in the private compositor's environment. This replaces all three providers
+with in-memory fixtures and disables the legacy status worker, so opening,
+connecting, toggling and dragging controls cannot change the host system.
+Use Mod+Shift+N/B/V through `inject_key`, then capture with `screenshot`.

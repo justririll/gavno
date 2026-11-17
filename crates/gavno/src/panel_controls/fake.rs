@@ -1,0 +1,171 @@
+//! Explicit development fixtures. Never access host buses, commands or devices.
+use super::{
+    audio, bluetooth, wifi,
+    worker::{Command, Event, Snapshot},
+    Kind,
+};
+use smithay::reexports::calloop::channel::Sender;
+use std::sync::mpsc::Receiver;
+pub fn snapshots() -> (wifi::Snapshot, bluetooth::Snapshot, audio::Snapshot) {
+    let wifi = wifi::Snapshot {
+        enabled: true,
+        hardware: true,
+        device: "fake-wlan".into(),
+        failure: None,
+        networks: vec![
+            wifi::Network {
+                path: "/fake/home".into(),
+                ssid: b"Home network".to_vec(),
+                strength: 94,
+                secured: true,
+                saved: Some("/fake/profile".into()),
+                active: true,
+                ..Default::default()
+            },
+            wifi::Network {
+                path: "/fake/studio".into(),
+                ssid: b"Studio".to_vec(),
+                strength: 72,
+                secured: true,
+                ..Default::default()
+            },
+            wifi::Network {
+                path: "/fake/guest".into(),
+                ssid: b"Guest Wi-Fi".to_vec(),
+                strength: 46,
+                ..Default::default()
+            },
+        ],
+    };
+    let bluetooth = bluetooth::Snapshot {
+        adapter: "/fake/adapter".into(),
+        powered: true,
+        blocked: false,
+        discovering: false,
+        devices: vec![
+            bluetooth::Device {
+                path: "/fake/headphones".into(),
+                name: "Wireless headphones".into(),
+                icon: "audio-headphones-symbolic".into(),
+                paired: true,
+                connected: true,
+                battery: Some(82),
+            },
+            bluetooth::Device {
+                path: "/fake/keyboard".into(),
+                name: "Keyboard".into(),
+                icon: "input-keyboard-symbolic".into(),
+                paired: true,
+                ..Default::default()
+            },
+        ],
+    };
+    let output = audio::Endpoint {
+        id: "speakers".into(),
+        name: "Built-in speakers".into(),
+        volume: 45,
+        ..Default::default()
+    };
+    let audio = audio::Snapshot {
+        output: Some(output.clone()),
+        input: Some(audio::Endpoint {
+            id: "mic".into(),
+            name: "Built-in microphone".into(),
+            volume: 65,
+            ..Default::default()
+        }),
+        sinks: vec![
+            output,
+            audio::Endpoint {
+                id: "headphones".into(),
+                name: "Wireless headphones".into(),
+                volume: 55,
+                ..Default::default()
+            },
+        ],
+        streams: vec![
+            audio::Endpoint {
+                id: "42".into(),
+                name: "Music".into(),
+                icon: "audio-x-generic-symbolic".into(),
+                volume: 70,
+                ..Default::default()
+            },
+            audio::Endpoint {
+                id: "43".into(),
+                name: "Browser".into(),
+                icon: "web-browser".into(),
+                volume: 30,
+                ..Default::default()
+            },
+        ],
+    };
+    (wifi, bluetooth, audio)
+}
+pub fn run(kind: Kind, receive: Receiver<Command>, events: Sender<Event>) {
+    let (mut wifi, mut bluetooth, mut audio) = snapshots();
+    loop {
+        let snapshot = match kind {
+            Kind::Wifi => Snapshot::Wifi(wifi.clone()),
+            Kind::Bluetooth => Snapshot::Bluetooth(bluetooth.clone()),
+            Kind::Audio => Snapshot::Audio(audio.clone()),
+        };
+        if events
+            .send(Event {
+                kind,
+                snapshot: Some(snapshot),
+                error: None,
+            })
+            .is_err()
+        {
+            return;
+        }
+        let Ok(command) = receive.recv() else {
+            return;
+        };
+        if matches!(command, Command::Shutdown) {
+            return;
+        }
+        match command {
+            Command::Power(v) if kind == Kind::Wifi => wifi.enabled = v,
+            Command::Power(v) if kind == Kind::Bluetooth => bluetooth.powered = v,
+            Command::Connect(n, _) => {
+                for ap in &mut wifi.networks {
+                    ap.active = ap.path == n.path;
+                }
+            }
+            Command::Disconnect => {
+                for ap in &mut wifi.networks {
+                    ap.active = false;
+                }
+            }
+            Command::Device(d) => {
+                if let Some(device) = bluetooth.devices.iter_mut().find(|a| a.path == d.path) {
+                    device.paired = true;
+                    device.connected = !device.connected;
+                }
+            }
+            Command::Search => bluetooth.discovering = true,
+            Command::Visible(false) => bluetooth.discovering = false,
+            Command::Volume(t, v) => {
+                if let Some(e) = endpoint(&mut audio, &t) {
+                    e.volume = v;
+                }
+            }
+            Command::Mute(t) => {
+                if let Some(e) = endpoint(&mut audio, &t) {
+                    e.muted = !e.muted;
+                }
+            }
+            Command::Output(id) => audio.output = audio.sinks.iter().find(|e| e.id == id).cloned(),
+            _ => {}
+        }
+    }
+}
+fn endpoint<'a>(s: &'a mut audio::Snapshot, t: &audio::Target) -> Option<&'a mut audio::Endpoint> {
+    match t {
+        audio::Target::Output => s.output.as_mut(),
+        audio::Target::Input => s.input.as_mut(),
+        audio::Target::Stream(id) => s.streams.iter_mut().find(|e| &e.id == id),
+    }
+}

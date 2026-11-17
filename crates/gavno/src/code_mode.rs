@@ -74,7 +74,9 @@ impl Gavno {
         if !self.code_mode || !self.config.bar_hints {
             return None;
         }
-        Some(if self.overlay.keyboard.windows.is_some() {
+        Some(if self.panel_controls_open() {
+            HintContext::Popover
+        } else if self.overlay.keyboard.windows.is_some() {
             HintContext::Windows
         } else if self.overview.open() {
             HintContext::Overview
@@ -85,6 +87,30 @@ impl Gavno {
         })
     }
 
+    /// The hints of `context` whose binds do something right now: a hint
+    /// stays only while at least one of its binds passes the same feature
+    /// checks as the dispatcher.
+    pub(crate) fn visible_hints(&self, context: HintContext) -> Vec<&'static crate::hints::BindHint> {
+        use crate::hints::HintAction;
+        if context == HintContext::Overview && !self.features.on(crate::module::Feature::Overview) {
+            return Vec::new();
+        }
+        crate::hints::items(context)
+            .iter()
+            .filter(|hint| {
+                let mut binds = hint.chords.iter().filter_map(|c| match &c.action {
+                    HintAction::Bind(action) => Some(action),
+                    _ => None,
+                });
+                let first = binds.next();
+                match first {
+                    None => true,
+                    Some(first) => self.action_enabled(first) || binds.any(|a| self.action_enabled(a)),
+                }
+            })
+            .collect()
+    }
+
     pub(crate) fn sync_bar_hints(&mut self) {
         // Gesture-driven shell transitions also leave code mode.
         if self.code_mode && self.classic_mode() {
@@ -93,6 +119,11 @@ impl Gavno {
         self.dock.code_mode = self.code_mode;
         self.topbar.code_mode = self.code_mode;
         self.topbar.hint_context = self.bar_hint_context();
+        self.topbar.hint_items = self
+            .topbar
+            .hint_context
+            .map(|context| self.visible_hints(context))
+            .unwrap_or_default();
         self.topbar.mod_label = match self.config.mod_key {
             crate::config::ModKey::Super => "Super",
             crate::config::ModKey::Alt => "Alt",

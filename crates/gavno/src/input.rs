@@ -60,6 +60,7 @@ pub enum Action {
     ToggleCodeMode,
     WindowHints,
     CheatSheet,
+    PanelControls(crate::panel_controls::Kind),
 }
 
 impl Gavno {
@@ -172,7 +173,7 @@ impl Gavno {
                         crate::config::ModKey::Super => matches!(sym, keysyms::KEY_Super_L | keysyms::KEY_Super_R),
                         crate::config::ModKey::Alt => matches!(sym, keysyms::KEY_Alt_L | keysyms::KEY_Alt_R),
                     };
-                    if !tap_enabled || bar_consumed || gv.overlay.keyboard.open() || gv.overview.open() || gv.music_open() {
+                    if !tap_enabled || bar_consumed || gv.overlay.keyboard.open() || gv.overview.open() || gv.music_open() || gv.panel_controls_open() {
                         gv.gestures.super_tap.cancel();
                     }
                     // Always clear the physical key, even if its feature or shell
@@ -189,6 +190,17 @@ impl Gavno {
                     return if bar_consumed || captured || (tap_enabled && is_main) || gv.lock.internal() || gv.greeter.is_some() {
                         FilterResult::Intercept(None)
                     } else { FilterResult::Forward };
+                }
+                if gv.panel_controls_open() && !gv.polkit_visible() && !gv.protocols.locks.locked
+                    && !gv.lock.internal() && gv.greeter.is_none() && !emergency {
+                    if let Some(action @ Action::PanelControls(_)) = handle.raw_latin_sym_or_raw_current_sym().and_then(|s| gv.bind_for(s,mods)) {
+                        gv.suppressed_keys.push(raw_code);
+                        return FilterResult::Intercept(Some(action));
+                    }
+                    gv.suppressed_keys.push(raw_code);
+                    let sym = handle.modified_sym();
+                    gv.panel_controls_key(sym, sym.key_char(), mods, raw_code);
+                    return FilterResult::Intercept(None);
                 }
                 // Modal music input precedes shell shortcuts and modifier-tap binds.
                 if gv.music_open() && !gv.polkit_visible() && !gv.protocols.locks.locked
@@ -445,10 +457,11 @@ impl Gavno {
         self.features.read(Feature::Classic, None, || crate::classic::binds::binding(sym, mods, self.config.mod_key, self.classic_mode()))
             .or_else(|| self.bind_for_enabled(sym, mods)).filter(|action| self.action_enabled(action))
     }
-    fn action_enabled(&self, action: &Action) -> bool {
+    pub(crate) fn action_enabled(&self, action: &Action) -> bool {
         let feature = match action {
             Action::ToggleCodeMode if self.classic_mode() => return false,
             Action::Classic(_) => Feature::Classic,
+            Action::PanelControls(_) => Feature::Bar,
             Action::Minimize => Feature::Dock,
             Action::ToggleTiling | Action::ToggleFloating | Action::RotateSplit | Action::Swap(_) => Feature::Tiling,
             Action::Snap(_) | Action::Resize(_) => Feature::Snap,
@@ -491,8 +504,17 @@ impl Gavno {
         if !main {
             return None;
         }
+        if mods.shift && !mods.ctrl {
+            let kind = match sym {
+                keysyms::KEY_n | keysyms::KEY_N => Some(crate::panel_controls::Kind::Wifi),
+                keysyms::KEY_b | keysyms::KEY_B => Some(crate::panel_controls::Kind::Bluetooth),
+                keysyms::KEY_v | keysyms::KEY_V => Some(crate::panel_controls::Kind::Audio),
+                _ => None,
+            };
+            if let Some(kind) = kind { return Some(Action::PanelControls(kind)); }
+        }
         if !mods.ctrl && !mods.shift && matches!(sym, keysyms::KEY_slash | keysyms::KEY_F1) { return Some(Action::CheatSheet); }
-        if !mods.ctrl && !mods.shift && matches!(sym, keysyms::KEY_f | keysyms::KEY_F) { return Some(Action::WindowHints); }
+        if !mods.ctrl && !mods.shift && matches!(sym, keysyms::KEY_g | keysyms::KEY_G) { return Some(Action::WindowHints); }
         if !self.classic_mode() && mods.shift && !mods.ctrl && matches!(sym, keysyms::KEY_c | keysyms::KEY_C) {
             return Some(Action::ToggleCodeMode);
         }
@@ -572,6 +594,7 @@ impl Gavno {
             Action::CloseOverview => self.close_overview(),
             Action::WindowHints => self.toggle_window_hints(),
             Action::CheatSheet => self.toggle_cheat_sheet(),
+            Action::PanelControls(kind) => { if let Some(output) = self.active_output() { self.toggle_panel_controls(kind, &output); } },
             Action::ToggleCodeMode => self.set_code_mode(!self.code_mode),
             Action::Quit => self.quit(),
             Action::Spawn(cmd) => self.launch_shell(&cmd, None),
@@ -602,6 +625,12 @@ impl Gavno {
             pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time: event.time_msec() });
             pointer.frame(self);
             self.lock_pointer(false);
+            return;
+        }
+        if self.panel_controls_motion(pos) {
+            pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time: event.time_msec() });
+            pointer.frame(self);
+            self.queue_redraw_all();
             return;
         }
         if self.music_motion(pos) {
@@ -651,6 +680,13 @@ impl Gavno {
             pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time: event.time_msec() });
             pointer.frame(self);
             self.lock_pointer(false);
+            return;
+        }
+        if self.panel_controls_motion(pos) {
+            let pointer = self.seat.get_pointer().unwrap();
+            pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time: event.time_msec() });
+            pointer.frame(self);
+            self.queue_redraw_all();
             return;
         }
         if self.music_motion(pos) {
@@ -752,9 +788,18 @@ impl Gavno {
             // release still has to end the bar drag.
             self.bar_release(button);
             self.music_release();
+            self.topbar.controls.release();
             return;
         }
         if self.polkit_button(pointer.current_location(), button_state == ButtonState::Pressed) {
+            if button_state == ButtonState::Pressed { self.suppressed_buttons.push(button); }
+            return;
+        }
+        if self.panel_controls_open() && button != BTN_LEFT {
+            if button_state == ButtonState::Pressed { self.suppressed_buttons.push(button); }
+            return;
+        }
+        if self.panel_controls_button(pointer.current_location(), button_state == ButtonState::Pressed) {
             if button_state == ButtonState::Pressed { self.suppressed_buttons.push(button); }
             return;
         }
@@ -922,6 +967,7 @@ impl Gavno {
             .unwrap_or_else(|| event.amount_v120(Axis::Vertical).unwrap_or(0.0) * 15.0 / 120.);
 
         if self.polkit_visible() { return; }
+        if self.greeter.is_none() && !self.protocols.locks.locked && self.panel_controls_axis(vertical) { return; }
         if self.greeter.is_none() && !self.protocols.locks.locked && self.music_axis(vertical) { return; }
         if self.greeter.is_none() && !self.protocols.locks.locked && source==AxisSource::Finger {
             if self.precision_scroll((-horizontal,-vertical).into(),[event.amount(Axis::Horizontal),event.amount(Axis::Vertical)]) {return;}

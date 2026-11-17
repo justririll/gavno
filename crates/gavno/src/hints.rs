@@ -14,6 +14,7 @@ pub enum HintContext {
     Resize,
     Windows,
     Overview,
+    Popover,
 }
 
 /// Modifiers of a chord. `main` is the configured Mod key, `extra` is the
@@ -43,6 +44,7 @@ pub enum HintAction {
     WindowLetter,
     WindowCancel,
     OverviewKey,
+    PopoverKey,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -87,6 +89,8 @@ const MAIN_SHIFT: ChordMods = ChordMods {
     alt: false,
     extra: false,
 };
+#[cfg(test)]
+pub(crate) const MAIN_FOR_TESTS: ChordMods = MAIN;
 const NONE: ChordMods = ChordMods {
     main: false,
     ctrl: false,
@@ -177,11 +181,11 @@ const CODE_HINTS: &[BindHint] = &[
     },
     BindHint {
         context: HintContext::Code,
-        keys: "F",
+        keys: "G",
         label: "hints",
         priority: 7,
 
-        chords: &[bind(MAIN, keysyms::KEY_f, Action::WindowHints)],
+        chords: &[bind(MAIN, keysyms::KEY_g, Action::WindowHints)],
     },
     BindHint {
         context: HintContext::Code,
@@ -221,6 +225,39 @@ const CODE_HINTS: &[BindHint] = &[
         priority: 8,
 
         chords: &[bind(MAIN, keysyms::KEY_slash, Action::CheatSheet)],
+    },
+    BindHint {
+        context: HintContext::Code,
+        keys: "Shift+N",
+        label: "Wi-Fi",
+        priority: 10,
+        chords: &[bind(
+            MAIN_SHIFT,
+            keysyms::KEY_n,
+            Action::PanelControls(crate::panel_controls::Kind::Wifi),
+        )],
+    },
+    BindHint {
+        context: HintContext::Code,
+        keys: "Shift+B",
+        label: "Bluetooth",
+        priority: 11,
+        chords: &[bind(
+            MAIN_SHIFT,
+            keysyms::KEY_b,
+            Action::PanelControls(crate::panel_controls::Kind::Bluetooth),
+        )],
+    },
+    BindHint {
+        context: HintContext::Code,
+        keys: "Shift+V",
+        label: "mixer",
+        priority: 12,
+        chords: &[bind(
+            MAIN_SHIFT,
+            keysyms::KEY_v,
+            Action::PanelControls(crate::panel_controls::Kind::Audio),
+        )],
     },
 ];
 
@@ -519,12 +556,74 @@ const OVERVIEW_HINTS: &[BindHint] = &[
     },
 ];
 
+const POPOVER_HINTS: &[BindHint] = &[
+    BindHint {
+        context: HintContext::Popover,
+        keys: "↑↓ / JK",
+        label: "select",
+        priority: 1,
+        chords: &[
+            Chord {
+                mods: NONE,
+                sym: keysyms::KEY_j,
+                action: HintAction::PopoverKey,
+            },
+            Chord {
+                mods: NONE,
+                sym: keysyms::KEY_k,
+                action: HintAction::PopoverKey,
+            },
+        ],
+    },
+    BindHint {
+        context: HintContext::Popover,
+        keys: "←→ / HL",
+        label: "adjust",
+        priority: 2,
+        chords: &[
+            Chord {
+                mods: NONE,
+                sym: keysyms::KEY_h,
+                action: HintAction::PopoverKey,
+            },
+            Chord {
+                mods: NONE,
+                sym: keysyms::KEY_l,
+                action: HintAction::PopoverKey,
+            },
+        ],
+    },
+    BindHint {
+        context: HintContext::Popover,
+        keys: "Enter / Space",
+        label: "activate",
+        priority: 3,
+        chords: &[Chord {
+            mods: NONE,
+            sym: keysyms::KEY_Return,
+            action: HintAction::PopoverKey,
+        }],
+    },
+    BindHint {
+        context: HintContext::Popover,
+        keys: "Esc",
+        label: "close",
+        priority: 1,
+        chords: &[Chord {
+            mods: NONE,
+            sym: keysyms::KEY_Escape,
+            action: HintAction::PopoverKey,
+        }],
+    },
+];
+
 pub fn items(context: HintContext) -> &'static [BindHint] {
     match context {
         HintContext::Code => CODE_HINTS,
         HintContext::Resize => RESIZE_HINTS,
         HintContext::Windows => WINDOW_HINTS,
         HintContext::Overview => OVERVIEW_HINTS,
+        HintContext::Popover => POPOVER_HINTS,
     }
 }
 
@@ -603,7 +702,7 @@ mod tests {
             "focus Super HJKL",
             "move Super Ctrl+HJKL",
             "resize Super Shift+HJKL",
-            "hints Super F",
+            "hints Super G",
             "resize mode Super R",
             "overview Super A",
             "workspaces Super 1-9",
@@ -823,6 +922,9 @@ fn action_label(action: &Action) -> (&'static str, &'static str) {
         ToggleFullscreen => ("Windows", "fullscreen"),
         WindowHints => ("Windows", "window hints"),
         CheatSheet => ("Windows", "cheat sheet"),
+        PanelControls(crate::panel_controls::Kind::Wifi) => ("Panel", "Wi-Fi"),
+        PanelControls(crate::panel_controls::Kind::Bluetooth) => ("Panel", "Bluetooth"),
+        PanelControls(crate::panel_controls::Kind::Audio) => ("Panel", "volume mixer"),
         ToggleTiling => ("Tiling", "workspace tiling"),
         ToggleFloating => ("Tiling", "float window"),
         RotateSplit => ("Tiling", "rotate split"),
@@ -917,12 +1019,14 @@ pub fn cheat_rows(gv: &crate::Gavno) -> Vec<(String, String)> {
         HintContext::Resize,
         HintContext::Windows,
         HintContext::Overview,
+        HintContext::Popover,
     ] {
         let active = match context {
             HintContext::Code => gv.code_mode,
             HintContext::Resize => gv.overlay.resize_mode.active(),
             HintContext::Windows => gv.overlay.keyboard.windows.is_some(),
             HintContext::Overview => gv.overview.open(),
+            HintContext::Popover => gv.panel_controls_open(),
         };
         if !active {
             continue;

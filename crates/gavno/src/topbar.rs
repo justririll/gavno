@@ -378,10 +378,11 @@ pub enum BarAction {
     ClearNotifications,
     Notification(u32),
     Power(PowerAction),
-    Mute,
     Volume,
     Brightness,
     Network,
+    Bluetooth,
+    Mixer,
     Consume,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -400,6 +401,7 @@ struct BarView {
     popover: Option<PopoverLayout>,
 }
 pub struct TopBar {
+    pub controls: crate::panel_controls::State,
     music_panel: bool,
     pub shell_progress: f64,
     pub shell_height: i32,
@@ -414,6 +416,8 @@ pub struct TopBar {
     /// Code mode chip and key hint strip state, refreshed on mode changes.
     pub code_mode: bool,
     pub hint_context: Option<crate::hints::HintContext>,
+    /// The hints of `hint_context` whose binds are currently enabled.
+    pub hint_items: Vec<&'static crate::hints::BindHint>,
     pub mod_label: &'static str,
     pub title: String,
     pub layout: String,
@@ -437,6 +441,7 @@ impl Default for TopBar {
     fn default() -> Self {
         let today = theme::LocalTime::now();
         Self {
+            controls: Default::default(),
             shell_progress: 0.0,
             shell_height: 0,
             notifications: Default::default(),
@@ -449,6 +454,7 @@ impl Default for TopBar {
             enabled: true,
             code_mode: false,
             hint_context: None,
+            hint_items: Vec::new(),
             mod_label: "Super",
             title: String::new(),
             layout: "EN".into(),
@@ -457,7 +463,7 @@ impl Default for TopBar {
             multiple_layouts: true,
             clock: clock_label(),
             accent: [0.95, 0.64, 0.42, 1.0],
-            icons: Default::default(),
+            icons: Icons::nonblocking(crate::icons::app_worker::Consumer::Chrome),
             icon_theme: crate::config::DockConfig::default().icon_theme,
             menu: None,
             popover: Popover::Quick,
@@ -473,6 +479,7 @@ impl Default for TopBar {
 }
 impl TopBar {
     pub fn status(&self) -> &status::Snapshot { &self.status }
+    pub(crate) fn set_panel_volume(&mut self, volume: Option<status::Volume>) { self.status.volume = volume; }
     pub(crate) fn clear_media_hits(&mut self) {
         for view in &mut self.views {
             view.hits.retain(|(_, action)| !matches!(action, BarAction::Media(_) | BarAction::MusicPanel));
@@ -496,6 +503,7 @@ impl TopBar {
                 .any(|v| v.visible && v.dots.iter().any(Spring::is_active))
     }
     pub fn close(&mut self) {
+        self.controls.close();
         self.menu = None;
         self.opening.set(0.0);
         self.drag = None;
@@ -540,6 +548,7 @@ impl TopBar {
         self.opening.advance(now);
         let code_mode = self.code_mode;
         let hint_context = self.hint_context;
+        let hint_items = self.hint_items.clone();
         let mod_label = self.mod_label;
         let accent = self.accent;
         let v = &mut self.views[index];
@@ -644,6 +653,7 @@ impl TopBar {
             &l,
             code_mode,
             hint_context,
+            &hint_items,
             mod_label,
             accent,
             v.hover.as_ref(),
@@ -698,7 +708,7 @@ impl TopBar {
         c.icon(
             renderer,
             &mut self.icons,
-            &[self.status.network.icon(), "network-offline-symbolic"],
+            &[self.controls.wifi.icon(), "network-offline-symbolic"],
             &self.icon_theme,
             l.network,
         );
@@ -709,6 +719,13 @@ impl TopBar {
             &self.icon_theme,
             l.volume,
         );
+        push_hit(c, &mut v.hits, rect(l.network.loc.x-6, 4, 28, 24), BarAction::Network);
+        push_hit(c, &mut v.hits, rect(l.volume.loc.x-6, 4, 28, 24), BarAction::Mixer);
+        c.icon(renderer, &mut self.icons, &[self.controls.bluetooth.icon()], &self.icon_theme, l.bluetooth);
+        push_hit(c, &mut v.hits, rect(l.bluetooth.loc.x-6, 4, if self.controls.bluetooth.battery().is_some() {56} else {28}, 24), BarAction::Bluetooth);
+        if let Some(battery) = self.controls.bluetooth.battery() {
+            c.label(renderer, &format!("{battery}%"), l.bluetooth.loc.x+18, 10, 28, 8.5);
+        }
         draw_battery(
             c,
             renderer,
@@ -770,6 +787,7 @@ impl TopBar {
                     &mut self.icons,
                     &self.icon_theme,
                     &self.status,
+                    &self.controls,
                     self.accent,
                     &p,
                     v.hover.as_ref(),
@@ -832,6 +850,7 @@ fn draw_hints(
     layout: &Layout,
     code_mode: bool,
     context: Option<crate::hints::HintContext>,
+    hint_items: &[&'static crate::hints::BindHint],
     mod_label: &str,
     accent: [f32; 4],
     hover: Option<&BarAction>,
@@ -858,7 +877,7 @@ fn draw_hints(
     let _ = c.text.render(" ", label_style(1.0), c.scale);
     let mut items: Vec<(&crate::hints::BindHint, String, i32, i32)> = Vec::new();
     if let Some(context) = context {
-        for hint in crate::hints::items(context) {
+        for hint in hint_items.iter().copied() {
             let keys = match context {
                 crate::hints::HintContext::Code => format!("{mod_label} {}", hint.keys),
                 _ => hint.keys.to_owned(),
@@ -929,10 +948,11 @@ fn item_action(item: Item) -> BarAction {
         Item::MediaPrevious => BarAction::Media(crate::media::Command::Previous),
         Item::MediaPlayPause => BarAction::Media(crate::media::Command::PlayPause),
         Item::MediaNext => BarAction::Media(crate::media::Command::Next),
-        Item::VolumeIcon => BarAction::Mute,
+        Item::VolumeIcon => BarAction::Mixer,
         Item::Volume => BarAction::Volume,
         Item::Brightness => BarAction::Brightness,
         Item::Network => BarAction::Network,
+        Item::Bluetooth => BarAction::Bluetooth,
         Item::Battery => BarAction::Consume,
         Item::DoNotDisturb => BarAction::DoNotDisturb,
         Item::ClearNotifications => BarAction::ClearNotifications,
@@ -1017,6 +1037,7 @@ fn draw_quick(
     icons: &mut Icons,
     theme: &str,
     s: &status::Snapshot,
+    controls: &crate::panel_controls::State,
     accent: [f32; 4],
     p: &PopoverLayout,
     hover: Option<&BarAction>,
@@ -1040,7 +1061,7 @@ fn draw_quick(
             }
             Item::ClearNotifications | Item::Notification(_) => {}
             Item::VolumeIcon => {
-                if hover == Some(&BarAction::Mute) {
+                if hover == Some(&BarAction::Mixer) {
                     capsule(c, a, true);
                 }
                 c.icon(
@@ -1108,18 +1129,22 @@ fn draw_quick(
                 c.icon(
                     r,
                     icons,
-                    &[s.network.icon(), "network-offline-symbolic"],
+                    &[controls.wifi.icon(), "network-offline-symbolic"],
                     theme,
                     rect(a.loc.x + 12, a.loc.y + 12, 16, 16),
                 );
                 c.label(
                     r,
-                    s.network.label(),
+                    &controls.wifi.networks.iter().find(|n| n.active).map(|n| n.label()).unwrap_or_else(|| if controls.wifi.enabled {"Wi-Fi disconnected".into()} else {"Wi-Fi off".into()}),
                     a.loc.x + 40,
                     a.loc.y + 11,
                     a.size.w - 56,
                     13.0,
                 );
+            }
+            Item::Bluetooth => {
+                c.icon(r, icons, &[controls.bluetooth.icon()], theme, rect(a.loc.x+8,a.loc.y+10,20,20));
+                c.label(r, "Bluetooth", a.loc.x+40, a.loc.y+10, a.size.w-48, 13.0);
             }
             Item::Battery => draw_battery(
                 c,
@@ -1334,6 +1359,7 @@ impl Gavno {
                 }
             }
             BarAction::Calendar | BarAction::PowerMenu => {
+                self.topbar.controls.close();
                 self.guard(crate::module::Feature::Dock, (), |gv| gv.dock.close_menu());
                 let kind = if action == BarAction::Calendar {
                     Popover::Calendar
@@ -1375,20 +1401,13 @@ impl Gavno {
                 self.topbar.month =
                     calendar::shift_month(self.topbar.month.0, self.topbar.month.1, delta)
             }
-            BarAction::Mute => self.bar_media(status::Media::Mute),
             BarAction::Volume | BarAction::Brightness => {
                 self.topbar.drag = Some((output.clone(), action.clone()));
                 self.bar_drag(self.pointer_location());
             }
-            BarAction::Network => {
-                std::thread::spawn(|| {
-                    if let Ok(mut child) =
-                        std::process::Command::new("nm-connection-editor").spawn()
-                    {
-                        let _ = child.wait();
-                    }
-                });
-            }
+            BarAction::Network => self.toggle_panel_controls(crate::panel_controls::Kind::Wifi, output),
+            BarAction::Bluetooth => self.toggle_panel_controls(crate::panel_controls::Kind::Bluetooth, output),
+            BarAction::Mixer => self.toggle_panel_controls(crate::panel_controls::Kind::Audio, output),
             BarAction::Consume => {}
             BarAction::Power(action) => {
                 self.topbar.close();
@@ -1509,6 +1528,8 @@ impl Gavno {
     pub(crate) fn reset_bar(&mut self) {
         if let Some((_, _, token)) = self.media.repeat.take() { self.loop_handle.remove(token); }
         self.refresh_bar_status(false);
+        if let Some(token) = self.topbar.controls.event_token.take() { self.loop_handle.remove(token); }
+        self.topbar.controls.close();
         self.topbar = Default::default();
         self.topbar.notifications = self.notifications.clone();
         self.topbar.now_playing = self.now_playing.clone();
