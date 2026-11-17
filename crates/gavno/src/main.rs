@@ -30,6 +30,7 @@ mod power;
 mod launcher;
 mod launch;
 mod notify;
+mod portal;
 mod screensaver;
 mod media;
 mod polkit;
@@ -183,6 +184,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if backend_choice == BackendChoice::Tty {
             export_session_environment(state.config.display.accessibility);
             screensaver::start(&mut state);
+            portal::start(&mut state);
             autostart(&mut state);
         }
     }

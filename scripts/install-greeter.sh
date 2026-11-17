@@ -37,6 +37,9 @@ cd "$DIR"
 install -D -m 755 target/release/gavno /usr/local/bin/gavno
 install -D -m 755 dist/gavno-session /usr/local/bin/gavno-session
 install -D -m 644 dist/wayland-sessions/gavno.desktop /usr/share/wayland-sessions/gavno.desktop
+# xdg-desktop-portal reads these when it starts, i.e. at the next login.
+install -D -m 644 dist/xdg-desktop-portal/gavno-portals.conf /usr/share/xdg-desktop-portal/gavno-portals.conf
+install -D -m 644 dist/xdg-desktop-portal/gavno.portal /usr/share/xdg-desktop-portal/portals/gavno.portal
 
 # The greeter hands the panel to the session. With the user's output settings
 # (mode, HDR) the session adopts the greeter's state at login without a modeset.

@@ -172,6 +172,7 @@ pub(crate) fn apply(gv: &mut Gavno, prepared: Prepared) -> Result<Value, String>
     let white_changed = gv.config.sdr_white_nits != config.sdr_white_nits;
     let scanout_changed = gv.config.display.direct_scanout != config.display.direct_scanout;
     let pins_changed = gv.config.dock.pinned != config.dock.pinned;
+    let scheme_changed = gv.config.theme.app_color_scheme != config.theme.app_color_scheme;
     let classic_changed = gv.config.classic != config.classic;
     // These startup-only settings are not considered effective before re-login.
     config.autostart = gv.config.autostart.clone();
@@ -196,6 +197,11 @@ pub(crate) fn apply(gv: &mut Gavno, prepared: Prepared) -> Result<Value, String>
     }
     gv.reload_features();
     gv.update_theme();
+    if scheme_changed {
+        if let Some(portal) = &mut gv.portal {
+            portal.color_scheme(crate::portal::color_scheme_value(&gv.config.theme.app_color_scheme));
+        }
+    }
     if classic_changed && gv.classic.desktop.active {
         gv.classic.desktop.widgets.configure(&gv.config.classic.widgets);
         gv.request_desktop_scan();

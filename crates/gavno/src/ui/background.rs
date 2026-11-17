@@ -375,6 +375,9 @@ impl Gavno {
             gv.background.accent(&gv.config.theme, now)
         });
         self.topbar.set_accent(accent);
+        if let Some(portal) = &mut self.portal {
+            portal.accent(accent);
+        }
     }
     pub(crate) fn theme_output_visible(&self, output: &Output) -> bool {
         !self.protocols.locks.locked && self.greeter.is_none() && self.background.visible(output)

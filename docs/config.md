@@ -217,6 +217,11 @@ coordinate is optional: an explicit value wins, then a valid `GAVNO_LAT` or
 `GAVNO_LON`, then the time-zone city guess (or longitude derived from UTC offset).
 Latitude must be finite and within −90..90; longitude within −180..180.
 The lock screen and greeter retain their own skies with these same coordinates.
+`app_color_scheme` (`"dark"` by default, `"light"` or `"none"`) is the colour scheme
+GAVNO reports to apps through its built-in Settings portal backend (below); it reloads
+live and apps are notified at once. The same backend publishes the bar accent as
+`accent-color`, at most once per 15 minutes and only after an OKLab shift above 0.02.
+
 Settings exposes a Theme page, color swatches and empty coordinate entries labeled
 “use time zone”. Empty entries remove the override; environment fallbacks still apply.
 
@@ -241,6 +246,17 @@ and keep their cached accent. HDR preserves composition damage/commit and skips
 PQ scanout when nothing visible changed; retries remain pending until a vblank.
 No theme image buffer, worker, network access or separate animation timer is used.
 See [the measurement report](theme-report.md) for hourly counts and validation.
+
+## Settings portal backend
+
+GAVNO serves `org.freedesktop.impl.portal.Settings` itself as
+`org.freedesktop.impl.portal.desktop.gavno` (real TTY session only, never the nested
+backend or the greeter). Apps then see `org.freedesktop.appearance` `color-scheme`
+(from `theme.app_color_scheme`), `accent-color` (the living-theme accent, sRGB) and
+`contrast` (0), so libadwaita/GTK4, Firefox and Qt 6 follow the dark scheme.
+`dist/xdg-desktop-portal/gavno.portal` and `gavno-portals.conf` route the interface
+to it; `scripts/install-greeter.sh` installs both, and xdg-desktop-portal reads them
+at the next login. The service runs on its own thread and costs nothing when idle.
 
 ## Optional modules
 

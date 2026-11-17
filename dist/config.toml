@@ -83,6 +83,7 @@
 # background = "living" # or "solid"
 # solid_color = "#0e1016"
 # accent = "living" # or a fixed "#rrggbb"
+# app_color_scheme = "dark" # what apps see via the Settings portal: "dark", "light" or "none"
 # Coordinates are optional: file > GAVNO_LAT/GAVNO_LON > time-zone guess.
 # Latitude range: -90..90. Longitude range: -180..180.
 # Omit each coordinate to use the time zone (or its environment fallback).

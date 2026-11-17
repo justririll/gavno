@@ -514,7 +514,9 @@ options = "caps:escape"
         assert_eq!(c.theme.longitude, Some(151.21));
         assert_eq!(c.theme.solid()[0], 18.0 / 255.0);
         assert_eq!(Config::parse_checked(true, "", env).unwrap().theme.latitude, Some(-33.87));
-        for bad in ["background='image'", "solid_color='#abc'", "accent='blue'", "latitude=90.1", "longitude=-180.1", "latitude=nan", "longitude=inf"] {
+        assert_eq!(c.theme.app_color_scheme, "dark");
+        assert_eq!(Config::parse_checked(true, "[theme]\napp_color_scheme='light'", env).unwrap().theme.app_color_scheme, "light");
+        for bad in ["background='image'", "solid_color='#abc'", "accent='blue'", "app_color_scheme='auto'", "latitude=90.1", "longitude=-180.1", "latitude=nan", "longitude=inf"] {
             assert!(Config::parse_checked(true, &format!("[theme]\n{bad}"), |_| None).is_err(), "{bad}");
         }
         for bad in ["nan", "inf", "999", "", "bad"] {
@@ -743,6 +745,8 @@ pub struct ThemeConfig {
     pub background: String,
     pub solid_color: String,
     pub accent: String,
+    /// Colour scheme advertised to apps through the Settings portal.
+    pub app_color_scheme: String,
     pub latitude: Option<f64>,
     pub longitude: Option<f64>,
     #[serde(flatten)]
@@ -751,7 +755,7 @@ pub struct ThemeConfig {
 impl Default for ThemeConfig {
     fn default() -> Self {
         Self { background: "living".into(), solid_color: "#0e1016".into(), accent: "living".into(),
-            latitude: None, longitude: None, unknown: Default::default() }
+            app_color_scheme: "dark".into(), latitude: None, longitude: None, unknown: Default::default() }
     }
 }
 pub(crate) fn parse_color(text: &str) -> Option<[f32; 4]> {
@@ -769,6 +773,7 @@ impl ThemeConfig {
             ("background", matches!(self.background.as_str(), "living" | "solid")),
             ("solid_color", parse_color(&self.solid_color).is_some()),
             ("accent", self.accent == "living" || parse_color(&self.accent).is_some()),
+            ("app_color_scheme", matches!(self.app_color_scheme.as_str(), "dark" | "light" | "none")),
             ("latitude", self.latitude.is_none_or(|v| v.is_finite() && (-90.0..=90.0).contains(&v))),
             ("longitude", self.longitude.is_none_or(|v| v.is_finite() && (-180.0..=180.0).contains(&v))),
         ] {
