@@ -435,6 +435,22 @@ impl State {
     }
 }
 impl Gavno {
+    fn panel_controls_event(&mut self, event: worker::Event) {
+        let audio = matches!(&event.snapshot, Some(worker::Snapshot::Audio(_)));
+        let redraw = self.topbar.controls.apply_event(event);
+        if audio {
+            let volume = self.topbar.controls.audio.output.as_ref().map(|e| {
+                crate::topbar::status::Volume {
+                    level: e.volume as f64 / 100.0,
+                    muted: e.muted,
+                }
+            });
+            self.update_panel_volume(volume);
+        }
+        if redraw {
+            self.queue_redraw_all();
+        }
+    }
     pub(crate) fn start_panel_controls(&mut self) {
         if self.topbar.controls.started
             || !self.features.on(crate::module::Feature::Bar)
@@ -446,21 +462,7 @@ impl Gavno {
         let (tx, rx) = smithay::reexports::calloop::channel::channel::<worker::Event>();
         let token = self.loop_handle.insert_source(rx, |event, _, gv| {
             if let smithay::reexports::calloop::channel::Event::Msg(event) = event {
-                let audio = event.kind == Kind::Audio;
-                let redraw = gv.topbar.controls.apply_event(event);
-                if audio {
-                    let volume = gv.topbar.controls.audio.output.as_ref().map(|e| {
-                        crate::topbar::status::Volume {
-                            level: e.volume as f64 / 100.0,
-                            muted: e.muted,
-                        }
-                    });
-                    gv.topbar.set_panel_volume(volume);
-                    gv.media.status.volume = volume;
-                }
-                if redraw {
-                    gv.queue_redraw_all();
-                }
+                gv.panel_controls_event(event);
             }
         });
         match token {

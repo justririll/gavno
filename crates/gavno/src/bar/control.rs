@@ -14,6 +14,9 @@ use std::time::Duration;
 #[derive(Default)]
 pub struct MediaState {
     pub status: status::Snapshot,
+    /// The panel owns master volume after its first successful audio snapshot.
+    /// Inner None means the audio server currently has no default output.
+    pub panel_volume: Option<Option<status::Volume>>,
     pub brightness: crate::brightness::State,
     pub worker: Option<std::sync::mpsc::Sender<Command>>,
     pub worker_started: bool,
@@ -44,10 +47,13 @@ impl Gavno {
             }
         }
     }
-    pub(super) fn bar_status(&mut self, event: Event) {
+    pub(crate) fn bar_status(&mut self, event: Event) {
         match event {
             Event::Mic(v) => self.show_bar_osd(osd::Kind::Microphone, v.level, v.muted),
             Event::Status(mut snapshot) => {
+                if let Some(volume) = self.media.panel_volume {
+                    snapshot.volume = volume;
+                }
                 self.media.brightness.backlight = snapshot.brightness.take();
                 self.media.brightness.configure(self.config.display.brightness_control, self.start_time.elapsed());
                 snapshot.brightness = self.media.brightness.snapshot();
@@ -77,6 +83,21 @@ impl Gavno {
                     self.queue_redraw_all();
                 }
             }
+        }
+    }
+    pub(crate) fn update_panel_volume(&mut self, volume: Option<status::Volume>) {
+        let changed = self.media.status.volume != volume;
+        self.media.panel_volume = Some(volume);
+        self.topbar.set_panel_volume(volume);
+        self.media.status.volume = volume;
+        if changed {
+            // Hotkeys still use the legacy command worker. Its cached status
+            // cannot correct their OSD now; the panel's audio event does that.
+            if self.media.osd.deadline.is_some() {
+                let v = volume.unwrap_or(status::Volume { level: 0.0, muted: true });
+                self.show_bar_osd(osd::Kind::Volume, v.level, v.muted);
+            }
+            self.queue_redraw_all();
         }
     }
     fn show_bar_osd(&mut self, kind: osd::Kind, value: f64, muted: bool) {

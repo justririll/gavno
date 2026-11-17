@@ -28,6 +28,60 @@ fn state(kind: Kind) -> State {
     }
 }
 #[test]
+fn legacy_status_cannot_overwrite_panel_volume_or_resurrect_a_removed_output() {
+    use crate::topbar::status;
+    let mut h = crate::state::tests::Harness::new();
+    let legacy_volume = Some(status::Volume { level: 0.5, muted: false });
+    let legacy = status::Snapshot {
+        volume: legacy_volume,
+        brightness: Some(status::Brightness { name: "fake-panel".into(), value: 70, max: 100 }),
+        battery: Some(crate::topbar::Battery { percent: 42, charging: false }),
+        network: status::Network::Wired,
+    };
+    // Before a successful panel response, legacy volume remains the fallback.
+    h.gv.panel_controls_event(worker::Event {
+        kind: Kind::Audio, snapshot: None, error: Some("Fake server unavailable".into()),
+    });
+    h.gv.bar_status(status::Event::Status(legacy.clone()));
+    assert_eq!(h.gv.media.status.volume, legacy_volume);
+
+    let mut audio = fake::snapshots().2;
+    let output = audio.output.as_mut().unwrap();
+    output.volume = 20;
+    output.muted = true;
+    h.gv.media.osd.show(crate::topbar::osd::Kind::Volume, 0.5, false, h.gv.start_time.elapsed());
+    h.gv.panel_controls_event(worker::Event {
+        kind: Kind::Audio, snapshot: Some(worker::Snapshot::Audio(audio)), error: None,
+    });
+    let current = Some(status::Volume { level: 0.2, muted: true });
+    assert_eq!(h.gv.topbar.status().volume, current);
+    assert!(h.gv.media.osd_timer.is_some(), "panel events reconcile an already visible hotkey OSD");
+    // A brightness/network/battery update carries the old worker's cached 50%.
+    h.gv.bar_status(status::Event::Status(legacy.clone()));
+    assert_eq!(h.gv.media.status.volume, current);
+    assert_eq!(h.gv.topbar.status().volume, current);
+    assert_eq!(h.gv.media.brightness.backlight, legacy.brightness);
+    assert_eq!(h.gv.topbar.status().battery, legacy.battery);
+    assert_eq!(h.gv.topbar.status().network, legacy.network);
+
+    h.gv.panel_controls_event(worker::Event {
+        kind: Kind::Audio, snapshot: None, error: Some("Fake transient failure".into()),
+    });
+    h.gv.bar_status(status::Event::Status(legacy.clone()));
+    assert_eq!(h.gv.media.status.volume, current);
+    // A successful snapshot with no output is authoritative too.
+    h.gv.panel_controls_event(worker::Event {
+        kind: Kind::Audio, snapshot: Some(worker::Snapshot::Audio(Default::default())), error: None,
+    });
+    h.gv.bar_status(status::Event::Status(legacy.clone()));
+    assert_eq!(h.gv.media.status.volume, None);
+    assert_eq!(h.gv.topbar.status().volume, None);
+
+    h.gv.reset_bar();
+    h.gv.bar_status(status::Event::Status(legacy));
+    assert_eq!(h.gv.media.status.volume, legacy_volume);
+}
+#[test]
 fn wifi_deduplicates_raw_ssids_and_maps_radio_and_signal() {
     let mut s = state(Kind::Wifi).wifi;
     let mut duplicate = s.networks[0].clone();

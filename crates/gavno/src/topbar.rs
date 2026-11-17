@@ -1531,6 +1531,7 @@ impl Gavno {
         if let Some(token) = self.topbar.controls.event_token.take() { self.loop_handle.remove(token); }
         self.topbar.controls.close();
         self.topbar = Default::default();
+        self.media.panel_volume = None;
         self.topbar.notifications = self.notifications.clone();
         self.topbar.now_playing = self.now_playing.clone();
         self.loop_handle.insert_idle(|gv| gv.refit_fixed_windows());
