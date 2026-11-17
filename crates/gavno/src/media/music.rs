@@ -517,6 +517,7 @@ impl Gavno {
         self.refresh_classic_music();
         self.queue_redraw_all();
     }
+    /// One-second progress tick, armed only while the panel is open and music plays.
     fn music_tick(&mut self) {
         let token = self
             .loop_handle
@@ -527,10 +528,16 @@ impl Gavno {
                         return;
                     };
                     s.tick = None;
-                    if !s.state.playing {
+                    // Outputs off: `power_on_monitors` re-arms the tick. A finished
+                    // track needs no ticks either; the next daemon state re-arms it.
+                    let finished = s
+                        .state
+                        .item
+                        .as_ref()
+                        .is_some_and(|i| i.duration_ms > 0 && s.state.position() >= i.duration_ms);
+                    if !s.state.playing || finished || gv.power.is_off() {
                         return;
                     }
-                    s.dirty = true;
                     drop(media);
                     gv.queue_redraw_all();
                     gv.music_tick();
@@ -540,6 +547,19 @@ impl Gavno {
             .ok();
         if let Some(s) = self.now_playing.borrow_mut().music.session.as_mut() {
             s.tick = token;
+        }
+    }
+    /// Re-arm the progress tick after the outputs power back on.
+    pub(crate) fn music_wake(&mut self) {
+        let needs_tick = self
+            .now_playing
+            .borrow()
+            .music
+            .session
+            .as_ref()
+            .is_some_and(|s| s.state.playing && s.tick.is_none());
+        if needs_tick {
+            self.music_tick();
         }
     }
     fn music_debounce(&mut self) {

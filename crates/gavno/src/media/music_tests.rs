@@ -1366,3 +1366,148 @@ fn widget_anchor_prefers_left_then_right_and_clamps_above_taskbar() {
         (292, 50).into()
     );
 }
+
+fn playing_session(h: &mut Harness, output: &Output) {
+    h.gv.toggle_music(output);
+    ready(h);
+    let mut media = h.gv.now_playing.borrow_mut();
+    let s = media.music.session.as_mut().unwrap();
+    let mut track = item("track", "Now playing");
+    track.duration_ms = 200_000;
+    s.state.item = Some(track);
+    s.state.playing = true;
+    s.state.position_ms = 1000;
+    s.state.position_at_ms = u64::MAX / 2;
+}
+fn counters(h: &Harness) -> (usize, usize) {
+    let s = session(&h.gv);
+    (s.view.static_builds, s.view.tick_builds)
+}
+fn build(
+    h: &mut Harness,
+    renderer: &mut GlesRenderer,
+    output: &Output,
+    scale: f64,
+    accent: [f32; 4],
+) -> Vec<crate::render::GavnoRenderElement> {
+    let mut media = h.gv.now_playing.borrow_mut();
+    let s = media.music.session.as_mut().unwrap();
+    s.elements(renderer, output, (1280, 800).into(), scale, accent)
+}
+
+#[test]
+fn progress_tick_does_not_rebuild_the_static_panel() {
+    use smithay::backend::renderer::element::Element;
+    let Some((_bus, address)) = bus() else { return };
+    let (_fake, _connection) = fake(&address, true);
+    let (mut h, output) = setup(&address);
+    playing_session(&mut h, &output);
+    let mut renderer = renderer();
+    let accent = h.gv.topbar.accent();
+    let first = build(&mut h, &mut renderer, &output, 1.0, accent);
+    let (statics, ticks) = counters(&h);
+    assert_eq!((statics, ticks), (1, 1));
+    // Nothing changed: the whole frame is reused.
+    build(&mut h, &mut renderer, &output, 1.0, accent);
+    assert_eq!(counters(&h), (1, 1));
+    // A position tick rebuilds only the progress part.
+    h.gv.now_playing
+        .borrow_mut()
+        .music
+        .session
+        .as_mut()
+        .unwrap()
+        .state
+        .position_ms = 5000;
+    let ticked = build(&mut h, &mut renderer, &output, 1.0, accent);
+    assert_eq!(counters(&h), (1, 2));
+    assert_eq!(first.len(), ticked.len());
+    let ids = |v: &[crate::render::GavnoRenderElement]| {
+        v.iter().map(|e| e.id().clone()).collect::<Vec<_>>()
+    };
+    let (before, after) = (ids(&first), ids(&ticked));
+    let changed = before.iter().zip(&after).filter(|(a, b)| a != b).count();
+    assert!(changed <= 2, "only the bar fill and time label change, got {changed}");
+    // Content changes still rebuild the static part.
+    build(&mut h, &mut renderer, &output, 1.25, accent);
+    assert_eq!(counters(&h), (2, 3));
+    build(&mut h, &mut renderer, &output, 1.25, [0.1, 0.2, 0.3, 1.0]);
+    assert_eq!(counters(&h), (3, 4));
+    h.gv.now_playing
+        .borrow_mut()
+        .music
+        .session
+        .as_mut()
+        .unwrap()
+        .dirty = true;
+    build(&mut h, &mut renderer, &output, 1.25, [0.1, 0.2, 0.3, 1.0]);
+    assert_eq!(counters(&h).0, 4);
+}
+
+#[test]
+fn tick_runs_only_while_open_playing_and_powered() {
+    let Some((_bus, address)) = bus() else { return };
+    let (_fake, _connection) = fake(&address, true);
+    let (mut h, output) = setup(&address);
+    playing_session(&mut h, &output);
+    let armed = |h: &Harness| session(&h.gv).tick.is_some();
+    h.gv.music_tick();
+    assert!(armed(&h));
+    // Outputs off: the pending tick fires once, draws nothing and stops.
+    h.gv.power_off_monitors("test");
+    settle_for(&mut h, Duration::from_millis(1200));
+    assert!(!armed(&h), "tick must stop while outputs are off");
+    h.gv.power_on_monitors("test");
+    assert!(armed(&h), "waking the outputs re-arms the tick");
+    // Pausing stops it after the next firing.
+    session_mut(&mut h).state.playing = false;
+    settle_for(&mut h, Duration::from_millis(1200));
+    assert!(!armed(&h), "tick must stop while paused");
+    // Closing the popover removes the timer with the session.
+    session_mut(&mut h).state.playing = true;
+    h.gv.music_wake();
+    assert!(armed(&h));
+    h.gv.close_music();
+    assert!(!h.gv.music_open());
+    // A finished track needs no more ticks either.
+    h.gv.toggle_music(&output);
+    ready(&mut h);
+    {
+        let mut s = session_mut(&mut h);
+        let mut track = item("track", "Ended");
+        track.duration_ms = 1000;
+        s.state.item = Some(track);
+        s.state.playing = true;
+        s.state.position_ms = 1000;
+        s.state.position_at_ms = 0;
+    }
+    h.gv.music_tick();
+    settle_for(&mut h, Duration::from_millis(1200));
+    assert!(!armed(&h), "tick must stop at the end of the track");
+}
+
+#[test]
+fn position_ticks_do_not_touch_the_classic_widget() {
+    let Some((_bus, address)) = bus() else { return };
+    let (_fake, _connection) = fake(&address, true);
+    let (mut h, output) = setup(&address);
+    playing_session(&mut h, &output);
+    h.gv.refresh_classic_music();
+    let revision = h.gv.classic.desktop.widgets.revision;
+    session_mut(&mut h).state.position_ms = 90_000;
+    h.gv.refresh_classic_music();
+    assert_eq!(h.gv.classic.desktop.widgets.revision, revision);
+}
+fn session_mut(h: &mut Harness) -> std::cell::RefMut<'_, Session> {
+    std::cell::RefMut::map(h.gv.now_playing.borrow_mut(), |media| {
+        media.music.session.as_mut().unwrap()
+    })
+}
+fn settle_for(h: &mut Harness, duration: Duration) {
+    let deadline = Instant::now() + duration;
+    while Instant::now() < deadline {
+        h.event_loop
+            .dispatch(Some(Duration::from_millis(10)), &mut h.gv)
+            .unwrap();
+    }
+}

@@ -26,6 +26,15 @@ pub struct View {
     pub visible_rows: usize,
     cached: Vec<crate::classic::cache::CachedElement>,
     geometry: Option<(Size<i32, Logical>, f64, [f32; 4])>,
+    /// Progress fill and time label live apart from the static content, so a
+    /// playback tick rebuilds two elements instead of the whole panel.
+    tick: Canvas,
+    tick_cached: Vec<crate::classic::cache::CachedElement>,
+    tick_key: Option<(i32, String)>,
+    #[cfg(test)]
+    pub static_builds: usize,
+    #[cfg(test)]
+    pub tick_builds: usize,
 }
 impl View {
     pub fn hit(&self, point: Point<f64, Logical>) -> Option<(Rect, Hit)> {
@@ -124,15 +133,32 @@ impl Session {
         if &self.output != output {
             return Vec::new();
         }
-        let view = &mut self.view;
-        if !self.dirty && view.geometry == Some((size, scale, accent)) {
-            return view
-                .cached
-                .iter()
-                .cloned()
-                .map(GavnoRenderElement::Desktop)
-                .collect();
+        let rebuild = self.dirty || self.view.geometry != Some((size, scale, accent));
+        if rebuild {
+            self.build_static(renderer, size, scale, accent);
         }
+        self.build_progress(renderer, size, scale, accent);
+        let view = &self.view;
+        view.tick_cached
+            .iter()
+            .chain(&view.cached)
+            .cloned()
+            .map(GavnoRenderElement::Desktop)
+            .collect()
+    }
+    fn build_static(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        size: Size<i32, Logical>,
+        scale: f64,
+        accent: [f32; 4],
+    ) {
+        let view = &mut self.view;
+        #[cfg(test)]
+        {
+            view.static_builds += 1;
+        }
+        view.tick_key = None;
         self.dirty = false;
         view.geometry = Some((size, scale, accent));
         view.canvas.begin(renderer, scale);
@@ -153,12 +179,7 @@ impl Session {
                 .into_iter()
                 .filter_map(crate::classic::cache::CachedElement::from_ui)
                 .collect();
-            return view
-                .cached
-                .iter()
-                .cloned()
-                .map(GavnoRenderElement::Desktop)
-                .collect();
+            return;
         }
         image(view, renderer, self.state.item.as_ref(), rect(x, y, 52, 52));
         let title = self
@@ -194,8 +215,6 @@ impl Session {
             );
             view.hits.push((r, Hit::Control(command)));
         }
-        let duration = self.state.item.as_ref().map_or(0, |i| i.duration_ms);
-        let position = self.state.position();
         let seek = rect(x, y + 104, w, 18);
         view.canvas.rect(
             rect(x, seek.loc.y + 6, w, 5),
@@ -204,32 +223,7 @@ impl Session {
             0.0,
             LINE,
         );
-        let fraction = if duration == 0 {
-            0.0
-        } else {
-            position as f64 / duration as f64
-        };
-        view.canvas.rect(
-            rect(x, seek.loc.y + 6, (w as f64 * fraction) as i32, 5),
-            2.5,
-            accent,
-            0.0,
-            LINE,
-        );
         view.hits.push((seek, Hit::Seek));
-        label(
-            view,
-            renderer,
-            &format!(
-                "{}:{:02} / {}:{:02}",
-                position / 60000,
-                position / 1000 % 60,
-                duration / 60000,
-                duration / 1000 % 60
-            ),
-            rect(x + 156, y + 72, w - 156, 20),
-            11.0,
-        );
         label(view, renderer, "Volume", rect(x, y + 133, 60, 20), 11.0);
         let volume = rect(x + 70, y + 128, w - 70, 22);
         view.canvas.rect(
@@ -376,10 +370,56 @@ impl Session {
             .into_iter()
             .filter_map(crate::classic::cache::CachedElement::from_ui)
             .collect();
-        view.cached
-            .iter()
-            .cloned()
-            .map(GavnoRenderElement::Desktop)
-            .collect()
+    }
+    /// Elapsed/total label and the bar fill, rebuilt only when either changes.
+    fn build_progress(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        size: Size<i32, Logical>,
+        scale: f64,
+        accent: [f32; 4],
+    ) {
+        let view = &mut self.view;
+        let panel = panel_rect(size, self.anchor);
+        if panel.size.w < 240 || panel.size.h < 300 {
+            view.tick_cached.clear();
+            return;
+        }
+        let (x, y, w) = (panel.loc.x + 16, panel.loc.y + 16, (panel.size.w - 32).max(1));
+        let duration = self.state.item.as_ref().map_or(0, |i| i.duration_ms);
+        let position = self.state.position();
+        let fraction = if duration == 0 {
+            0.0
+        } else {
+            position as f64 / duration as f64
+        };
+        let fill = (w as f64 * fraction) as i32;
+        let text = format!(
+            "{}:{:02} / {}:{:02}",
+            position / 60000,
+            position / 1000 % 60,
+            duration / 60000,
+            duration / 1000 % 60
+        );
+        let key = (fill, text);
+        if view.tick_key.as_ref() == Some(&key) {
+            return;
+        }
+        #[cfg(test)]
+        {
+            view.tick_builds += 1;
+        }
+        view.tick.begin(renderer, scale);
+        view.tick
+            .rect(rect(x, y + 110, fill, 5), 2.5, accent, 0.0, LINE);
+        view.tick
+            .label(renderer, &key.1, x + 156, y + 72, w - 156, 11.0);
+        view.tick_cached = view
+            .tick
+            .finish()
+            .into_iter()
+            .filter_map(crate::classic::cache::CachedElement::from_ui)
+            .collect();
+        view.tick_key = Some(key);
     }
 }

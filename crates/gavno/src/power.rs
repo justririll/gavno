@@ -126,6 +126,7 @@ impl Gavno {
         }
         self.power_lock_clock(true);
         self.refresh_greeter_clock();
+        self.music_wake();
         tracing::info!(reason, "outputs powered on");
         let inhibited = self.protocols.idle.is_inhibited();
         self.refresh_power_idle(true, inhibited);
