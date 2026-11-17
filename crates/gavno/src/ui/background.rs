@@ -79,7 +79,8 @@ struct View {
     context: Option<ContextId<GlesTexture>>,
     solid: SolidColorBuffer,
     visible: Option<bool>,
-    accent: Option<[f32; 4]>,
+    /// Last accent drawn here and the `accent_epoch` it belongs to.
+    accent: Option<([f32; 4], u64)>,
 }
 pub struct Background {
     pub initialized: bool,
@@ -94,6 +95,8 @@ pub struct Background {
     planned_wall: Duration,
     clock_due: Option<Duration>,
     bar_minute: Option<u64>,
+    /// Bumped by configuration and resume changes, which covered outputs must not miss.
+    accent_epoch: u64,
 }
 impl Default for Background {
     fn default() -> Self {
@@ -110,6 +113,7 @@ impl Default for Background {
             planned_wall: Duration::ZERO,
             clock_due: None,
             bar_minute: None,
+            accent_epoch: 0,
         }
     }
 }
@@ -128,6 +132,9 @@ impl Background {
             }
         }) {
             return false;
+        }
+        if reason != Update::Clock {
+            self.accent_epoch += 1;
         }
         let previous = self.current(now).unwrap_or(next);
         let fade = reason != Update::Clock && previous.perceptual_delta(next) >= JUMP_THRESHOLD;
@@ -209,11 +216,19 @@ impl Background {
     pub fn accent_for(&mut self, output: &Output, config: &ThemeConfig, now: Duration) -> [f32; 4] {
         self.prepare_intro(config, now);
         let accent = self.accent(config, now);
+        // Covered outputs keep their accent through solar drift, but take a
+        // configuration or resume change at once, at the end colour of its fade.
+        let epoch = self.accent_epoch;
+        let target = self.target.map_or(FIXED_ACCENT, |p| [p.accent[0], p.accent[1], p.accent[2], 1.0]);
         let view = self.view(output);
         if view.visible == Some(false) {
-            return view.accent.unwrap_or(accent);
+            if let Some((cached, _)) = view.accent.filter(|(_, at)| *at == epoch) {
+                return cached;
+            }
+            view.accent = Some((target, epoch));
+            return target;
         }
-        view.accent = Some(accent);
+        view.accent = Some((accent, epoch));
         accent
     }
     pub fn active(&self) -> bool {
@@ -366,7 +381,14 @@ impl Gavno {
             changed
         });
         self.sync_theme_accent(now);
-        if changed {
+        if changed && reason == Update::Clock {
+            // Solar drift shows only where the sky or a living accent is drawn.
+            for output in self.theme_redraw_outputs() {
+                if self.theme_shows_on(&output) {
+                    crate::backend::queue_redraw_output(self, &output);
+                }
+            }
+        } else if changed {
             self.queue_theme_redraws();
         }
     }
@@ -382,17 +404,20 @@ impl Gavno {
     pub(crate) fn theme_output_visible(&self, output: &Output) -> bool {
         !self.protocols.locks.locked && self.greeter.is_none() && self.background.visible(output)
     }
+    /// Whether theme changes are visible on this output: a fade, a living accent,
+    /// or a living sky that no wallpaper covers.
+    fn theme_shows_on(&self, o: &Output) -> bool {
+        self.theme_output_visible(o)
+            && (self.background.active()
+                || self.config.theme.accent == "living"
+                || (self.config.theme.background == "living"
+                    && self
+                        .space
+                        .output_geometry(o)
+                        .is_some_and(|g| !has_wallpaper(o, g.size))))
+    }
     pub(crate) fn theme_visible(&self) -> bool {
-        self.space.outputs().any(|o| {
-            self.theme_output_visible(o)
-                && (self.background.active()
-                    || self.config.theme.accent == "living"
-                    || (self.config.theme.background == "living"
-                        && self
-                            .space
-                            .output_geometry(o)
-                            .is_some_and(|g| !has_wallpaper(o, g.size))))
-        })
+        self.space.outputs().any(|o| self.theme_shows_on(o))
     }
     pub(crate) fn theme_redraw_outputs(&self) -> Vec<Output> {
         self.space
@@ -549,6 +574,28 @@ mod tests {
     fn renderer() -> GlesRenderer {
         let display = unsafe { EGLDisplay::new(EGLSurfacelessDisplay) }.unwrap();
         unsafe { GlesRenderer::new(EGLContext::new(&display).unwrap()) }.unwrap()
+    }
+    #[test]
+    fn covered_outputs_keep_solar_accents_but_take_config_changes() {
+        let mut b = Background::default();
+        b.intro_pending = false;
+        let config = ThemeConfig::default();
+        let o = output();
+        let p = theme::palette(&time(172, 720), 55.75, 37.62);
+        b.change(p, Duration::ZERO, Update::Config);
+        b.view(&o).visible = Some(false);
+        let before = b.accent_for(&o, &config, Duration::ZERO);
+        let mut drift = p;
+        drift.accent = [0.1, 0.8, 0.2];
+        b.change(drift, Duration::from_secs(60), Update::Clock);
+        assert_eq!(b.accent_for(&o, &config, Duration::from_secs(60)), before);
+        let mut configured = p;
+        configured.accent = [0.9, 0.1, 0.1];
+        assert!(b.change(configured, Duration::from_secs(61), Update::Config));
+        // The end colour at once, not a frame from the middle of the fade.
+        let accent = b.accent_for(&o, &config, Duration::from_secs(61));
+        assert_eq!(accent, [0.9, 0.1, 0.1, 1.0]);
+        assert_eq!(b.accent_for(&o, &config, Duration::from_secs(62)), accent);
     }
     #[test]
     fn invisible_changes_are_skipped_and_ordinary_updates_never_fade() {
