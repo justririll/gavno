@@ -612,6 +612,7 @@ impl WindowDecor {
         _time: Duration,
         scene: Option<&[crate::overview::SceneWindow]>,
         features: &crate::module::Features,
+        mut stall: Option<&mut crate::perf::Stall<'_>>,
     ) -> Vec<GavnoRenderElement> {
 
         self.caches.retain(|c| {
@@ -638,7 +639,7 @@ impl WindowDecor {
             }
         }
         let (Some(programs), Some(shaders)) = (&self.programs, &self.shaders) else {
-            return crate::render::plain_elements(renderer, space, output, scene);
+            return crate::render::plain_elements(renderer, space, output, scene, stall);
         };
         let Some(output_geo) = space.output_geometry(output) else {
             return Vec::new();
@@ -667,7 +668,9 @@ impl WindowDecor {
                 }
             }
         };
+        if let Some(stall) = stall.as_deref_mut() { stall.mark("elements.decor"); }
         append_layers(&mut result, renderer, true);
+        if let Some(stall) = stall.as_deref_mut() { stall.mark("elements.layers.front"); }
         // Closing windows retain their former stacking position relative to surviving
         // windows using the last space order captured below.
         let mut windows: Vec<Window> = scene.map(|s| s.iter().map(|v| v.window.clone()).collect())
@@ -916,6 +919,7 @@ impl WindowDecor {
             result.extend(shadow);
         }
 
+        if let Some(stall) = stall.as_deref_mut() { stall.mark("elements.space"); }
         result
     }
 }

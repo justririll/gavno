@@ -1,0 +1,75 @@
+--- a/src/backend/drm/surface/gbm.rs
++++ b/src/backend/drm/surface/gbm.rs
+@@ -16,7 +16,7 @@
+ use crate::backend::SwapBuffersError;
+ use crate::utils::{DevPath, Physical, Rectangle, Transform};
+ 
+-use tracing::{debug, error, info_span, instrument, trace, warn};
++use tracing::{debug, info_span, instrument, trace, warn};
+ 
+ use super::{PlaneConfig, PlaneDamageClips, PlaneState, VrrSupport};
+ 
+--- a/src/backend/session/libseat.rs
++++ b/src/backend/session/libseat.rs
+@@ -25,7 +25,7 @@
+ 
+ use crate::backend::session::{AsErrno, Event as SessionEvent, Session};
+ 
+-use tracing::{debug, error, info_span, instrument};
++use tracing::{debug, info_span, instrument};
+ 
+ #[derive(Debug)]
+ struct LibSeatSessionImpl {
+--- a/src/backend/winit/mod.rs
++++ b/src/backend/winit/mod.rs
+@@ -24,7 +24,7 @@
+ 
+ use calloop::generic::Generic;
+ use calloop::{EventSource, Interest, PostAction, Readiness, Token};
+-use tracing::{debug, error, info, info_span, instrument, trace, warn};
++use tracing::{debug, info, info_span, instrument, trace, warn};
+ use wayland_egl as wegl;
+ use winit::platform::pump_events::PumpStatus;
+ use winit::platform::scancode::PhysicalKeyExtScancode;
+--- a/src/input/keyboard/mod.rs
++++ b/src/input/keyboard/mod.rs
+@@ -12,7 +12,7 @@
+     sync::{Arc, Mutex},
+ };
+ use thiserror::Error;
+-use tracing::{debug, error, info, info_span, instrument, trace};
++use tracing::{debug, info, info_span, instrument, trace};
+ 
+ use xkbcommon::xkb::ffi::XKB_STATE_LAYOUT_EFFECTIVE;
+ pub use xkbcommon::xkb::{self, keysyms, Keycode, Keysym};
+--- a/src/wayland/seat/keyboard.rs
++++ b/src/wayland/seat/keyboard.rs
+@@ -1,6 +1,6 @@
+ use std::fmt;
+ 
+-use tracing::{error, instrument, trace, warn};
++use tracing::{instrument, trace, warn};
+ use wayland_server::{
+     backend::{ClientId, ObjectId},
+     protocol::{
+--- a/src/backend/allocator/swapchain.rs
++++ b/src/backend/allocator/swapchain.rs
+@@ -204,6 +204,7 @@
+         slot.0.age.store(1, Ordering::SeqCst);
+         for other_slot in &mut self.slots {
+             if !Arc::ptr_eq(other_slot, &slot.0) && other_slot.buffer.is_some() {
++                #[allow(deprecated)] // Keep Smithay 0.7 MSRV compatibility with fetch_update.
+                 let res = other_slot
+                     .age
+                     .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |age| {
+--- a/src/wayland/shm/pool.rs
++++ b/src/wayland/shm/pool.rs
+@@ -300,7 +300,7 @@
+             // We use `mem::zeroed()` because regular struct init as well as struct update syntax require all fields to be public
+             // and libc does not guarantee that for all targets
+             let mut action: libc::sigaction = mem::zeroed();
+-            action.sa_sigaction = sigbus_handler as _;
++            action.sa_sigaction = sigbus_handler as *const () as _;
+             action.sa_flags = libc::SA_SIGINFO | libc::SA_NODEFER;
+ 
+             let mut old_action = mem::zeroed();

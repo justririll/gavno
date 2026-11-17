@@ -1009,6 +1009,7 @@ mod tests {
             &mut gv.classic,
             &mut gv.polkit,
             &mut gv.background,
+            None,
         )
     }
 
@@ -1421,6 +1422,7 @@ mod tests {
                     &mut gv.classic,
                     &mut gv.polkit,
                     &mut gv.background,
+                    None,
                 );
                 assert!(scene.len() > 1, "the artifact includes shell chrome");
                 // Keep the separately prepared sky alive to check its shader program.

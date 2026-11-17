@@ -137,7 +137,11 @@ pub fn output_elements(
     classic: &mut crate::classic::Classic,
     polkit: &mut crate::polkit::Polkit,
     background: &mut crate::ui::background::Background,
+    mut stall: Option<&mut crate::perf::Stall<'_>>,
 ) -> Vec<GavnoRenderElement> {
+    if let Some(stall) = stall.as_deref_mut() {
+        stall.shm_bytes(crate::render_sanitize::take_output_shm_bytes(output));
+    }
     let accent = features.call(Feature::Theme, crate::ui::background::FIXED_ACCENT,
         || background.accent_for(output, &config.theme, time));
     topbar.set_accent(accent);
@@ -156,7 +160,8 @@ pub fn output_elements(
         if let CursorImageStatus::Surface(surface) = cursor_status { with_surfaces_surface_tree(surface, |s, states| collect(s, states)); }
         if let Some(surface) = locks.surface(output) { with_surfaces_surface_tree(surface, |s, states| collect(s, states)); }
     }
-    let elements = output_elements_inner(renderer, space, output, pointer_pos, cursor_status, cursor, time, greeter, lock, overlay, window_decor, animations, locks, workspaces, overview, dock, topbar, config, features, osd, launcher, classic, polkit, background);
+    if let Some(stall) = stall.as_deref_mut() { stall.mark("elements.state"); }
+    let elements = output_elements_inner(renderer, space, output, pointer_pos, cursor_status, cursor, time, greeter, lock, overlay, window_decor, animations, locks, workspaces, overview, dock, topbar, config, features, osd, launcher, classic, polkit, background, stall.as_deref_mut());
     if descriptions.is_empty() { crate::hdr::surface::reset(output); return elements; }
     let hdr = crate::handlers::color_management::is_hdr(output);
     if !hdr { descriptions.retain(|_, d| d.tf != crate::color::Transfer::Srgb || d.primaries != crate::color::SRGB); }
@@ -165,6 +170,7 @@ pub fn output_elements(
     let converted = features.call(Feature::ColorManagement, Ok(Default::default()), || {
         crate::hdr::surface::convert(renderer, output, &elements, &descriptions, hdr, white)
     });
+    if let Some(stall) = stall.as_deref_mut() { stall.mark("elements.color"); }
     match converted {
         Ok(converted) => {
             let mut converted = converted.into_iter();
@@ -211,6 +217,7 @@ fn output_elements_inner(
     classic: &mut crate::classic::Classic,
     polkit: &mut crate::polkit::Polkit,
     background: &mut crate::ui::background::Background,
+    mut stall: Option<&mut crate::perf::Stall<'_>>,
 ) -> Vec<GavnoRenderElement> {
     let mut elements: Vec<GavnoRenderElement> = Vec::new();
     let Some(output_geo) = space.output_geometry(output) else {
@@ -233,6 +240,7 @@ fn output_elements_inner(
                     renderer, loc, &buffer, None, None, None, cursor_kind,
                 ) { elements.push(GavnoRenderElement::Memory(cursor)); }
             }
+            if let Some(stall) = stall.as_deref_mut() { stall.mark("elements.cursor"); }
             elements.extend(osd.elements(renderer, output, output_geo.size, time, &config.dock.icon_theme, topbar.accent()));
             let lock_elements = lock.elements(renderer, output_geo.size, scale.x, time, &config.theme);
             let media_elements = features.call(Feature::Media, Vec::new(), || {
@@ -243,18 +251,22 @@ fn output_elements_inner(
             elements.extend(lock_elements);
             // Desktop pixels are permitted only after local PAM success. Input
             // remains blocked until the fade completes on the event loop.
+            if let Some(stall) = stall.as_deref_mut() { stall.mark("elements.shell"); }
             if !lock.desktop_visible() { return elements; }
         } else {
             elements.extend(osd.elements(renderer, output, output_geo.size, time, &config.dock.icon_theme, topbar.accent()));
+            if let Some(stall) = stall.as_deref_mut() { stall.mark("elements.shell"); }
             if let Some(surface) = locks.surface(output) {
                 elements.extend(render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<_>>(
                     renderer, surface, (0, 0), scale, 1.0, Kind::Unspecified,
                 ).into_iter().map(GavnoRenderElement::Surface));
             }
+            if let Some(stall) = stall.as_deref_mut() { stall.mark("elements.space"); }
             return elements;
         }
     }
 
+    if let Some(stall) = stall.as_deref_mut() { stall.mark("elements.lock"); }
     if !locks.locked && output_geo.to_f64().contains(pointer_pos) {
         if let CursorImageStatus::Surface(surface) = cursor_status {
             if !surface.alive() {
@@ -299,11 +311,13 @@ fn output_elements_inner(
         }
     }
 
+    if let Some(stall) = stall.as_deref_mut() { stall.mark("elements.cursor"); }
     if !locks.locked { elements.extend(osd.elements(renderer, output, output_geo.size, time, &config.dock.icon_theme, topbar.accent())); }
 
     if let Some(greeter) = greeter {
         let size = output_geo.size;
         elements.extend(greeter.safe_call(Vec::new(), |g| { g.set_location(&config.theme); g.elements(renderer, size, scale.x, time) }));
+        if let Some(stall) = stall.as_deref_mut() { stall.mark("elements.shell"); }
         return elements;
     }
 
@@ -393,20 +407,24 @@ fn output_elements_inner(
     features.call(Feature::Animations, (), || animations.advance(time, space));
     let mut static_animations = crate::anim::WindowAnimations::default();
     let animations = if features.on(Feature::Animations) { animations } else { &mut static_animations };
-    let decorated = features.read(Feature::Decorations, None, || Some(window_decor.elements(renderer, space, output, animations, time, scene.as_deref(), features)));
+    if let Some(stall) = stall.as_deref_mut() { stall.mark("elements.shell"); }
+    let decorated = features.read(Feature::Decorations, None, || Some(window_decor.elements(renderer, space, output, animations, time, scene.as_deref(), features, stall.as_deref_mut())));
     elements.extend(decorated.unwrap_or_else(|| {
-        plain_elements(renderer, space, output, scene.as_deref())
+        plain_elements(renderer, space, output, scene.as_deref(), stall.as_deref_mut())
     }));
     features.call(Feature::Classic, (), || classic.desktop.append(renderer, output, &mut elements, p, scale.x, accent, &config.dock.icon_theme));
+    if let Some(stall) = stall.as_deref_mut() { stall.mark("elements.desktop"); }
     elements.extend(background_elements(renderer, output, smithay::wayland::shell::wlr_layer::Layer::Bottom));
     background.record_visibility(output, &elements, output_geo.size, scale.x);
     elements.extend(background_elements(renderer, output, smithay::wayland::shell::wlr_layer::Layer::Background));
+    if let Some(stall) = stall.as_deref_mut() { stall.mark("elements.layers.back"); }
     if !crate::ui::background::has_wallpaper(output, output_geo.size) {
         let sky = features.call(Feature::Theme, None, || {
             background.elements(renderer, output, output_geo.size, scale.x, &config.theme, time)
         });
         elements.push(sky.unwrap_or_else(|| background.solid(output, output_geo.size, config.theme.solid())));
     }
+    if let Some(stall) = stall.as_deref_mut() { stall.mark("elements.background"); }
     elements
 }
 
@@ -415,6 +433,7 @@ fn output_elements_inner(
 pub(crate) fn plain_elements(
     renderer: &mut GlesRenderer, space: &Space<Window>, output: &Output,
     scene: Option<&[crate::overview::SceneWindow]>,
+    mut stall: Option<&mut crate::perf::Stall<'_>>,
 ) -> Vec<GavnoRenderElement> {
     let fallback;
     let scene = if let Some(scene) = scene { scene } else {
@@ -444,12 +463,18 @@ pub(crate) fn plain_elements(
                 }
             }
         }
+        if !upper {
+            if let Some(stall) = stall.as_deref_mut() { stall.mark("elements.space"); }
+        }
         for layer in layers.layers().rev().filter(|l| upper && matches!(l.layer(), smithay::wayland::shell::wlr_layer::Layer::Top | smithay::wayland::shell::wlr_layer::Layer::Overlay)) {
             if let Some(geometry) = layers.layer_geometry(layer) {
                 result.extend(layer.render_elements::<WaylandSurfaceRenderElement<_>>(
                     renderer, geometry.loc.to_physical_precise_round(scale), scale, 1.0,
                 ).into_iter().map(GavnoRenderElement::Surface));
             }
+        }
+        if upper {
+            if let Some(stall) = stall.as_deref_mut() { stall.mark("elements.layers.front"); }
         }
     }
     result

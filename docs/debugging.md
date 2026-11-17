@@ -65,6 +65,9 @@ launch to override it (fractional milliseconds and zero are accepted; invalid
 values use 8). All sources share a maximum of 20 warnings in any rolling minute;
 further warnings are suppressed. The watchdog does not allocate or lock when
 below the threshold.
+Render warnings also include per-element stages and `shm_kb` committed damage;
+see [element collection measurements](elements-performance.md) for how to read
+them.
 
 `calloop.dispatch` includes event handling, idle callbacks (including udev
 rendering), and `on_loop_idle`, starting **after** poll returns, so normal sleep

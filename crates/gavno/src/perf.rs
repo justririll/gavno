@@ -175,7 +175,7 @@ impl RateLimit {
 }
 static WARNINGS: Mutex<RateLimit> = Mutex::new(RateLimit::new());
 
-const STAGES: usize = 6;
+const STAGES: usize = 24;
 
 /// No allocation or lock below the threshold. Output::name() allocates, so
 /// keep a borrowed output and resolve its name only when emitting a warning.
@@ -185,6 +185,7 @@ pub struct Stall<'a> {
     output: Option<&'a Output>,
     stages: [(&'static str, Duration); STAGES],
     marked: usize,
+    shm_bytes: Option<u64>,
 }
 impl Stall<'_> {
     pub fn new(source: &'static str) -> Self {
@@ -194,7 +195,13 @@ impl Stall<'_> {
             output: None,
             stages: [("", Duration::ZERO); STAGES],
             marked: 0,
+            shm_bytes: None,
         }
+    }
+
+    /// Estimated committed SHM damage in buffer pixels, at four bytes per pixel.
+    pub fn shm_bytes(&mut self, bytes: u64) {
+        self.shm_bytes = Some(bytes);
     }
 
     /// Ends the current stage. A stalled scope logs how long each stage took;
@@ -217,7 +224,7 @@ impl<'a> Stall<'a> {
 }
 impl Drop for Stall<'_> {
     fn drop(&mut self) {
-        record_stall(self.source, self.output, self.start.elapsed(), &self.stages[..self.marked]);
+        record_stall(self.source, self.output, self.start.elapsed(), &self.stages[..self.marked], self.shm_bytes);
     }
 }
 
@@ -239,6 +246,7 @@ fn record_stall(
     output: Option<&Output>,
     elapsed: Duration,
     stages: &[(&'static str, Duration)],
+    shm_bytes: Option<u64>,
 ) {
     if elapsed < *STALL_THRESHOLD.get().unwrap_or(&DEFAULT_STALL) {
         return;
@@ -255,10 +263,11 @@ fn record_stall(
     // `Option` fields are omitted from the event when `None`.
     let stages = (!stages.is_empty()).then(|| stage_breakdown(stages, elapsed));
     let stages = stages.as_deref();
+    let shm_kb = shm_bytes.map(|bytes| bytes as f64 / 1024.0);
     if let Some(output) = output {
-        tracing::warn!(target: "gavno::stall", source, ms, output = output.name(), stages, "event-loop stall");
+        tracing::warn!(target: "gavno::stall", source, ms, output = output.name(), stages, shm_kb, "event-loop stall");
     } else {
-        tracing::warn!(target: "gavno::stall", source, ms, stages, "event-loop stall");
+        tracing::warn!(target: "gavno::stall", source, ms, stages, shm_kb, "event-loop stall");
     }
 }
 
@@ -276,7 +285,7 @@ pub fn watch_dispatch<Data>(
 
 pub fn finish_dispatch(start: &Cell<Option<Instant>>) {
     if let Some(start) = start.take() {
-        record_stall("calloop.dispatch", None, start.elapsed(), &[]);
+        record_stall("calloop.dispatch", None, start.elapsed(), &[], None);
     }
 }
 
@@ -383,6 +392,28 @@ mod tests {
         let stages = [("elements", ms(2)), ("draw", ms(22))];
         assert_eq!(stage_breakdown(&stages, ms(23)), "elements=2.0 draw=20.0 rest=1.0");
         assert_eq!(stage_breakdown(&[], ms(9)), "rest=9.0");
+    }
+
+    #[test]
+    fn element_stages_preserve_import_and_shell_boundaries() {
+        let ms = Duration::from_millis;
+        let stages = [
+            ("prepare", ms(1)), ("elements.state", ms(1)),
+            ("elements.lock", ms(1)), ("elements.cursor", ms(2)),
+            ("elements.shell", ms(3)), ("elements.decor", ms(3)),
+            ("elements.layers.front", ms(5)), ("elements.space", ms(19)),
+            ("elements.desktop", ms(19)), ("elements.layers.back", ms(20)),
+            ("elements.background", ms(20)), ("elements.color", ms(21)),
+            ("elements.tail", ms(21)), ("hdr", ms(23)),
+            ("scanout", ms(24)), ("fence", ms(25)), ("queue", ms(26)),
+        ];
+        assert!(stages.len() <= STAGES);
+        assert_eq!(stage_breakdown(&stages, ms(27)),
+            "prepare=1.0 elements.state=0.0 elements.lock=0.0 elements.cursor=1.0 elements.shell=1.0 elements.decor=0.0 elements.layers.front=2.0 elements.space=14.0 elements.desktop=0.0 elements.layers.back=1.0 elements.background=0.0 elements.color=1.0 elements.tail=0.0 hdr=2.0 scanout=1.0 fence=1.0 queue=1.0 rest=1.0");
+        let mut stall = Stall::new("test");
+        stall.shm_bytes(18_662_400);
+        assert_eq!(stall.shm_bytes, Some(18_662_400));
+        std::mem::forget(stall);
     }
 
     #[test]

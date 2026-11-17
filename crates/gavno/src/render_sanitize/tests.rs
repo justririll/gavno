@@ -326,3 +326,55 @@ fn damage_tracker_reproduces_empty_clips_and_wrapper_prevents_them() {
         );
     }
 }
+
+fn shm_output(name: &str) -> smithay::output::Output {
+    use smithay::output::{Output, PhysicalProperties, Subpixel};
+    Output::new(name.into(), PhysicalProperties {
+        size: (0, 0).into(), subpixel: Subpixel::Unknown,
+        make: "test".into(), model: "test".into(),
+    })
+}
+
+#[test]
+fn shm_damage_sums_buffer_pixels_and_ignores_empty_rectangles() {
+    use smithay::backend::renderer::BufferType;
+    let mut counter = ShmDamage::default();
+    let damage = [(10, 20), (30, 40), (0, 10), (10, 0)]
+        .map(|size| Rectangle::from_size(size.into()));
+    let mut commit = CommitCounter::default();
+    assert_eq!(counter.record(Some(BufferType::Shm), commit, damage), (10 * 20 + 30 * 40) * 4);
+    // A parent commit can visit the same unchanged synchronized child again.
+    assert_eq!(counter.record(Some(BufferType::Shm), commit, damage), 0);
+    commit.increment();
+    assert_eq!(counter.record(Some(BufferType::Shm), commit, damage), 5600);
+}
+
+#[test]
+fn shm_damage_resets_independently_for_each_output_frame() {
+    let a = shm_output("a");
+    let b = shm_output("b");
+    add_output_shm_bytes(&a, 18_662_400);
+    add_output_shm_bytes(&b, 18_662_400);
+    assert_eq!(take_output_shm_bytes(&a), 18_662_400);
+    assert_eq!(take_output_shm_bytes(&a), 0);
+    add_output_shm_bytes(&a, 18_662_400);
+    add_output_shm_bytes(&b, 18_662_400);
+    assert_eq!(take_output_shm_bytes(&a), 18_662_400);
+    assert_eq!(take_output_shm_bytes(&b), 37_324_800);
+    assert_eq!(take_output_shm_bytes(&b), 0);
+    assert_eq!(take_output_shm_bytes(&a), 0);
+}
+
+#[test]
+fn shm_damage_ignores_non_shm_buffers_and_no_damage_commits() {
+    use smithay::backend::renderer::BufferType;
+    let mut counter = ShmDamage::default();
+    let mut commit = CommitCounter::default();
+    let damage = [Rectangle::from_size((2880, 1620).into())];
+    for kind in [None, Some(BufferType::Dma), Some(BufferType::SinglePixel)] {
+        commit.increment();
+        assert_eq!(counter.record(kind, commit, damage), 0);
+    }
+    commit.increment();
+    assert_eq!(counter.record(Some(BufferType::Shm), commit, []), 0);
+}

@@ -1,0 +1,38 @@
+--- a/src/backend/renderer/gles/mod.rs
++++ b/src/backend/renderer/gles/mod.rs
+@@ -827,7 +827,11 @@
+                 surface_lock
+                     .as_ref()
+                     .and_then(|cache| cache.get(&id).cloned())
+-                    .filter(|texture| texture.size == (width, height).into())
++                    .filter(|texture| {
++                        texture.size == (width, height).into()
++                            && texture.format == Some(internal_format)
++                            && texture.has_alpha == has_alpha
++                    })
+                     .unwrap_or_else(|| {
+                         let mut tex = 0;
+                         unsafe { self.gl.GenTextures(1, &mut tex) };
+@@ -851,6 +855,13 @@
+                     }),
+             );
+ 
++            // A new wl_buffer attachment can have no damage since this
++            // context's last import. Keep the cached pixels without waiting
++            // for readers or uploading the whole unchanged buffer again.
++            if !upload_full && damage.is_empty() {
++                return Ok(texture);
++            }
++
+             let mut sync_lock = texture.0.sync.write().unwrap();
+             unsafe {
+                 sync_lock.wait_for_all(&self.gl);
+@@ -862,7 +873,7 @@
+                 self.gl
+                     .PixelStorei(ffi::UNPACK_ROW_LENGTH, stride / pixelsize as i32);
+ 
+-                if upload_full || damage.is_empty() {
++                if upload_full {
+                     trace!("Uploading shm texture");
+                     self.gl.TexImage2D(
+                         ffi::TEXTURE_2D,

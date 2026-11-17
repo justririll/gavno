@@ -30,6 +30,7 @@ impl CompositorHandler for Gavno {
     fn commit(&mut self, surface: &WlSurface) {
         drop_empty_damage(surface);
         on_commit_buffer_handler::<Self>(surface);
+        let shm_bytes = crate::render_sanitize::record_shm_commit(surface);
         let mut root = surface.clone();
         while let Some(parent) = get_parent(&root) { root = parent; }
         let mut hidden_commit = self.window_for_surface(&root).is_some_and(|w| self.space.element_location(&w).is_none());
@@ -73,6 +74,7 @@ impl CompositorHandler for Gavno {
         if let Some(w)=self.window_for_surface(surface).filter(|w| resize_grab::directed_finished(w) && !self.features.read(crate::module::Feature::Animations, false, || self.window_animations.motion(w).is_some_and(|m|m.closing))) {
             resize_grab::settle_directed(self, &w);
         }
+        if shm_bytes != 0 { account_shm_outputs(self, &root, shm_bytes); }
         if !hidden_commit || (self.features.on(crate::module::Feature::Overview) && self.overview.visible()) { self.queue_redraw_all(); }
     }
 }
@@ -100,4 +102,28 @@ fn drop_empty_damage(surface: &WlSurface) {
             Damage::Buffer(rect) => !rect.is_empty(),
         });
     });
+}
+
+/// Resolve output ownership after mapping/configure handling. A frame consumes
+/// only that output's pending counter, even when a window spans two outputs.
+fn account_shm_outputs(gv: &Gavno, root: &WlSurface, bytes: u64) {
+    use smithay::{desktop::{find_popup_root_surface, layer_map_for_output, WindowSurfaceType},
+        input::pointer::CursorImageStatus};
+    let owner = gv.popups.find_popup(root).and_then(|popup| find_popup_root_surface(&popup).ok());
+    let owner = owner.as_ref().unwrap_or(root);
+    let window = gv.window_for_surface(owner);
+    let bbox = window.as_ref().and_then(|window| gv.space.element_bbox(window));
+    let assigned = window.as_ref().and_then(|window| gv.workspaces.membership(window).map(|(output, _)| output));
+    let cursor = matches!(&gv.cursor_status, CursorImageStatus::Surface(surface) if surface == root);
+    for output in gv.space.outputs() {
+        let window_here = assigned.as_ref() == Some(output) || bbox.zip(gv.space.output_geometry(output))
+            .is_some_and(|(window, output)| window.overlaps(output));
+        let cursor_here = cursor && gv.space.output_geometry(output)
+            .is_some_and(|geo| geo.to_f64().contains(gv.pointer_location()));
+        let layer_here = window.is_none() && layer_map_for_output(output)
+            .layer_for_surface(owner, WindowSurfaceType::ALL).is_some();
+        if window_here || cursor_here || layer_here || gv.protocols.locks.surface(output) == Some(owner) {
+            crate::render_sanitize::add_output_shm_bytes(output, bytes);
+        }
+    }
 }

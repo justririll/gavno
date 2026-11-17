@@ -579,7 +579,7 @@ mod classic_tests {
             &mut gv.cursor, time, None, &mut gv.lock, &mut gv.overlay, &mut gv.window_decor,
             &mut gv.window_animations, &gv.protocols.locks, &mut gv.workspaces, &mut gv.overview,
             &mut gv.dock, &mut gv.topbar, &gv.config, &mut gv.features, &mut gv.media.osd,
-            &mut gv.launcher, &mut gv.classic, &mut gv.polkit, &mut gv.background);
+            &mut gv.launcher, &mut gv.classic, &mut gv.polkit, &mut gv.background, None);
         let elements = draw(&mut h.gv, &mut renderer, Duration::from_secs(1));
         assert!(elements.iter().any(|e| e.geometry(1.0.into()) == Rectangle::new((0, 878).into(), (1646, 48).into())));
         assert!(h.gv.dock.elements(&mut renderer, &output, (1646, 926).into(), (0.0, 0.0).into(), Duration::from_secs(1), true).is_empty());

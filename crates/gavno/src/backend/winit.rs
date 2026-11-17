@@ -132,7 +132,7 @@ fn render(gv: &mut Gavno) {
         let Ok((renderer, mut framebuffer)) = data.backend.bind() else {
             return;
         };
-        let elements_stall = crate::perf::Stall::new("winit.elements");
+        let mut elements_stall = crate::perf::Stall::new("winit.elements");
         let mut elements = render::output_elements(
             renderer,
             &gv.space,
@@ -158,6 +158,7 @@ fn render(gv: &mut Gavno) {
         &mut gv.classic,
         &mut gv.polkit,
         &mut gv.background,
+        Some(&mut elements_stall),
         );
         drop(elements_stall);
         if !data.window_shaders_warmed {
@@ -256,6 +257,7 @@ fn capture_output_with_cursor_state(gv: &mut Gavno, output: &Output) -> Option<(
         &mut gv.classic,
         &mut gv.polkit,
         &mut gv.background,
+        None,
     );
     let bytes = render::capture_elements(renderer, &elements, (mode.size.w, mode.size.h), scale)?;
     Some((mode.size.w as u32, mode.size.h as u32, bytes))

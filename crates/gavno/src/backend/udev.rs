@@ -1284,6 +1284,7 @@ fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
     }
 
     gv.cursor.dimmed = gv.media.brightness.dimmed();
+    stall.mark("prepare");
     let mut elements = render::output_elements(
         &mut gpu.renderer,
         &gv.space,
@@ -1309,12 +1310,13 @@ fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
         &mut gv.classic,
         &mut gv.polkit,
         &mut gv.background,
+        Some(&mut stall),
     );
     if !surface.first_frame_queued {
         crate::perf::startup_output("udev.first_frame.elements.ready", &output.name());
     }
     render::dim_output(&mut elements, &mut gv.media.brightness, &output, time);
-    stall.mark("elements");
+    stall.mark("elements.tail");
     let mut result = draw_frame(surface, &mut gpu.renderer, gv.config.display.direct_scanout, &elements, &mut stall);
     if result.is_err() && surface.hdr.is_some() {
         warn!(output = output.name(), error = ?result.as_ref().err(), "HDR render failed; falling back to SDR");
@@ -1634,6 +1636,7 @@ fn capture_output_with_cursor_state(gv: &mut Gavno, output: &Output) -> Option<(
         &mut gv.classic,
         &mut gv.polkit,
         &mut gv.background,
+        None,
     );
     let bytes = render::capture_elements(&mut gpu.renderer, &elements, (mode.size.w, mode.size.h), scale)?;
     Some((mode.size.w as u32, mode.size.h as u32, bytes))
