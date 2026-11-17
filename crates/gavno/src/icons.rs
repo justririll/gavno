@@ -8,6 +8,7 @@ use std::{
     collections::{HashMap, HashSet},
     io::Read,
     path::{Path, PathBuf},
+    sync::{LazyLock, Mutex, MutexGuard},
 };
 
 /// Upper bound on SVG bytes handed to the parser.
@@ -159,8 +160,59 @@ impl Icons {
         buffer
     }
 }
+/// Process-wide (theme, name) -> path cache. One uncached theme lookup parses
+/// index.theme files and probes hundreds of paths: up to 44 ms cold on the
+/// laptop, 97 ms for the first launcher page. Misses are cached as well; a
+/// newly installed icon for a name already looked up shows after a restart.
+static PATHS: LazyLock<Mutex<HashMap<(String, String), Option<PathBuf>>>> = LazyLock::new(Default::default);
+const MAX_CACHED_PATHS: usize = 4096;
+
+fn paths() -> MutexGuard<'static, HashMap<(String, String), Option<PathBuf>>> {
+    PATHS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn lookup_icon(name: &str, theme: &str) -> Option<PathBuf> {
-    let _startup = crate::perf::Startup::new("icon.theme_lookup.begin", "icon.theme_lookup.end");
+    cached_lookup(name, theme, true)
+}
+
+/// The lock is never held during the filesystem walk; two threads that miss
+/// the same icon both resolve it, which is harmless.
+fn cached_lookup(name: &str, theme: &str, checkpoint: bool) -> Option<PathBuf> {
+    let key = (theme.to_owned(), name.to_owned());
+    if let Some(path) = paths().get(&key) {
+        return path.clone();
+    }
+    let path = {
+        let _startup = checkpoint.then(|| crate::perf::Startup::new("icon.theme_lookup.begin", "icon.theme_lookup.end"));
+        uncached_lookup(name, theme)
+    };
+    let mut cache = paths();
+    if cache.len() >= MAX_CACHED_PATHS {
+        cache.clear();
+    }
+    cache.insert(key, path.clone());
+    path
+}
+
+/// Resolve every installed app's icon on a background thread, so the first
+/// launcher or Start menu page finds its icon paths cached.
+pub fn warm_app_icons(theme: String) {
+    let spawned = std::thread::Builder::new().name("icon-warm".into()).spawn(move || {
+        // Stay off the disk until the first frame is up: running alongside it
+        // delayed the laptop's first frame from about 100 to 117 ms.
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        for entry in crate::desktop_entry::load_all() {
+            if !entry.icon.is_empty() {
+                cached_lookup(&entry.icon, &theme, false);
+            }
+        }
+    });
+    if let Err(error) = spawned {
+        tracing::debug!(%error, "icon path warmup unavailable");
+    }
+}
+
+fn uncached_lookup(name: &str, theme: &str) -> Option<PathBuf> {
     let mut dirs = crate::desktop_entry::data_dirs();
     if let Some(home) = std::env::var_os("HOME") {
         dirs.insert(0, PathBuf::from(home).join(".icons").parent()?.to_owned());
@@ -281,6 +333,14 @@ fn raster_color(path: &Path, size: u32, tint: bool, color: Option<[u8; 3]>) -> O
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn icon_paths_are_shared_across_lookups() {
+        let theme = "gavno-test-shared-path-cache";
+        super::paths().insert((theme.into(), "app".into()), Some("/x/app.svg".into()));
+        assert_eq!(super::lookup_icon("app", theme), Some("/x/app.svg".into()));
+        assert_eq!(super::lookup_icon("app", "gavno-test-other-theme-without-icons"), None);
+    }
+
     use super::*;
     #[test]
     fn theme_size_and_fallback_order() {

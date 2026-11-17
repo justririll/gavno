@@ -182,6 +182,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     tracing::info!(socket = ?state.socket_name, "gavno is listening");
     perf::startup("listening");
+    if !greeter_mode {
+        icons::warm_app_icons(state.config.dock.icon_theme.clone());
+    }
 
     // Clients such as foot quit when there is no output yet, so the startup
     // command waits for the first one (the TTY backend may still be waiting
