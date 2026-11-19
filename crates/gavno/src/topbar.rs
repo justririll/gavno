@@ -436,8 +436,6 @@ struct BarView {
 }
 pub struct TopBar {
     pub controls: crate::panel_controls::State,
-    /// Finger pointer camera indicator: `Some(hand_present)` while it runs.
-    pub camera: Option<bool>,
     music_panel: bool,
     pub shell_progress: f64,
     pub shell_height: i32,
@@ -478,7 +476,6 @@ impl Default for TopBar {
         let today = theme::LocalTime::now();
         Self {
             controls: Default::default(),
-            camera: None,
             shell_progress: 0.0,
             shell_height: 0,
             notifications: Default::default(),
@@ -651,7 +648,7 @@ impl TopBar {
         c.alpha = (1.0 - self.shell_progress) as f32;
         v.hits.clear();
         let count = owner.map(|o| o.list.items.len()).unwrap_or(1);
-        let (l, media) = media_layout(&self.now_playing, width, count as i32 * 12 + 31, self.multiple_layouts, self.music_panel, features, self.status.battery.is_some(), self.camera.is_some());
+        let (l, media) = media_layout(&self.now_playing, width, count as i32 * 12 + 31, self.multiple_layouts, self.music_panel, features, self.status.battery.is_some());
         if self.shell_progress < 0.999 {
         c.rect(rect(0, 0, width, PANEL), 0.0, GLASS, 0.0, LINE);
         c.rect(
@@ -792,14 +789,6 @@ impl TopBar {
                     c.styled_label(renderer, &self.layout, area.loc.x + (area.size.w - width) / 2, 7, area.size.w, style);
                     push_hit(c, &mut v.hits, rect(area.loc.x - 4, 4, area.size.w + 8, 24), BarAction::Layout);
                 }
-                StatusItem::Camera => {
-                    // Dim while no hand is in view, accent colour once it tracks.
-                    let color = match self.camera {
-                        Some(true) => accent_rgb(self.accent),
-                        _ => [150, 150, 160],
-                    };
-                    c.colored_icon(renderer, &mut self.icons, &["camera-web-symbolic"], &self.icon_theme, *area, Some(color));
-                }
                 StatusItem::Wifi => {
                     c.icon(
                         renderer,
@@ -873,16 +862,13 @@ impl TopBar {
         c.finish()
     }
 }
-fn accent_rgb(accent: [f32; 4]) -> [u8; 3] {
-    [0, 1, 2].map(|i| (accent[i].clamp(0.0, 1.0) * 255.0).round() as u8)
-}
 fn media_layout(
     media: &crate::media::Shared, width: i32, workspace_width: i32, layouts: bool, music_panel: bool,
-    features: &crate::module::Features, battery: bool, camera: bool,
+    features: &crate::module::Features, battery: bool,
 ) -> (Layout, crate::media::Snapshot) {
     let snapshot = features.read(crate::module::Feature::Media, Default::default(), || media.borrow().snapshot.clone());
     let slot = if battery { geometry::BATTERY_SLOT } else { geometry::CLUSTER_ICON };
-    let mut layout = Layout::with_battery(width, workspace_width, layouts, slot, camera).with_media(snapshot.player.is_some());
+    let mut layout = Layout::with_battery(width, workspace_width, layouts, slot).with_media(snapshot.player.is_some());
     if snapshot.player.is_none() && music_panel && snapshot.music_available {
         let x = layout.clock.loc.x + layout.clock.size.w + 12;
         if layout.status.loc.x - x >= 40 { layout.media = Some(rect(x, 4, 28, 24)); }
@@ -1436,7 +1422,7 @@ mod music_panel_tests {
         h.gv.space.map_output(&output, (0,0));
         h.gv.now_playing.borrow_mut().music.bus_address = Some("unix:path=/nonexistent/music-test".into());
         h.gv.media_update(crate::media::Snapshot { music_available: true, ..Default::default() });
-        let (layout, _) = media_layout(&h.gv.now_playing, 1280, 43, false, true, &h.gv.features, true, false);
+        let (layout, _) = media_layout(&h.gv.now_playing, 1280, 43, false, true, &h.gv.features, true);
         let area = layout.media.unwrap(); assert_eq!(area.size.w, 28);
         let _ = h.gv.topbar.elements(&mut renderer, &output, 1280, None, Duration::ZERO, true, &h.gv.features);
         let action = h.gv.topbar.action(&output, (area.loc.x as f64 + 6.0, 15.0).into()).unwrap();
@@ -1451,7 +1437,7 @@ mod music_panel_tests {
         let _ = h.gv.topbar.elements(&mut renderer, &output, 1280, None, Duration::ZERO, true, &h.gv.features);
         assert_eq!(h.gv.topbar.action(&output, (area.loc.x as f64 + 40.0, 15.0).into()), Some(BarAction::Media(crate::media::Command::PlayPause)));
         h.gv.media_update(Default::default());
-        assert!(media_layout(&h.gv.now_playing, 1280, 43, false, false, &h.gv.features, true, false).0.media.is_none());
+        assert!(media_layout(&h.gv.now_playing, 1280, 43, false, false, &h.gv.features, true).0.media.is_none());
     }
 }
 

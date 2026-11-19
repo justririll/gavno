@@ -40,7 +40,6 @@ mod notify;
 mod portal;
 mod screensaver;
 mod media;
-mod finger;
 mod panel_controls;
 mod polkit;
 mod grabs;

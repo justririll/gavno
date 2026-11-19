@@ -1008,7 +1008,7 @@ fn scrolling_the_cluster_steps_volume_by_five_and_sliders_drag() {
     use crate::topbar::geometry::Layout;
     let (mut h, o) = bar_test_gavno();
     let [rx] = probe(&mut h.gv.topbar.controls, [2]);
-    let layout = Layout::with_battery(1646, 55, true, 60, false);
+    let layout = Layout::with_battery(1646, 55, true, 60);
     let status = layout.status;
     h.gv.topbar.test_view(&o, layout);
     let inside = (status.loc.x as f64 + 4.0, 16.0).into();

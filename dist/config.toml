@@ -86,13 +86,6 @@
 # [media]
 # music_panel = true
 
-# Webcam finger pointer (Mod+Shift+M). The camera runs only while it is on.
-# [pointer]
-# camera = true      # false frees the chord and stops a running pointer
-# active_box = 70    # % of the mirrored camera frame that maps to the screen
-# min_cutoff = 1.0   # smoothing while the finger is slow (Hz)
-# beta = 0.01        # less lag during fast moves
-
 # Clipboard history (Mod+V). Kept in memory only, never written to disk.
 # [clipboard]
 # history = true
