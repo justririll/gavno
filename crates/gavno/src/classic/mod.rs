@@ -216,7 +216,9 @@ pub fn vertical_route(
     }
     match (mode, toward_classic) {
         (ShellMode::Gavno, true) | (ShellMode::Classic, false) if super_held => VerticalRoute::Mode,
-        (ShellMode::Classic, true) => VerticalRoute::ShowDesktop,
+        // Super marks shell gestures: with it held, a swipe the wrong way (or a
+        // second swipe while entering Classic) must not minimize everything.
+        (ShellMode::Classic, true) if !super_held => VerticalRoute::ShowDesktop,
         (ShellMode::Gavno, false) if overview => VerticalRoute::Overview,
         _ => VerticalRoute::Ignore,
     }
@@ -367,7 +369,7 @@ mod tests {
             );
             assert_eq!(
                 vertical_route(ShellMode::Classic, true, overview, false, true),
-                VerticalRoute::ShowDesktop
+                VerticalRoute::Ignore
             );
             if overview {
                 for mode in [ShellMode::Classic, ShellMode::Gavno] {

@@ -332,6 +332,12 @@ impl Gavno {
                 } else if gv.features.on(crate::module::Feature::Overview) {
                     crate::classic::VerticalRoute::Overview
                 } else { crate::classic::VerticalRoute::Ignore });
+                // Never show the desktop while the shell is still switching modes.
+                if s.vertical == Some(crate::classic::VerticalRoute::ShowDesktop)
+                    && gv.classic.settled != s.classic_origin
+                {
+                    s.vertical = Some(crate::classic::VerticalRoute::Ignore);
+                }
                 s.history = MotionHistory::default();
             }
             let o = gv.workspaces.ensure(&s.output);
