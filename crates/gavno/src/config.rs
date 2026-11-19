@@ -56,6 +56,7 @@ pub struct Config {
     pub pointer: PointerConfig,
     pub clipboard: ClipboardConfig,
     pub dropdown: DropdownConfig,
+    pub appearance: AppearanceConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -185,6 +186,7 @@ struct FileConfig {
     pointer: PointerConfig,
     clipboard: ClipboardConfig,
     dropdown: DropdownConfig,
+    appearance: AppearanceConfig,
     #[serde(flatten)]
     unknown: toml::Table,
 }
@@ -278,7 +280,7 @@ impl Config {
             "file_manager":self.file_manager,"polkit_agent":self.polkit_agent,"autostart":self.autostart,"gap":self.gap,
             "output":{"internal_scale":self.internal_scale,"mode":mode,"hdr":self.output_hdr,"sdr_white_nits":self.sdr_white_nits},
             "keyboard":{"layout":self.xkb_layout,"variant":self.xkb_variant,"options":self.xkb_options,"repeat_delay":self.repeat_delay,"repeat_rate":self.repeat_rate,"code_mode":self.code_mode,"bar_hints":self.bar_hints},
-            "display":self.display,"media":self.media,"pointer":self.pointer,"clipboard":self.clipboard,"dropdown":self.dropdown,"modules":self.modules,"classic":self.classic,"dock":self.dock,"bar":self.bar,"tiling":self.tiling,"lock":self.lock,"notifications":self.notifications,"outputs":self.outputs})
+            "display":self.display,"media":self.media,"pointer":self.pointer,"clipboard":self.clipboard,"dropdown":self.dropdown,"appearance":self.appearance,"modules":self.modules,"classic":self.classic,"dock":self.dock,"bar":self.bar,"tiling":self.tiling,"lock":self.lock,"notifications":self.notifications,"outputs":self.outputs})
     }
 
     /// Pure merge: defaults < file < environment. Empty environment values are unset.
@@ -295,7 +297,7 @@ impl Config {
         // Capture unknown fields during deserialization, so this list cannot drift from the schema.
         let mut unknown = Vec::new();
         for (prefix, extra) in
-            [("display.", &file.display.unknown), ("", &file.unknown), ("output.", &file.output.unknown), ("keyboard.", &file.keyboard.unknown), ("classic.", &file.classic.unknown), ("dock.", &file.dock.unknown), ("bar.", &file.bar.unknown), ("tiling.", &file.tiling.unknown), ("media.", &file.media.unknown), ("pointer.", &file.pointer.unknown), ("clipboard.", &file.clipboard.unknown), ("dropdown.", &file.dropdown.unknown), ("notifications.", &file.notifications.unknown), ("lock.", &file.lock.unknown), ("modules.", &file.modules.unknown)]
+            [("display.", &file.display.unknown), ("", &file.unknown), ("output.", &file.output.unknown), ("keyboard.", &file.keyboard.unknown), ("classic.", &file.classic.unknown), ("dock.", &file.dock.unknown), ("bar.", &file.bar.unknown), ("tiling.", &file.tiling.unknown), ("media.", &file.media.unknown), ("pointer.", &file.pointer.unknown), ("clipboard.", &file.clipboard.unknown), ("dropdown.", &file.dropdown.unknown), ("appearance.", &file.appearance.unknown), ("notifications.", &file.notifications.unknown), ("lock.", &file.lock.unknown), ("modules.", &file.modules.unknown)]
         {
             unknown.extend(extra.keys().map(|key| format!("{prefix}{key}")));
         }
@@ -412,6 +414,7 @@ impl Config {
                 pointer: file.pointer.clamped(),
                 clipboard: file.clipboard.clamped(),
                 dropdown: file.dropdown.clamped(),
+                appearance: file.appearance.clamped(),
             },
             warnings,
         )
@@ -559,6 +562,7 @@ options = "caps:escape"
             pointer: Default::default(),
             clipboard: Default::default(),
             dropdown: Default::default(),
+            appearance: Default::default(),
         };
         assert_eq!(build(false, None, &[]), (expected.clone(), vec![]));
         let example = include_str!("../../../dist/config.toml");
@@ -631,6 +635,7 @@ options = "caps:escape"
             pointer: Default::default(),
             clipboard: Default::default(),
             dropdown: Default::default(),
+            appearance: Default::default(),
         };
         assert_eq!(build(false, Some(FULL), &[]), (expected, vec![]));
         let mut partial = build(false, None, &[]).0;
@@ -1061,6 +1066,50 @@ mod clipboard_config_tests {
         let (config, _) = Config::build(false, Some("[clipboard]\nhistory_size = 0"), |_| None);
         assert_eq!(config.clipboard.history_size, 1);
         assert_eq!(config.values()["clipboard"]["history"], true);
+    }
+}
+
+/// Window focus emphasis, see `decor.rs`.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct AppearanceConfig {
+    /// Darkening of windows without keyboard focus, 0.0-0.5; 0 disables it.
+    pub dim_inactive: f64,
+    /// Accent border and glow around the focused window.
+    pub focus_border: bool,
+    #[serde(flatten)]
+    unknown: toml::Table,
+}
+impl Default for AppearanceConfig {
+    fn default() -> Self {
+        Self { dim_inactive: 0.06, focus_border: true, unknown: Default::default() }
+    }
+}
+impl AppearanceConfig {
+    fn clamped(mut self) -> Self {
+        self.dim_inactive = if self.dim_inactive.is_finite() { self.dim_inactive.clamp(0.0, 0.5) } else { 0.06 };
+        self
+    }
+}
+
+#[cfg(test)]
+mod appearance_config_tests {
+    use super::*;
+    #[test]
+    fn defaults_parse_and_clamp() {
+        let (config, _) = Config::build(false, None, |_| None);
+        assert_eq!(config.appearance, AppearanceConfig::default());
+        assert_eq!(config.appearance.dim_inactive, 0.06);
+        assert!(config.appearance.focus_border);
+        let (config, warnings) = Config::build(false, Some("[appearance]\ndim_inactive = 0.2\nfocus_border = false\nwrong = 1"), |_| None);
+        assert_eq!(warnings, ["unknown config keys ignored: appearance.wrong"]);
+        assert_eq!(config.appearance.dim_inactive, 0.2);
+        assert!(!config.appearance.focus_border);
+        let (config, _) = Config::build(false, Some("[appearance]\ndim_inactive = 7.0"), |_| None);
+        assert_eq!(config.appearance.dim_inactive, 0.5);
+        let (config, _) = Config::build(false, Some("[appearance]\ndim_inactive = -1.0"), |_| None);
+        assert_eq!(config.appearance.dim_inactive, 0.0);
+        assert_eq!(config.values()["appearance"]["dim_inactive"], 0.0);
     }
 }
 

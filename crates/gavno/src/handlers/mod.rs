@@ -60,7 +60,10 @@ impl SeatHandler for Gavno {
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
         let window = focused.and_then(|surface| self.window_for_keyboard_surface(surface));
         if let Some(window) = &window { xdg_activation::clear_urgency(window); }
-        self.guard(crate::module::Feature::Decorations, (), |gv| gv.window_decor.focus(window.as_ref()));
+        self.guard(crate::module::Feature::Decorations, (), |gv| {
+            // The dropdown terminal draws its own chrome and keeps the previous window's emphasis.
+            if !focused.is_some_and(|s| gv.dropdown_owns(s)) && !window.as_ref().is_some_and(|w| gv.is_dropdown_window(w)) { gv.window_decor.focus(window.as_ref()); }
+        });
         self.queue_redraw_all();
         if let Some(serial) = seat.get_keyboard().and_then(|keyboard| keyboard.last_enter()) {
             self.record_activation_serial(focused.cloned(), serial);
