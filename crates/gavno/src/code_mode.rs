@@ -118,6 +118,7 @@ impl Gavno {
         }
         self.dock.code_mode = self.code_mode;
         self.topbar.code_mode = self.code_mode;
+        self.topbar.controls.code_mode = self.code_mode;
         self.topbar.hint_context = self.bar_hint_context();
         self.topbar.hint_items = self
             .topbar

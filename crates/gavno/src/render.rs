@@ -344,7 +344,8 @@ fn output_elements_inner(
 
     if !locks.locked && !lock.internal() {
         let accent = topbar.accent();
-        elements.extend(features.call(Feature::Bar, Vec::new(), || topbar.controls.elements(renderer, output, output_geo.size, scale.x, accent, &config.dock.icon_theme, classic.progress.value > 0.5)));
+        let media_on = features.on(Feature::Media);
+        elements.extend(features.call(Feature::Bar, Vec::new(), || topbar.panel_elements(renderer, output, output_geo.size, scale.x, accent, &config.dock.icon_theme, classic.progress.value > 0.5, media_on)));
     }
 
     if !locks.locked && !lock.internal() {

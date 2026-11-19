@@ -234,7 +234,7 @@ const CODE_HINTS: &[BindHint] = &[
         chords: &[bind(
             MAIN_SHIFT,
             keysyms::KEY_n,
-            Action::PanelControls(crate::panel_controls::Kind::Wifi),
+            Action::PanelControls(crate::panel_controls::Page::Wifi),
         )],
     },
     BindHint {
@@ -245,7 +245,7 @@ const CODE_HINTS: &[BindHint] = &[
         chords: &[bind(
             MAIN_SHIFT,
             keysyms::KEY_b,
-            Action::PanelControls(crate::panel_controls::Kind::Bluetooth),
+            Action::PanelControls(crate::panel_controls::Page::Bluetooth),
         )],
     },
     BindHint {
@@ -256,7 +256,7 @@ const CODE_HINTS: &[BindHint] = &[
         chords: &[bind(
             MAIN_SHIFT,
             keysyms::KEY_v,
-            Action::PanelControls(crate::panel_controls::Kind::Audio),
+            Action::PanelControls(crate::panel_controls::Page::Audio),
         )],
     },
 ];
@@ -559,7 +559,7 @@ const OVERVIEW_HINTS: &[BindHint] = &[
 const POPOVER_HINTS: &[BindHint] = &[
     BindHint {
         context: HintContext::Popover,
-        keys: "↑↓ / JK",
+        keys: "J/K",
         label: "select",
         priority: 1,
         chords: &[
@@ -577,7 +577,7 @@ const POPOVER_HINTS: &[BindHint] = &[
     },
     BindHint {
         context: HintContext::Popover,
-        keys: "←→ / HL",
+        keys: "H/L",
         label: "adjust",
         priority: 2,
         chords: &[
@@ -595,12 +595,34 @@ const POPOVER_HINTS: &[BindHint] = &[
     },
     BindHint {
         context: HintContext::Popover,
-        keys: "Enter / Space",
-        label: "activate",
+        keys: "Enter",
+        label: "toggle",
         priority: 3,
         chords: &[Chord {
             mods: NONE,
             sym: keysyms::KEY_Return,
+            action: HintAction::PopoverKey,
+        }],
+    },
+    BindHint {
+        context: HintContext::Popover,
+        keys: "Space",
+        label: "details",
+        priority: 4,
+        chords: &[Chord {
+            mods: NONE,
+            sym: keysyms::KEY_space,
+            action: HintAction::PopoverKey,
+        }],
+    },
+    BindHint {
+        context: HintContext::Popover,
+        keys: "Bksp",
+        label: "back",
+        priority: 5,
+        chords: &[Chord {
+            mods: NONE,
+            sym: keysyms::KEY_BackSpace,
             action: HintAction::PopoverKey,
         }],
     },
@@ -923,9 +945,10 @@ fn action_label(action: &Action) -> (&'static str, &'static str) {
         ToggleFullscreen => ("Windows", "fullscreen"),
         WindowHints => ("Windows", "window hints"),
         CheatSheet => ("Windows", "cheat sheet"),
-        PanelControls(crate::panel_controls::Kind::Wifi) => ("Panel", "Wi-Fi"),
-        PanelControls(crate::panel_controls::Kind::Bluetooth) => ("Panel", "Bluetooth"),
-        PanelControls(crate::panel_controls::Kind::Audio) => ("Panel", "volume mixer"),
+        PanelControls(crate::panel_controls::Page::Wifi) => ("Panel", "Wi-Fi"),
+        PanelControls(crate::panel_controls::Page::Bluetooth) => ("Panel", "Bluetooth"),
+        PanelControls(crate::panel_controls::Page::Audio) => ("Panel", "volume mixer"),
+        PanelControls(_) => ("Panel", "quick settings"),
         ToggleTiling => ("Tiling", "workspace tiling"),
         ToggleFloating => ("Tiling", "float window"),
         RotateSplit => ("Tiling", "rotate split"),

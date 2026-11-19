@@ -38,7 +38,7 @@ pub mod geometry;
 pub mod osd;
 #[path = "bar/status.rs"]
 pub mod status;
-use geometry::{rect, Item, Layout, PopoverLayout, Rect};
+use geometry::{rect, Item, Layout, PopoverLayout, Rect, StatusItem};
 use smithay::utils::Point;
 
 pub fn next_minute(now: Duration) -> Duration {
@@ -65,6 +65,19 @@ fn clock_label() -> String {
 pub struct Battery {
     pub percent: u8,
     pub charging: bool,
+    /// Minutes until empty (discharging) or full (charging), when the
+    /// firmware reports a usable rate.
+    pub minutes: Option<u32>,
+}
+impl Battery {
+    /// "64%  ·  1 h 35 min left" for the quick settings footer.
+    pub fn summary(&self) -> String {
+        let time = self.minutes.map(|m| {
+            let span = if m >= 60 { format!("{} h {:02} min", m / 60, m % 60) } else { format!("{m} min") };
+            format!(" · {span} {}", if self.charging { "until full" } else { "left" })
+        });
+        format!("{}%{}", self.percent, time.unwrap_or_default())
+    }
 }
 pub fn read_battery(root: &Path) -> Option<Battery> {
     let mut batteries: Vec<_> = std::fs::read_dir(root)
@@ -101,9 +114,25 @@ pub fn read_battery(root: &Path) -> Option<Battery> {
             })?
             .min(100) as u8;
         let status = read(&path, "status").unwrap_or_default();
+        let number = |key: &str| read(&path, key).and_then(|v| v.parse::<u64>().ok());
+        // Energy (µWh) over power (µW), or charge (µAh) over current (µA).
+        let (now, full, rate) = if number("energy_now").is_some() {
+            (number("energy_now"), number("energy_full"), number("power_now"))
+        } else {
+            (number("charge_now"), number("charge_full"), number("current_now"))
+        };
+        let charging = status == "Charging";
+        let minutes = rate.filter(|r| *r > 0).and_then(|rate| {
+            let amount = if charging { full?.saturating_sub(now?) } else { now? };
+            let minutes = amount.saturating_mul(60) / rate;
+            (status == "Charging" || status == "Discharging")
+                .then_some(minutes.min(99 * 60) as u32)
+                .filter(|m| *m > 0)
+        });
         Some(Battery {
             percent,
             charging: matches!(status.as_str(), "Charging" | "Full"),
+            minutes,
         })
     })
 }
@@ -378,17 +407,7 @@ pub enum BarAction {
     ClearNotifications,
     Notification(u32),
     Power(PowerAction),
-    Volume,
-    Brightness,
-    Network,
-    Bluetooth,
-    Mixer,
     Consume,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Popover {
-    Quick,
-    Calendar,
 }
 struct BarView {
     output: Output,
@@ -431,13 +450,13 @@ pub struct TopBar {
     icons: Icons,
     icon_theme: String,
     pub menu: Option<Output>,
-    popover: Popover,
+    /// Mirrors `display.night_light` for the quick settings tile.
+    night_light: bool,
     popover_output: Option<Output>,
     opening: Spring,
     month: (i32, u32),
     pub scroll: f64,
     status: status::Snapshot,
-    drag: Option<(Output, BarAction)>,
 }
 impl Default for TopBar {
     fn default() -> Self {
@@ -469,19 +488,63 @@ impl Default for TopBar {
             icons: Icons::nonblocking(crate::icons::app_worker::Consumer::Chrome),
             icon_theme: crate::config::DockConfig::default().icon_theme,
             menu: None,
-            popover: Popover::Quick,
+            night_light: false,
             music_panel: true,
             popover_output: None,
             opening: Spring::new(0.0, SpringParams::SNAPPY),
             month: (today.year, today.month),
             scroll: 0.0,
             status: Default::default(),
-            drag: None,
         }
     }
 }
 impl TopBar {
     pub fn status(&self) -> &status::Snapshot { &self.status }
+    pub(crate) fn set_night_light(&mut self, on: bool) { self.night_light = on; }
+    /// A bar view whose hit list is empty but whose layout is real.
+    #[cfg(test)]
+    pub(crate) fn test_view(&mut self, output: &Output, layout: Layout) {
+        self.views.push(BarView {
+            output: output.clone(), canvas: Canvas::default(), dots: vec![], hits: vec![], visible: true,
+            hover: None, layout: Some(layout), popover: None,
+        });
+    }
+    /// What the quick settings panel shows and toggles outside its own workers.
+    pub(crate) fn quick_info(&self, classic: bool, media: bool) -> crate::panel_controls::Info {
+        crate::panel_controls::Info {
+            battery: self.status.battery.clone(),
+            profile: self.status.profile.clone(),
+            brightness: self.status.brightness.as_ref().map(|b| b.level()),
+            dnd: self.notification_dnd,
+            night_light: self.night_light,
+            code_mode: self.code_mode,
+            code_available: !classic,
+            player: media && self.now_playing.borrow().snapshot.player.is_some(),
+        }
+    }
+    /// The quick settings panel, painted above windows and below the polkit dialog.
+    pub fn panel_elements(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        output: &Output,
+        size: smithay::utils::Size<i32, Logical>,
+        scale: f64,
+        accent: [f32; 4],
+        theme: &str,
+        classic: bool,
+        media_on: bool,
+    ) -> Vec<GavnoRenderElement> {
+        if self.controls.open.as_ref() != Some(output) {
+            return Vec::new();
+        }
+        let info = self.quick_info(classic, media_on);
+        let media = if info.player {
+            self.now_playing.borrow().snapshot.clone()
+        } else {
+            Default::default()
+        };
+        self.controls.elements(renderer, output, size, scale, accent, theme, classic, &info, &media)
+    }
     pub(crate) fn set_panel_volume(&mut self, volume: Option<status::Volume>) { self.status.volume = volume; }
     pub(crate) fn clear_media_hits(&mut self) {
         for view in &mut self.views {
@@ -500,6 +563,7 @@ impl TopBar {
     pub(crate) fn set_accent(&mut self, accent: [f32; 4]) { self.accent = accent; }
     pub fn active(&self) -> bool {
         self.opening.is_active()
+            || self.controls.animating()
             || self
                 .views
                 .iter()
@@ -509,7 +573,6 @@ impl TopBar {
         self.controls.close();
         self.menu = None;
         self.opening.set(0.0);
-        self.drag = None;
     }
     pub fn action(&self, output: &Output, p: Point<f64, Logical>) -> Option<BarAction> {
         self.views
@@ -573,12 +636,7 @@ impl TopBar {
         c.alpha = (1.0 - self.shell_progress) as f32;
         v.hits.clear();
         let count = owner.map(|o| o.list.items.len()).unwrap_or(1);
-        let (mut l, media) = media_layout(&self.now_playing, width, count as i32 * 12 + 31, self.multiple_layouts, self.music_panel, features);
-        // The camera indicator wins over the media capsule on a narrow bar.
-        let camera = self.camera.map(|hand| (hand, rect(l.status.loc.x - 32, 4, 24, 24)));
-        if let (Some((_, area)), Some(m)) = (camera, l.media) {
-            if m.loc.x + m.size.w > area.loc.x - 4 { l.media = None; }
-        }
+        let (l, media) = media_layout(&self.now_playing, width, count as i32 * 12 + 31, self.multiple_layouts, self.music_panel, features, self.status.battery.is_some(), self.camera.is_some());
         if self.shell_progress < 0.999 {
         c.rect(rect(0, 0, width, PANEL), 0.0, GLASS, 0.0, LINE);
         c.rect(
@@ -703,52 +761,48 @@ impl TopBar {
             c.rect(rect(l.clock.loc.x + l.clock.size.w - 12, 13, 5, 5), 2.5, self.accent, 0.0, LINE);
         }
         v.hits.push((l.clock.to_f64(), BarAction::Calendar));
-        if let Some((hand, area)) = camera {
-            capsule(c, area, false);
-            // Dim while no hand is in view, accent colour once it tracks.
-            let color = if hand { Some(accent_rgb(self.accent)) } else { Some([150, 150, 160]) };
-            c.colored_icon(renderer, &mut self.icons, &["camera-web-symbolic"], &self.icon_theme, rect(area.loc.x + 4, area.loc.y + 4, 16, 16), color);
-        }
+        // One capsule for the whole status cluster: a single hover highlight
+        // and a single click target. The slots are laid out in `Layout`.
         capsule(
             c,
             l.status,
             matches!(v.hover, Some(BarAction::PowerMenu | BarAction::Layout)),
         );
         push_hit(c, &mut v.hits, l.status, BarAction::PowerMenu);
-        if let Some(r) = l.layout {
-            c.label(renderer, &self.layout, r.loc.x, 7, r.size.w, 11.5);
-            v.hits.push((r.to_f64(), BarAction::Layout));
+        for (item, area) in &l.slots {
+            match item {
+                StatusItem::Layout => {
+                    let style = label_style(11.5);
+                    let width = c.text.measure(&self.layout, style).ceil() as i32;
+                    c.styled_label(renderer, &self.layout, area.loc.x + (area.size.w - width) / 2, 7, area.size.w, style);
+                    push_hit(c, &mut v.hits, rect(area.loc.x - 4, 4, area.size.w + 8, 24), BarAction::Layout);
+                }
+                StatusItem::Camera => {
+                    // Dim while no hand is in view, accent colour once it tracks.
+                    let color = match self.camera {
+                        Some(true) => accent_rgb(self.accent),
+                        _ => [150, 150, 160],
+                    };
+                    c.colored_icon(renderer, &mut self.icons, &["camera-web-symbolic"], &self.icon_theme, *area, Some(color));
+                }
+                StatusItem::Wifi => {
+                    c.icon(
+                        renderer,
+                        &mut self.icons,
+                        &[self.controls.wifi.icon(), "network-offline-symbolic"],
+                        &self.icon_theme,
+                        *area,
+                    );
+                }
+                StatusItem::Volume => {
+                    c.icon(renderer, &mut self.icons, &[status::volume_icon(self.status.volume)], &self.icon_theme, *area);
+                }
+                StatusItem::Bluetooth => {
+                    c.icon(renderer, &mut self.icons, &[self.controls.bluetooth.icon()], &self.icon_theme, *area);
+                }
+                StatusItem::Battery => draw_battery(c, renderer, self.status.battery.as_ref(), *area),
+            }
         }
-        c.icon(
-            renderer,
-            &mut self.icons,
-            &[self.controls.wifi.icon(), "network-offline-symbolic"],
-            &self.icon_theme,
-            l.network,
-        );
-        c.icon(
-            renderer,
-            &mut self.icons,
-            &[status::volume_icon(self.status.volume)],
-            &self.icon_theme,
-            l.volume,
-        );
-        push_hit(c, &mut v.hits, rect(l.network.loc.x-6, 4, 28, 24), BarAction::Network);
-        push_hit(c, &mut v.hits, rect(l.volume.loc.x-6, 4, 28, 24), BarAction::Mixer);
-        c.icon(renderer, &mut self.icons, &[self.controls.bluetooth.icon()], &self.icon_theme, l.bluetooth);
-        push_hit(c, &mut v.hits, rect(l.bluetooth.loc.x-6, 4, if self.controls.bluetooth.battery().is_some() {56} else {28}, 24), BarAction::Bluetooth);
-        if let Some(battery) = self.controls.bluetooth.battery() {
-            c.label(renderer, &format!("{battery}%"), l.bluetooth.loc.x+18, 10, 28, 8.5);
-        }
-        draw_battery(
-            c,
-            renderer,
-            &mut self.icons,
-            &self.icon_theme,
-            self.status.battery.as_ref(),
-            l.battery,
-            false,
-        );
         features.read(crate::module::Feature::Media, (), || {
             if let (Some(area), Some(player)) = (l.media, media.player.as_ref()) {
                 let action = BarAction::Media(crate::media::Command::PlayPause);
@@ -774,12 +828,8 @@ impl TopBar {
         v.popover = None;
         // Keep drawing the closing panel until its spring settles.
         if (self.popover_output.as_ref() == Some(output)) && self.opening.value > 0.001 {
-            let mut p = if self.popover == Popover::Quick {
-                PopoverLayout::quick_notifications(width, self.status.brightness.is_some(), self.notifications_active).with_media(media.player.is_some())
-            } else {
-                if self.notifications_active { PopoverLayout::calendar_notifications(width, self.notification_history.len()) }
-                else { PopoverLayout::calendar(width) }
-            };
+            let mut p = if self.notifications_active { PopoverLayout::calendar_notifications(width, self.notification_history.len()) }
+                else { PopoverLayout::calendar(width) };
             if self.shell_progress > 0.0 {
                 p.anchor_bottom(width, self.shell_height, crate::classic::TASKBAR_HEIGHT, self.shell_progress);
             }
@@ -794,25 +844,8 @@ impl TopBar {
             c.shadow(p.panel, 20.0);
             c.rect(p.panel, 20.0, [0.065, 0.075, 0.10, 0.98], 1.0, LINE);
             push_hit(c, &mut v.hits, p.panel, BarAction::Consume);
-            if self.popover == Popover::Quick {
-                draw_quick(
-                    c,
-                    renderer,
-                    &mut self.icons,
-                    &self.icon_theme,
-                    &self.status,
-                    &self.controls,
-                    self.accent,
-                    &p,
-                    v.hover.as_ref(),
-                    self.notification_dnd,
-                    &media,
-                    features,
-                );
-            } else {
-                draw_calendar(c, renderer, &p, self.month, self.accent, v.hover.as_ref());
-                calendar::draw_notifications(c, renderer, &p, &self.notification_history, v.hover.as_ref());
-            }
+            draw_calendar(c, renderer, &p, self.month, self.accent, v.hover.as_ref());
+            calendar::draw_notifications(c, renderer, &p, &self.notification_history, v.hover.as_ref());
             for (item, r) in &p.items {
                 let action = if let Item::Notification(i) = *item {
                     let Some(h) = self.notification_history.get(i) else { continue };
@@ -830,10 +863,11 @@ fn accent_rgb(accent: [f32; 4]) -> [u8; 3] {
 }
 fn media_layout(
     media: &crate::media::Shared, width: i32, workspace_width: i32, layouts: bool, music_panel: bool,
-    features: &crate::module::Features,
+    features: &crate::module::Features, battery: bool, camera: bool,
 ) -> (Layout, crate::media::Snapshot) {
     let snapshot = features.read(crate::module::Feature::Media, Default::default(), || media.borrow().snapshot.clone());
-    let mut layout = Layout::new(width, workspace_width, layouts).with_media(snapshot.player.is_some());
+    let slot = if battery { geometry::BATTERY_SLOT } else { geometry::CLUSTER_ICON };
+    let mut layout = Layout::with_battery(width, workspace_width, layouts, slot, camera).with_media(snapshot.player.is_some());
     if snapshot.player.is_none() && music_panel && snapshot.music_available {
         let x = layout.clock.loc.x + layout.clock.size.w + 12;
         if layout.status.loc.x - x >= 40 { layout.media = Some(rect(x, 4, 28, 24)); }
@@ -961,25 +995,13 @@ fn draw_hints(
 }
 fn item_action(item: Item) -> BarAction {
     match item {
-        Item::MediaInfo => BarAction::MusicPanel,
-        Item::MediaPrevious => BarAction::Media(crate::media::Command::Previous),
-        Item::MediaPlayPause => BarAction::Media(crate::media::Command::PlayPause),
-        Item::MediaNext => BarAction::Media(crate::media::Command::Next),
-        Item::VolumeIcon => BarAction::Mixer,
-        Item::Volume => BarAction::Volume,
-        Item::Brightness => BarAction::Brightness,
-        Item::Network => BarAction::Network,
-        Item::Bluetooth => BarAction::Bluetooth,
-        Item::Battery => BarAction::Consume,
-        Item::DoNotDisturb => BarAction::DoNotDisturb,
         Item::ClearNotifications => BarAction::ClearNotifications,
         Item::Notification(i) => BarAction::Notification(i as u32),
         Item::Previous => BarAction::Month(-1),
         Item::Next => BarAction::Month(1),
-        Item::Power(i) => BarAction::Power(POWER[i].0),
     }
 }
-const POWER: [(PowerAction, &str, &str); 5] = [
+pub(crate) const POWER: [(PowerAction, &str, &str); 5] = [
     (PowerAction::Lock, "system-lock-screen-symbolic", "Lock"),
     (
         PowerAction::Suspend,
@@ -994,218 +1016,54 @@ const POWER: [(PowerAction, &str, &str); 5] = [
         "Power off",
     ),
 ];
-fn draw_battery(
-    c: &mut Canvas,
-    r: &mut GlesRenderer,
-    icons: &mut Icons,
-    theme: &str,
-    battery: Option<&Battery>,
-    area: Rect,
-    detail: bool,
-) {
+/// Battery in the status cluster: an outlined cell with a fill level and the
+/// percentage, a bolt while charging. Without a battery (a desktop or a
+/// nested session) only a plug is drawn, never text that could be cut off.
+fn draw_battery(c: &mut Canvas, r: &mut GlesRenderer, battery: Option<&Battery>, area: Rect) {
     let Some(b) = battery else {
-        c.label(r, "AC power", area.loc.x, area.loc.y, area.size.w, 12.0);
+        plug_glyph(c, area, [0.96, 0.95, 0.98, 0.9]);
         return;
     };
-    let names = status::battery_icons(b);
     let low = b.percent <= 15 && !b.charging;
-    if low {
-        c.rect(
-            rect(area.loc.x - 3, area.loc.y - 3, 22, 22),
-            6.0,
-            [0.95, 0.25, 0.3, 0.35],
-            0.0,
-            LINE,
-        );
-    }
-    c.colored_icon(
-        r,
-        icons,
-        &names.iter().map(String::as_str).collect::<Vec<_>>(),
-        theme,
-        rect(area.loc.x, area.loc.y, 16, 16),
-        low.then_some([255, 102, 110]),
-    );
     let mut style = label_style(12.0);
     if low {
         style.color = [1.0, 0.40, 0.43, 1.0];
     }
-    let text = if detail {
-        format!(
-            "{}% · {}",
-            b.percent,
-            if b.charging { "Charging" } else { "On battery" }
-        )
-    } else {
-        format!("{}%", b.percent)
-    };
-    c.styled_label(
-        r,
-        &text,
-        area.loc.x + 24,
-        area.loc.y - 1,
-        area.size.w - 24,
-        style,
-    );
+    battery_glyph(c, rect(area.loc.x, area.loc.y + 3, 22, 10), b.percent, b.charging, style.color);
+    c.styled_label(r, &format!("{}%", b.percent), area.loc.x + 28, area.loc.y - 1, area.size.w - 28, style);
 }
-fn draw_quick(
-    c: &mut Canvas,
-    r: &mut GlesRenderer,
-    icons: &mut Icons,
-    theme: &str,
-    s: &status::Snapshot,
-    controls: &crate::panel_controls::State,
-    accent: [f32; 4],
-    p: &PopoverLayout,
-    hover: Option<&BarAction>,
-    dnd: bool,
-    media: &crate::media::Snapshot,
-    features: &crate::module::Features,
-) {
-    for (item, area) in &p.items {
-        let a = *area;
-        match *item {
-            Item::MediaInfo => features.read(crate::module::Feature::Media, (), || crate::media::ui::info(c, r, media, a)),
-            Item::MediaPrevious | Item::MediaPlayPause | Item::MediaNext => features.read(crate::module::Feature::Media, (), || {
-                if let (Some(player), Some(command)) = (media.player.as_ref(), crate::media::ui::item_command(*item)) {
-                    crate::media::ui::button(c, r, icons, theme, player, command, a, hover == Some(&BarAction::Media(command)));
-                }
-            }),
-            Item::DoNotDisturb => {
-                capsule(c, a, hover == Some(&BarAction::DoNotDisturb));
-                c.label(r, "Do not disturb", a.loc.x + 12, a.loc.y + 12, 210, 12.5);
-                c.label(r, if dnd { "On" } else { "Off" }, a.loc.x + 244, a.loc.y + 12, 36, 12.5);
-            }
-            Item::ClearNotifications | Item::Notification(_) => {}
-            Item::VolumeIcon => {
-                if hover == Some(&BarAction::Mixer) {
-                    capsule(c, a, true);
-                }
-                c.icon(
-                    r,
-                    icons,
-                    &[status::volume_icon(s.volume)],
-                    theme,
-                    rect(a.loc.x + 8, a.loc.y + 8, 16, 16),
-                );
-            }
-            Item::Volume | Item::Brightness => {
-                let volume = *item == Item::Volume;
-                let level = if volume {
-                    s.volume.map(|v| v.level).unwrap_or(0.0)
-                } else {
-                    s.brightness.as_ref().map(|b| b.level()).unwrap_or(0.0)
-                };
-                if !volume {
-                    c.icon(
-                        r,
-                        icons,
-                        &["display-brightness-symbolic"],
-                        theme,
-                        rect(a.loc.x - 40, a.loc.y + 8, 16, 16),
-                    );
-                }
-                c.rect(
-                    rect(a.loc.x + 7, a.loc.y + 12, a.size.w - 14, 8),
-                    4.0,
-                    [1.0, 1.0, 1.0, 0.13],
-                    0.0,
-                    LINE,
-                );
-                let mut color = accent;
-                if volume && s.volume.is_some_and(|v| v.muted) {
-                    color[3] = 0.35;
-                }
-                c.rect(
-                    rect(
-                        a.loc.x + 7,
-                        a.loc.y + 12,
-                        ((a.size.w - 14) as f64 * level).round() as i32,
-                        8,
-                    ),
-                    4.0,
-                    color,
-                    0.0,
-                    LINE,
-                );
-                c.rect(
-                    rect(
-                        a.loc.x + ((a.size.w - 14) as f64 * level).round() as i32,
-                        a.loc.y + 9,
-                        14,
-                        14,
-                    ),
-                    7.0,
-                    [0.97, 0.97, 1.0, 1.0],
-                    0.0,
-                    LINE,
-                );
-            }
-            Item::Network => {
-                capsule(c, a, hover == Some(&BarAction::Network));
-                c.icon(
-                    r,
-                    icons,
-                    &[controls.wifi.icon(), "network-offline-symbolic"],
-                    theme,
-                    rect(a.loc.x + 12, a.loc.y + 12, 16, 16),
-                );
-                c.label(
-                    r,
-                    &controls.wifi.networks.iter().find(|n| n.active).map(|n| n.label()).unwrap_or_else(|| if controls.wifi.enabled {"Wi-Fi disconnected".into()} else {"Wi-Fi off".into()}),
-                    a.loc.x + 40,
-                    a.loc.y + 11,
-                    a.size.w - 56,
-                    13.0,
-                );
-            }
-            Item::Bluetooth => {
-                c.icon(r, icons, &[controls.bluetooth.icon()], theme, rect(a.loc.x+8,a.loc.y+10,20,20));
-                c.label(r, "Bluetooth", a.loc.x+40, a.loc.y+10, a.size.w-48, 13.0);
-            }
-            Item::Battery => draw_battery(
-                c,
-                r,
-                icons,
-                theme,
-                s.battery.as_ref(),
-                rect(a.loc.x + 12, a.loc.y + 12, a.size.w - 24, 16),
-                true,
-            ),
-            Item::Power(i) => {
-                c.rect(
-                    a,
-                    20.0,
-                    [
-                        1.0,
-                        1.0,
-                        1.0,
-                        if hover == Some(&BarAction::Power(POWER[i].0)) {
-                            0.16
-                        } else {
-                            0.065
-                        },
-                    ],
-                    0.0,
-                    LINE,
-                );
-                if !c.icon(
-                    r,
-                    icons,
-                    &[POWER[i].1],
-                    theme,
-                    rect(a.loc.x + 12, a.loc.y + 12, 16, 16),
-                ) {
-                    c.label(r, &POWER[i].2[..1], a.loc.x + 15, a.loc.y + 10, 20, 14.0);
-                }
-                if hover == Some(&BarAction::Power(POWER[i].0)) {
-                    let w = c.text.measure(POWER[i].2, label_style(11.0)).ceil() as i32;
-                    c.label(r, POWER[i].2, a.loc.x + (40 - w) / 2, a.loc.y + 48, w, 11.0);
-                }
-            }
-            _ => {}
+/// A battery cell of any size at least 14x8: outline, nub, fill, optional bolt.
+pub(crate) fn battery_glyph(c: &mut Canvas, area: Rect, percent: u8, charging: bool, color: [f32; 4]) {
+    let body = rect(area.loc.x, area.loc.y, area.size.w - 2, area.size.h);
+    c.rect(body, 2.5, [0.0; 4], 1.0, [color[0], color[1], color[2], color[3] * 0.85]);
+    c.rect(rect(area.loc.x + area.size.w - 2, area.loc.y + area.size.h / 2 - 2, 2, 4), 1.0, [color[0], color[1], color[2], color[3] * 0.85], 0.0, LINE);
+    let inner = rect(body.loc.x + 2, body.loc.y + 2, body.size.w - 4, body.size.h - 4);
+    let fill = (inner.size.w * percent.min(100) as i32 / 100).max(if percent > 0 { 2 } else { 0 });
+    if fill > 0 {
+        c.rect(rect(inner.loc.x, inner.loc.y, fill, inner.size.h), 1.0, color, 0.0, LINE);
+    }
+    if charging {
+        // Seven one pixel rows of a lightning bolt, centred in the cell.
+        const BOLT: [(i32, i32); 7] = [(3, 3), (2, 3), (1, 3), (0, 5), (2, 3), (1, 3), (0, 3)];
+        let x = body.loc.x + (body.size.w - 5) / 2;
+        let y = body.loc.y + (body.size.h - 7) / 2;
+        // A dark halo keeps the bolt readable over both the fill and the empty part.
+        for (row, (dx, w)) in BOLT.iter().enumerate() {
+            c.rect(rect(x + dx - 1, y + row as i32, w + 2, 1), 0.0, [0.04, 0.05, 0.08, 0.95], 0.0, LINE);
+        }
+        for (row, (dx, w)) in BOLT.iter().enumerate() {
+            c.rect(rect(x + dx, y + row as i32, *w, 1), 0.0, [1.0; 4], 0.0, LINE);
         }
     }
+}
+/// Mains plug for machines without a battery, drawn in the 16 px icon cell.
+fn plug_glyph(c: &mut Canvas, area: Rect, color: [f32; 4]) {
+    let x = area.loc.x + (area.size.w - 16) / 2;
+    let y = area.loc.y;
+    c.rect(rect(x + 5, y + 1, 2, 5), 1.0, color, 0.0, LINE);
+    c.rect(rect(x + 9, y + 1, 2, 5), 1.0, color, 0.0, LINE);
+    c.rect(rect(x + 3, y + 5, 10, 6), 2.5, color, 0.0, LINE);
+    c.rect(rect(x + 7, y + 10, 2, 5), 1.0, color, 0.0, LINE);
 }
 fn draw_calendar(
     c: &mut Canvas,
@@ -1334,6 +1192,7 @@ impl Gavno {
         self.topbar.layout = layout;
         self.topbar.enabled = self.config.bar.enabled;
         self.topbar.music_panel = self.config.media.music_panel;
+        self.topbar.night_light = self.config.display.night_light;
         self.topbar.icon_theme = self.config.dock.icon_theme.clone();
         self.sync_bar_hints();
         self.topbar.views.retain(|v| outputs.contains(&v.output));
@@ -1375,26 +1234,20 @@ impl Gavno {
                     keyboard.with_xkb_state(self, |mut ctx| ctx.cycle_next_layout());
                 }
             }
-            BarAction::Calendar | BarAction::PowerMenu => {
+            // The status cluster and the Classic tray open quick settings.
+            BarAction::PowerMenu => self.toggle_panel_controls(crate::panel_controls::Page::Main, output),
+            BarAction::Calendar => {
                 self.topbar.controls.close();
                 self.guard(crate::module::Feature::Dock, (), |gv| gv.dock.close_menu());
-                let kind = if action == BarAction::Calendar {
-                    Popover::Calendar
-                } else {
-                    Popover::Quick
-                };
-                if self.topbar.menu.as_ref() == Some(output) && self.topbar.popover == kind {
+                if self.topbar.menu.as_ref() == Some(output) {
                     self.topbar.close();
                 } else {
                     self.topbar.menu = Some(output.clone());
                     self.topbar.popover_output = Some(output.clone());
-                    self.topbar.popover = kind;
-                    if kind == Popover::Calendar {
-                        self.guard(crate::module::Feature::Notifications, (), |gv| {
-                            gv.notifications.borrow_mut().unread = false;
-                            gv.refresh_notifications();
-                        });
-                    }
+                    self.guard(crate::module::Feature::Notifications, (), |gv| {
+                        gv.notifications.borrow_mut().unread = false;
+                        gv.refresh_notifications();
+                    });
                     self.topbar.opening.set(1.0);
                     let today = theme::LocalTime::now();
                     self.topbar.month = (today.year, today.month);
@@ -1418,13 +1271,6 @@ impl Gavno {
                 self.topbar.month =
                     calendar::shift_month(self.topbar.month.0, self.topbar.month.1, delta)
             }
-            BarAction::Volume | BarAction::Brightness => {
-                self.topbar.drag = Some((output.clone(), action.clone()));
-                self.bar_drag(self.pointer_location());
-            }
-            BarAction::Network => self.toggle_panel_controls(crate::panel_controls::Kind::Wifi, output),
-            BarAction::Bluetooth => self.toggle_panel_controls(crate::panel_controls::Kind::Bluetooth, output),
-            BarAction::Mixer => self.toggle_panel_controls(crate::panel_controls::Kind::Audio, output),
             BarAction::Consume => {}
             BarAction::Power(action) => {
                 self.topbar.close();
@@ -1469,11 +1315,7 @@ mod tests {
         push_hit(&c, &mut hits, status, BarAction::PowerMenu);
         assert_eq!(hits[0].0, c.drawn[0].to_f64());
         for opening in [0.1, 0.5, 1.0] {
-            for p in [
-                PopoverLayout::quick(1646, true),
-                PopoverLayout::quick(800, false),
-                PopoverLayout::calendar(1280),
-            ] {
+            for p in [PopoverLayout::calendar(1280), PopoverLayout::calendar_notifications(1280, 2)] {
                 c.zoom = 0.94 + 0.06 * opening;
                 c.anchor = (p.panel.loc.x as f64 + 160.0, p.panel.loc.y as f64).into();
                 c.drawn.clear();
@@ -1520,7 +1362,8 @@ mod tests {
             read_battery(&root),
             Some(Battery {
                 percent: 87,
-                charging: true
+                charging: true,
+                minutes: None
             })
         );
         std::fs::write(b.join("capacity"), "broken").unwrap();
@@ -1532,7 +1375,8 @@ mod tests {
             read_battery(&root),
             Some(Battery {
                 percent: 75,
-                charging: false
+                charging: false,
+                minutes: None
             })
         );
         std::fs::write(b.join("present"), "0").unwrap();
@@ -1577,7 +1421,7 @@ mod music_panel_tests {
         h.gv.space.map_output(&output, (0,0));
         h.gv.now_playing.borrow_mut().music.bus_address = Some("unix:path=/nonexistent/music-test".into());
         h.gv.media_update(crate::media::Snapshot { music_available: true, ..Default::default() });
-        let (layout, _) = media_layout(&h.gv.now_playing, 1280, 43, false, true, &h.gv.features);
+        let (layout, _) = media_layout(&h.gv.now_playing, 1280, 43, false, true, &h.gv.features, true, false);
         let area = layout.media.unwrap(); assert_eq!(area.size.w, 28);
         let _ = h.gv.topbar.elements(&mut renderer, &output, 1280, None, Duration::ZERO, true, &h.gv.features);
         let action = h.gv.topbar.action(&output, (area.loc.x as f64 + 6.0, 15.0).into()).unwrap();
@@ -1592,7 +1436,7 @@ mod music_panel_tests {
         let _ = h.gv.topbar.elements(&mut renderer, &output, 1280, None, Duration::ZERO, true, &h.gv.features);
         assert_eq!(h.gv.topbar.action(&output, (area.loc.x as f64 + 40.0, 15.0).into()), Some(BarAction::Media(crate::media::Command::PlayPause)));
         h.gv.media_update(Default::default());
-        assert!(media_layout(&h.gv.now_playing, 1280, 43, false, false, &h.gv.features).0.media.is_none());
+        assert!(media_layout(&h.gv.now_playing, 1280, 43, false, false, &h.gv.features, true, false).0.media.is_none());
     }
 }
 

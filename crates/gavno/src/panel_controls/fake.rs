@@ -6,6 +6,23 @@ use super::{
 };
 use smithay::reexports::calloop::channel::Sender;
 use std::sync::mpsc::Receiver;
+/// Battery, backlight and power profile for the bar and the panel. The legacy
+/// status worker never starts in fixture mode. `GAVNO_PANEL_FAKE_BATTERY=none`
+/// shows a machine without a battery.
+pub fn status() -> crate::topbar::status::Snapshot {
+    let battery = match std::env::var("GAVNO_PANEL_FAKE_BATTERY").as_deref() {
+        Ok("none") => None,
+        Ok("low") => Some(crate::topbar::Battery { percent: 12, charging: false, minutes: Some(34) }),
+        _ => Some(crate::topbar::Battery { percent: 64, charging: true, minutes: Some(95) }),
+    };
+    crate::topbar::status::Snapshot {
+        volume: None,
+        brightness: Some(crate::topbar::status::Brightness { name: "fake-panel".into(), value: 70, max: 100 }),
+        battery,
+        network: crate::topbar::status::Network::Offline,
+        profile: Some("balanced".into()),
+    }
+}
 pub fn snapshots() -> (wifi::Snapshot, bluetooth::Snapshot, audio::Snapshot) {
     let wifi = wifi::Snapshot {
         enabled: true,
@@ -58,6 +75,20 @@ pub fn snapshots() -> (wifi::Snapshot, bluetooth::Snapshot, audio::Snapshot) {
                 paired: true,
                 ..Default::default()
             },
+            bluetooth::Device {
+                path: "/fake/mouse".into(),
+                name: "Travel mouse".into(),
+                icon: "input-mouse-symbolic".into(),
+                paired: true,
+                battery: Some(41),
+                ..Default::default()
+            },
+            bluetooth::Device {
+                path: "/fake/speaker".into(),
+                name: "Portable speaker".into(),
+                icon: "audio-speakers-symbolic".into(),
+                ..Default::default()
+            },
         ],
     };
     let output = audio::Endpoint {
@@ -75,10 +106,11 @@ pub fn snapshots() -> (wifi::Snapshot, bluetooth::Snapshot, audio::Snapshot) {
             ..Default::default()
         }),
         sinks: vec![
-            output,
+            audio::Endpoint { icon: "audio-speakers-symbolic".into(), ..output.clone() },
             audio::Endpoint {
                 id: "headphones".into(),
                 name: "Wireless headphones".into(),
+                icon: "audio-headphones-symbolic".into(),
                 volume: 55,
                 ..Default::default()
             },
@@ -87,14 +119,21 @@ pub fn snapshots() -> (wifi::Snapshot, bluetooth::Snapshot, audio::Snapshot) {
             audio::Endpoint {
                 id: "42".into(),
                 name: "Music".into(),
-                icon: "audio-x-generic-symbolic".into(),
+                icon: "haruna".into(),
                 volume: 70,
+                ..Default::default()
+            },
+            audio::Endpoint {
+                id: "44".into(),
+                name: "Unknown player".into(),
+                volume: 100,
+                muted: true,
                 ..Default::default()
             },
             audio::Endpoint {
                 id: "43".into(),
                 name: "Browser".into(),
-                icon: "web-browser".into(),
+                icon: "firefox".into(),
                 volume: 30,
                 ..Default::default()
             },

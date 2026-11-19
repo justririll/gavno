@@ -3,7 +3,7 @@ use super::{Command, Playback, Player, Snapshot};
 use crate::{
     render::GavnoRenderElement,
     topbar::{
-        geometry::{rect, Item, Rect},
+        geometry::{rect, Rect},
         Canvas, LINE,
     },
 };
@@ -15,14 +15,6 @@ use smithay::{
     utils::{Logical, Rectangle, Size},
 };
 
-pub fn item_command(item: Item) -> Option<Command> {
-    match item {
-        Item::MediaPrevious => Some(Command::Previous),
-        Item::MediaPlayPause => Some(Command::PlayPause),
-        Item::MediaNext => Some(Command::Next),
-        _ => None,
-    }
-}
 /// Themed symbolic icon for a media command. The UI fonts have no media
 /// glyphs (U+23EE..), so text labels would render as missing-glyph boxes.
 pub fn icon(player: &Player, command: Command) -> &'static str {
