@@ -93,6 +93,11 @@
 # min_cutoff = 1.0   # smoothing while the finger is slow (Hz)
 # beta = 0.01        # less lag during fast moves
 
+# Clipboard history (Mod+V). Kept in memory only, never written to disk.
+# [clipboard]
+# history = true
+# history_size = 50
+
 # Local sun/season colors. These settings reload live.
 # [theme]
 # background = "living" # or "solid"

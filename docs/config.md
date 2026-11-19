@@ -51,6 +51,8 @@ default": see `terminal` and `launcher` below.
 | `[pointer] active_box` | integer, 30-100 percent | `70` | none |
 | `[pointer] min_cutoff` | float, 0.1-10 Hz | `1.0` | none |
 | `[pointer] beta` | float, 0-1 | `0.01` | none |
+| `[clipboard] history` | boolean | `true` | none |
+| `[clipboard] history_size` | integer, 1-500 | `50` | none |
 | `[display] brightness_control` | string, `"auto"`, `"backlight"` or `"software"` | `"auto"` | none |
 | `[output] internal_scale` | float | `1.75` | `GAVNO_SCALE` |
 | `[output] mode` | string, `WIDTHxHEIGHT[@HZ]` | preferred mode, highest refresh among preferred modes | `GAVNO_OUTPUT_MODE` |
@@ -299,6 +301,13 @@ finger pointer; `false` frees the chord and stops a running helper on reload.
 to the whole output. `min_cutoff` and `beta` tune the One-Euro filter that
 steadies the cursor. The three tuning keys apply the next time the mode starts.
 Nothing runs while the mode is off. See [finger-pointer.md](finger-pointer.md).
+
+## Clipboard history
+
+`[clipboard] history = true` (the default) lets the compositor remember the last
+`history_size` text and image copies, in memory only, and enables Mod+V. Setting
+it to `false` clears the history and frees the chord. See
+[screenshots.md](screenshots.md).
 
 ## Optional modules
 
@@ -702,6 +711,8 @@ name such as `eDP-1`. Numeric steps describe the editor increments.
 | `pointer.active_box` | int (30–100, step 5) | `70` | yes |
 | `pointer.min_cutoff` | float (0.1–10.0, step 0.1) | `1.0` | yes |
 | `pointer.beta` | float (0.0–1.0, step 0.005) | `0.01` | yes |
+| `clipboard.history` | bool | `true` | yes |
+| `clipboard.history_size` | int (1–500, step 1) | `50` | yes |
 | `dock.enabled` | bool | `true` | yes |
 | `dock.pinned` | string_list | `["foot", "firefox"]` | yes |
 | `dock.magnify` | bool | `true` | yes |

@@ -870,6 +870,7 @@ const GLOBAL: &[Shortcut] = shortcuts![
     ("KP Enter", KEY_KP_Enter, MAIN),
     ("D", KEY_d, MAIN),
     ("E", KEY_e, MAIN),
+    ("V", KEY_v, MAIN),
     ("Q", KEY_q, MAIN),
     ("M", KEY_m, MAIN),
     ("Ctrl+F", KEY_f, MAIN_CTRL),
@@ -964,6 +965,9 @@ fn action_label(action: &Action) -> (&'static str, &'static str) {
         SwitcherCycle(_) | SwitcherFinish(_) => ("Focus and swap", "window switcher"),
         ToggleCodeMode => ("Code mode", "toggle code mode"),
         ToggleFingerPointer => ("Display", "finger pointer (camera)"),
+        Screenshot(crate::screenshot::ScreenshotMode::Full) => ("Screenshots", "screenshot"),
+        Screenshot(crate::screenshot::ScreenshotMode::Area) => ("Screenshots", "screenshot area"),
+        ClipboardHistory => ("Apps", "clipboard history"),
         Lock => ("Session", "lock"),
         Quit => ("Session", "quit compositor"),
         ToggleHdr => ("Display", "toggle HDR"),
@@ -1013,7 +1017,6 @@ pub fn cheat_rows(gv: &crate::Gavno) -> Vec<(String, String)> {
                 keysyms::KEY_Return | keysyms::KEY_KP_Enter => "terminal",
                 keysyms::KEY_e => "file manager",
                 keysyms::KEY_d => "launcher",
-                keysyms::KEY_Print | keysyms::KEY_s => "screenshot",
                 _ => label,
             };
         }

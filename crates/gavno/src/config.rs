@@ -54,6 +54,7 @@ pub struct Config {
     pub media: MediaConfig,
     pub display: DisplayConfig,
     pub pointer: PointerConfig,
+    pub clipboard: ClipboardConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -181,6 +182,7 @@ struct FileConfig {
     media: MediaConfig,
     display: DisplayConfig,
     pointer: PointerConfig,
+    clipboard: ClipboardConfig,
     #[serde(flatten)]
     unknown: toml::Table,
 }
@@ -274,7 +276,7 @@ impl Config {
             "file_manager":self.file_manager,"polkit_agent":self.polkit_agent,"autostart":self.autostart,"gap":self.gap,
             "output":{"internal_scale":self.internal_scale,"mode":mode,"hdr":self.output_hdr,"sdr_white_nits":self.sdr_white_nits},
             "keyboard":{"layout":self.xkb_layout,"variant":self.xkb_variant,"options":self.xkb_options,"repeat_delay":self.repeat_delay,"repeat_rate":self.repeat_rate,"code_mode":self.code_mode,"bar_hints":self.bar_hints},
-            "display":self.display,"media":self.media,"pointer":self.pointer,"modules":self.modules,"classic":self.classic,"dock":self.dock,"bar":self.bar,"tiling":self.tiling,"lock":self.lock,"notifications":self.notifications,"outputs":self.outputs})
+            "display":self.display,"media":self.media,"pointer":self.pointer,"clipboard":self.clipboard,"modules":self.modules,"classic":self.classic,"dock":self.dock,"bar":self.bar,"tiling":self.tiling,"lock":self.lock,"notifications":self.notifications,"outputs":self.outputs})
     }
 
     /// Pure merge: defaults < file < environment. Empty environment values are unset.
@@ -291,7 +293,7 @@ impl Config {
         // Capture unknown fields during deserialization, so this list cannot drift from the schema.
         let mut unknown = Vec::new();
         for (prefix, extra) in
-            [("display.", &file.display.unknown), ("", &file.unknown), ("output.", &file.output.unknown), ("keyboard.", &file.keyboard.unknown), ("classic.", &file.classic.unknown), ("dock.", &file.dock.unknown), ("bar.", &file.bar.unknown), ("tiling.", &file.tiling.unknown), ("media.", &file.media.unknown), ("pointer.", &file.pointer.unknown), ("notifications.", &file.notifications.unknown), ("lock.", &file.lock.unknown), ("modules.", &file.modules.unknown)]
+            [("display.", &file.display.unknown), ("", &file.unknown), ("output.", &file.output.unknown), ("keyboard.", &file.keyboard.unknown), ("classic.", &file.classic.unknown), ("dock.", &file.dock.unknown), ("bar.", &file.bar.unknown), ("tiling.", &file.tiling.unknown), ("media.", &file.media.unknown), ("pointer.", &file.pointer.unknown), ("clipboard.", &file.clipboard.unknown), ("notifications.", &file.notifications.unknown), ("lock.", &file.lock.unknown), ("modules.", &file.modules.unknown)]
         {
             unknown.extend(extra.keys().map(|key| format!("{prefix}{key}")));
         }
@@ -406,6 +408,7 @@ impl Config {
                 media: file.media,
                 display: file.display,
                 pointer: file.pointer.clamped(),
+                clipboard: file.clipboard.clamped(),
             },
             warnings,
         )
@@ -551,6 +554,7 @@ options = "caps:escape"
             media: Default::default(),
             display: Default::default(),
             pointer: Default::default(),
+            clipboard: Default::default(),
         };
         assert_eq!(build(false, None, &[]), (expected.clone(), vec![]));
         let example = include_str!("../../../dist/config.toml");
@@ -621,6 +625,7 @@ options = "caps:escape"
             media: Default::default(),
             display: Default::default(),
             pointer: Default::default(),
+            clipboard: Default::default(),
         };
         assert_eq!(build(false, Some(FULL), &[]), (expected, vec![]));
         let mut partial = build(false, None, &[]).0;
@@ -1011,6 +1016,46 @@ impl PointerConfig {
         self.min_cutoff = if self.min_cutoff.is_finite() { self.min_cutoff.clamp(0.1, 10.0) } else { 1.0 };
         self.beta = if self.beta.is_finite() { self.beta.clamp(0.0, 1.0) } else { 0.01 };
         self
+    }
+}
+
+/// Clipboard history, see `docs/screenshots.md`.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct ClipboardConfig {
+    /// Record text and image selections in memory and enable Mod+V.
+    pub history: bool,
+    /// Entries kept, newest first.
+    pub history_size: u32,
+    #[serde(flatten)]
+    unknown: toml::Table,
+}
+impl Default for ClipboardConfig {
+    fn default() -> Self { Self { history: true, history_size: 50, unknown: Default::default() } }
+}
+impl ClipboardConfig {
+    fn clamped(mut self) -> Self {
+        self.history_size = self.history_size.clamp(1, 500);
+        self
+    }
+}
+
+#[cfg(test)]
+mod clipboard_config_tests {
+    use super::*;
+    #[test]
+    fn defaults_parse_clamp_and_report_unknown_keys() {
+        let config = Config::build(false, None, |_| None).0;
+        assert_eq!(config.clipboard, ClipboardConfig::default());
+        assert!(config.clipboard.history);
+        assert_eq!(config.clipboard.history_size, 50);
+        let (config, warnings) = Config::build(false, Some("[clipboard]\nhistory = false\nhistory_size = 9999\nwrong = 1"), |_| None);
+        assert_eq!(warnings, ["unknown config keys ignored: clipboard.wrong"]);
+        assert!(!config.clipboard.history);
+        assert_eq!(config.clipboard.history_size, 500);
+        let (config, _) = Config::build(false, Some("[clipboard]\nhistory_size = 0"), |_| None);
+        assert_eq!(config.clipboard.history_size, 1);
+        assert_eq!(config.values()["clipboard"]["history"], true);
     }
 }
 

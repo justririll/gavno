@@ -32,7 +32,7 @@ use smithay::{
                 ServerDndGrabHandler,
             },
             primary_selection::{set_primary_focus, PrimarySelectionHandler, PrimarySelectionState},
-            SelectionHandler,
+            SelectionHandler, SelectionSource, SelectionTarget,
         },
     },
 };
@@ -87,7 +87,17 @@ delegate_seat!(Gavno);
 smithay::delegate_pointer_gestures!(Gavno);
 
 impl SelectionHandler for Gavno {
-    type SelectionUserData = ();
+    type SelectionUserData = crate::clipboard::Payload;
+
+    fn new_selection(&mut self, ty: SelectionTarget, source: Option<SelectionSource>, _seat: Seat<Self>) {
+        self.clipboard_new_selection(ty, source);
+    }
+
+    fn send_selection(&mut self, ty: SelectionTarget, _mime_type: String, fd: std::os::fd::OwnedFd, _seat: Seat<Self>, data: &Self::SelectionUserData) {
+        if ty == SelectionTarget::Clipboard {
+            crate::clipboard::serve(fd, data);
+        }
+    }
 }
 
 impl DataDeviceHandler for Gavno {

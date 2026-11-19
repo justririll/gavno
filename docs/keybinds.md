@@ -391,14 +391,24 @@ See [configuration](config.md) for mode selection, HDR requirements, and IPC.
 
 ## Screenshots
 
-Screenshots use `grim`, `slurp` and `wl-copy` (wl-clipboard) through the
-wlr-screencopy protocol. Files go to `$XDG_PICTURES_DIR/Screenshots` (default
-`~/Pictures/Screenshots`) and are copied to the clipboard.
+GAVNO has its own screenshot tool; no external program is needed. Files go to
+`$XDG_PICTURES_DIR/Screenshots` (default `~/Pictures/Screenshots`) and the PNG is
+also placed on the clipboard. See [screenshots.md](screenshots.md) for the
+selection overlay, the preview toast and the clipboard history.
 
 | Keys | Action |
 |---|---|
-| Print | Capture the active output. |
-| Shift+Print, Mod+Shift+S | Select an area with slurp and capture it. |
+| Print | Capture the active output at once. |
+| Shift+Print, Mod+Shift+S | Freeze the screen and select an area or a window. |
+
+In the selection overlay: drag for a rectangle, click a window, Space or F for the
+whole output, arrows nudge by 1 px (Shift: 10 px), Enter captures, Esc cancels.
+
+## Clipboard history
+
+| Keys | Action |
+|---|---|
+| Mod+V | Open the clipboard history picker (when `[clipboard] history` is on): type to search, Up/Down to choose, Enter to paste, Delete to forget an entry, Esc to close. |
 
 ## Hardware media keys
 

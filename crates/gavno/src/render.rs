@@ -324,6 +324,17 @@ fn output_elements_inner(
         return elements;
     }
 
+    // The screenshot overlay freezes the output: nothing below it renders.
+    // Its toast floats above the live desktop.
+    if !locks.locked && !lock.internal() {
+        let shot = overlay.screenshot.elements(renderer, output, output_geo.size, scale.x, time, topbar.accent());
+        elements.extend(shot.elements);
+        if shot.frozen {
+            if let Some(stall) = stall.as_deref_mut() { stall.mark("elements.shell"); }
+            return elements;
+        }
+    }
+
     // The polkit dialog is modal: above every window and shell panel, beneath
     // only the cursor and OSD. It waits hidden while the session is locked.
     if !locks.locked && !lock.internal() && !polkit.queue.is_empty() {
@@ -375,6 +386,9 @@ fn output_elements_inner(
     elements.extend(features.call(Feature::Launcher, Vec::new(), || {
         launcher.elements(renderer, output, output_geo.size, scale.x, time, accent, &config.dock.icon_theme)
     }));
+    if !locks.locked && !lock.internal() {
+        elements.extend(overlay.clipboard.picker_elements(renderer, output, output_geo.size, scale.x, time, accent));
+    }
     elements.extend(features.call(Feature::Switcher, Vec::new(), || crate::overlay::overlay_elements(overlay, renderer, output, output_geo, scale.x, time)));
     let shell_visible = !space.elements().any(|w| crate::window_mode::mode_state(w).mode == crate::window_mode::WindowMode::Fullscreen
         && space.element_location(w).is_some_and(|p| output_geo.contains(p)));

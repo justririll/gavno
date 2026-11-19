@@ -56,6 +56,10 @@ pub enum Action {
     ToggleOverview,
     CloseOverview,
     ToggleLauncher,
+    /// Built-in screenshot tool (Print, Shift+Print, Mod+Shift+S).
+    Screenshot(crate::screenshot::ScreenshotMode),
+    /// Clipboard history picker (Mod+V).
+    ClipboardHistory,
     /// Keyboard-only shell mode; applies to the GAVNO shell only.
     ToggleCodeMode,
     WindowHints,
@@ -104,6 +108,12 @@ impl Gavno {
         }
         if self.lock.internal() && !matches!(&event, InputEvent::Keyboard { .. } | InputEvent::PointerMotion { .. }
             | InputEvent::PointerMotionAbsolute { .. } | InputEvent::PointerButton { .. }) { return; }
+        // A frozen screenshot ignores touchpad gestures.
+        if self.screenshot_active() && matches!(&event,
+            InputEvent::GestureSwipeBegin { .. } | InputEvent::GestureSwipeUpdate { .. }
+            | InputEvent::GestureSwipeEnd { .. } | InputEvent::GesturePinchBegin { .. }
+            | InputEvent::GesturePinchUpdate { .. } | InputEvent::GesturePinchEnd { .. }
+            | InputEvent::GestureHoldBegin { .. } | InputEvent::GestureHoldEnd { .. }) { return; }
         let input_started = std::time::Instant::now();
         let keyboard = self.seat.get_keyboard();
         let focus_before = keyboard.as_ref().and_then(|keyboard| keyboard.current_focus());
@@ -175,7 +185,7 @@ impl Gavno {
                         crate::config::ModKey::Super => matches!(sym, keysyms::KEY_Super_L | keysyms::KEY_Super_R),
                         crate::config::ModKey::Alt => matches!(sym, keysyms::KEY_Alt_L | keysyms::KEY_Alt_R),
                     };
-                    if !tap_enabled || bar_consumed || gv.overlay.keyboard.open() || gv.overview.open() || gv.music_open() || gv.panel_controls_open() {
+                    if !tap_enabled || bar_consumed || gv.screenshot_active() || gv.clipboard_picker_open() || gv.overlay.keyboard.open() || gv.overview.open() || gv.music_open() || gv.panel_controls_open() {
                         gv.gestures.super_tap.cancel();
                     }
                     // Always clear the physical key, even if its feature or shell
@@ -296,6 +306,17 @@ impl Gavno {
                     let sym = handle.modified_sym();
                     gv.suppressed_keys.push(raw_code);
                     gv.polkit_key(sym, sym.key_char(), mods);
+                    return FilterResult::Intercept(None);
+                }
+
+                // The screenshot overlay and the clipboard picker take every key
+                // except the emergency chord.
+                if (gv.screenshot_active() || gv.clipboard_picker_open()) && !gv.protocols.locks.locked && !(mods.ctrl && mods.alt) {
+                    let sym = handle.modified_sym();
+                    let mods = *mods;
+                    gv.suppressed_keys.push(raw_code);
+                    if gv.screenshot_active() { gv.screenshot_key(sym, &mods); }
+                    else { gv.clipboard_key(sym, sym.key_char(), &mods); }
                     return FilterResult::Intercept(None);
                 }
 
@@ -472,6 +493,7 @@ impl Gavno {
             Action::SwitcherCycle(_) | Action::SwitcherFinish(_) => Feature::Switcher,
             Action::ToggleOverview | Action::CloseOverview => Feature::Overview,
             Action::ToggleLauncher => Feature::Launcher,
+            Action::ClipboardHistory => return self.config.clipboard.history,
             _ => return true,
         };
         self.features.on(feature)
@@ -490,12 +512,12 @@ impl Gavno {
         if mods.ctrl && mods.alt && sym == keysyms::KEY_Delete {
             return Some(Action::Quit);
         }
-        // Screenshots (KooL: Print = full output, Shift+Print = area) via grim/slurp.
+        // Screenshots (KooL: Print = full output, Shift+Print = area).
         let area = (sym == keysyms::KEY_Print && mods.shift && !mods.ctrl)
             || (main && mods.shift && !mods.ctrl && matches!(sym, keysyms::KEY_s | keysyms::KEY_S));
         if area || (sym == keysyms::KEY_Print && !mods.shift && !mods.ctrl && !mods.alt) {
-            let output = self.active_output().map(|o| o.name());
-            return Some(Action::Spawn(screenshot_command(area, output.as_deref())));
+            use crate::screenshot::ScreenshotMode;
+            return Some(Action::Screenshot(if area { ScreenshotMode::Area } else { ScreenshotMode::Full }));
         }
         if !main && mods.alt && !mods.ctrl && !mods.logo
             && matches!(sym, keysyms::KEY_Tab | keysyms::KEY_ISO_Left_Tab)
@@ -552,6 +574,7 @@ impl Gavno {
             keysyms::KEY_F2 if mods.shift && !mods.ctrl => Some(Action::SdrWhite(-10)),
             keysyms::KEY_F3 if mods.shift && !mods.ctrl => Some(Action::SdrWhite(10)),
             keysyms::KEY_Return | keysyms::KEY_KP_Enter => Some(Action::Spawn(self.config.terminal.clone())),
+            keysyms::KEY_v | keysyms::KEY_V if !mods.shift && !mods.ctrl => Some(Action::ClipboardHistory),
             keysyms::KEY_q if !mods.shift => Some(Action::CloseWindow),
             keysyms::KEY_e | keysyms::KEY_E if !mods.shift && !mods.ctrl => Some(Action::Spawn(self.config.file_manager.clone())),
             keysyms::KEY_m | keysyms::KEY_M if !mods.shift => Some(Action::Minimize),
@@ -586,6 +609,8 @@ impl Gavno {
             Action::Classic(action) => self.run_classic_action(action),
             Action::Lock => { self.close_launcher(); self.lock_session(); },
             Action::ToggleLauncher => self.toggle_launcher(),
+            Action::Screenshot(mode) => self.run_screenshot(mode),
+            Action::ClipboardHistory => self.toggle_clipboard_picker(),
             Action::ToggleTiling => { if let Some(o) = self.active_output() { self.toggle_workspace_tiling(&o); } }
             Action::ToggleFloating => { if let Some(w) = self.focused_window() { self.toggle_floating(&w); } }
             Action::RotateSplit => self.rotate_tile(),
@@ -632,6 +657,12 @@ impl Gavno {
             self.lock_pointer(false);
             return;
         }
+        if self.screenshot_motion(pos) {
+            pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time: event.time_msec() });
+            pointer.frame(self);
+            self.queue_redraw_all();
+            return;
+        }
         if self.panel_controls_motion(pos) {
             pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time: event.time_msec() });
             pointer.frame(self);
@@ -655,6 +686,7 @@ impl Gavno {
         let resizing=self.resize_mode_motion(pos);
         self.overview_motion(pos);
         self.launcher_motion(pos);
+        self.clipboard_motion(pos);
         self.classic_motion(pos);
         self.classic_desktop_motion(pos);
         self.notification_motion(pos);
@@ -687,6 +719,13 @@ impl Gavno {
             self.lock_pointer(false);
             return;
         }
+        if self.screenshot_motion(pos) {
+            let pointer = self.seat.get_pointer().unwrap();
+            pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time: event.time_msec() });
+            pointer.frame(self);
+            self.queue_redraw_all();
+            return;
+        }
         if self.panel_controls_motion(pos) {
             let pointer = self.seat.get_pointer().unwrap();
             pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time: event.time_msec() });
@@ -710,6 +749,7 @@ impl Gavno {
         let resizing=self.resize_mode_motion(pos);
         self.overview_motion(pos);
         self.launcher_motion(pos);
+        self.clipboard_motion(pos);
         self.classic_motion(pos);
         self.classic_desktop_motion(pos);
         self.notification_motion(pos);
@@ -787,6 +827,11 @@ impl Gavno {
             pointer.frame(self);
             return;
         }
+        // The screenshot overlay sees both edges of every button; its toast
+        // takes one click.
+        if self.screenshot_button(pointer.current_location(), button, button_state == ButtonState::Pressed) {
+            return;
+        }
         if button_state==ButtonState::Released && self.suppressed_buttons.contains(&button) {
             self.suppressed_buttons.retain(|b|*b!=button);
             // Shell presses (panel sliders, dock) are suppressed too; their
@@ -815,6 +860,10 @@ impl Gavno {
             self.suppressed_buttons.push(button);return;
         }
         if self.notification_button(pointer.current_location(), button, button_state == ButtonState::Pressed) {
+            if button_state == ButtonState::Pressed { self.suppressed_buttons.push(button); }
+            return;
+        }
+        if self.clipboard_button(pointer.current_location(), button_state == ButtonState::Pressed) {
             if button_state == ButtonState::Pressed { self.suppressed_buttons.push(button); }
             return;
         }
@@ -970,7 +1019,8 @@ impl Gavno {
             .amount(Axis::Vertical)
             .unwrap_or_else(|| event.amount_v120(Axis::Vertical).unwrap_or(0.0) * 15.0 / 120.);
 
-        if self.polkit_visible() { return; }
+        if self.polkit_visible() || self.screenshot_active() { return; }
+        if self.greeter.is_none() && !self.protocols.locks.locked && self.clipboard_axis(vertical) { return; }
         if self.greeter.is_none() && !self.protocols.locks.locked && self.panel_controls_axis(vertical) { return; }
         if self.greeter.is_none() && !self.protocols.locks.locked && self.music_axis(vertical) { return; }
         if self.greeter.is_none() && !self.protocols.locks.locked && source==AxisSource::Finger {

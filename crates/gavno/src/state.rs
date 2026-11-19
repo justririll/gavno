@@ -347,6 +347,7 @@ impl Gavno {
         // Animated named cursors (wait, progress) need frames while shown.
         let cursor = !self.pointer_hidden && matches!(&self.cursor_status, smithay::input::pointer::CursorImageStatus::Named(icon) if self.cursor.animated(icon.name()));
         theme || classic || cursor || animations || overlay || self.workspaces.active() || overview || dock || bar || launcher || notifications || self.media.osd.is_animating()
+            || self.overlay.screenshot.is_animating() || self.overlay.clipboard.picker.is_animating()
     }
 
     pub fn pointer_location(&self) -> Point<f64, Logical> {
@@ -356,6 +357,8 @@ impl Gavno {
     pub fn surface_under(&self, pos: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
         if self.protocols.locks.locked { return self.lock_surface_under(pos); }
         if self.greeter.is_some() { return None; }
+        // The frozen screenshot overlay owns the pointer: no client sees it.
+        if self.screenshot_active() { return None; }
         if self.features.read(Feature::Classic, false, || self.classic.desktop.drag.is_some()) { return None; }
         if self.classic_decor_hit(pos).is_some() { return None; }
         if self.greeter.is_none() && self.shell_contains(pos) { return None; }
