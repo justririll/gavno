@@ -90,6 +90,8 @@ pub struct Notifications {
     active: bool,
     started: bool,
     blocked: bool,
+    /// Area of the open bar popover (set by the renderer); toasts keep clear of it.
+    pub(crate) avoid: Option<Rect>,
     output: Option<Output>,
     timer: Option<(Duration, RegistrationToken)>,
     pub signals: Option<mpsc::Sender<Signal>>,

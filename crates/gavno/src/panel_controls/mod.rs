@@ -252,6 +252,10 @@ impl State {
     pub fn release(&mut self) {
         self.drag = None;
     }
+    /// Where the open panel was last drawn, output-local.
+    pub fn panel_rect(&self) -> Option<crate::topbar::geometry::Rect> {
+        (self.open.is_some() && self.view.panel.size.w > 0).then_some(self.view.panel)
+    }
     /// True while the opening or a page slide still needs frames.
     pub fn animating(&self) -> bool {
         self.open.is_some() && (self.anim.opened.is_some() || self.anim.slide.is_some())

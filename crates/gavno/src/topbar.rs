@@ -19,6 +19,7 @@ use smithay::{
     utils::{Logical, Rectangle},
 };
 use std::{
+    collections::HashMap,
     path::Path,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -38,8 +39,12 @@ pub mod geometry;
 pub mod osd;
 #[path = "bar/status.rs"]
 pub mod status;
-use geometry::{rect, Item, Layout, PopoverLayout, Rect, StatusItem};
+use geometry::{rect, Item, Layout, PillSpec, PopoverLayout, Rect, StatusItem};
+use crate::ui::style::{dim, focus_line, radius, size, text, wash, SURFACE_HOVER, SURFACE_RAISED, TEXT};
 use smithay::utils::Point;
+
+/// Hover time before a bar tooltip appears.
+pub(crate) const TOOLTIP_DELAY: Duration = Duration::from_millis(450);
 
 pub fn next_minute(now: Duration) -> Duration {
     Duration::from_secs(60) - Duration::from_nanos((now.as_nanos() % 60_000_000_000) as u64)
@@ -466,10 +471,20 @@ pub enum BarAction {
     Power(PowerAction),
     Consume,
 }
+/// One workspace as the bar shows it: its windows' icons, count and name.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct WorkspaceInfo {
+    /// Icon names of the front-most windows, at most three.
+    icons: Vec<String>,
+    windows: usize,
+    name: Option<String>,
+    active: bool,
+}
 struct BarView {
     output: Output,
     canvas: Canvas,
-    dots: Vec<Spring>,
+    /// What each workspace of this output holds, refreshed every frame.
+    workspaces: Vec<WorkspaceInfo>,
     hits: Vec<(Rectangle<f64, Logical>, BarAction)>,
     visible: bool,
     hover: Option<BarAction>,
@@ -495,9 +510,19 @@ pub struct TopBar {
     /// The hints of `hint_context` whose binds are currently enabled.
     pub hint_items: Vec<&'static crate::hints::BindHint>,
     pub mod_label: &'static str,
+    /// The focused window's title, without the workspace name.
     pub title: String,
+    /// The active workspace's name, drawn dimmer before the title.
+    pub workspace_name: Option<String>,
     pub layout: String,
+    /// False until the first refresh, so startup does not announce a layout.
+    layout_seen: bool,
     app_icon: String,
+    /// App id to icon name, filled from the desktop entries on first use.
+    app_icons: HashMap<String, String>,
+    /// The tooltip being shown, and the one-shot timer that arms it.
+    tooltip: Option<(Output, BarAction)>,
+    pub(crate) tooltip_timer: Option<smithay::reexports::calloop::RegistrationToken>,
     pub(crate) entries: crate::desktop_entry::DesktopEntries,
     multiple_layouts: bool,
     clock: String,
@@ -533,8 +558,13 @@ impl Default for TopBar {
             hint_items: Vec::new(),
             mod_label: "Super",
             title: String::new(),
+            workspace_name: None,
             layout: "EN".into(),
+            layout_seen: false,
             app_icon: String::new(),
+            app_icons: HashMap::new(),
+            tooltip: None,
+            tooltip_timer: None,
             entries: Default::default(),
             multiple_layouts: true,
             clock: clock_label(),
@@ -559,7 +589,7 @@ impl TopBar {
     #[cfg(test)]
     pub(crate) fn test_view(&mut self, output: &Output, layout: Layout) {
         self.views.push(BarView {
-            output: output.clone(), canvas: Canvas::default(), dots: vec![], hits: vec![], visible: true,
+            output: output.clone(), canvas: Canvas::default(), workspaces: vec![], hits: vec![], visible: true,
             hover: None, layout: Some(layout), popover: None,
         });
     }
@@ -608,6 +638,31 @@ impl TopBar {
     pub fn accent(&self) -> [f32; 4] {
         self.accent
     }
+    /// Area of the bar popover open (or still closing) on `output`: quick
+    /// settings, calendar or the music panel. Toasts keep clear of it.
+    pub fn popover_rect(&self, output: &Output, size: smithay::utils::Size<i32, Logical>) -> Option<Rect> {
+        if self.controls.open.as_ref() == Some(output) {
+            if let Some(panel) = self.controls.panel_rect() {
+                return Some(panel);
+            }
+        }
+        if let Some(panel) = self
+            .views
+            .iter()
+            .find(|v| &v.output == output)
+            .and_then(|v| v.popover.as_ref())
+            .map(|p| p.panel)
+        {
+            return Some(panel);
+        }
+        let media = self.now_playing.borrow();
+        let session = media.music.session.as_ref().filter(|s| &s.output == output)?;
+        Some(crate::media::music::panel_rect(size, session.anchor))
+    }
+    /// Whether `action` shows a tooltip after the hover delay.
+    pub(crate) fn has_tooltip(action: &BarAction) -> bool {
+        matches!(action, BarAction::Workspace(_) | BarAction::Tiling | BarAction::Layout | BarAction::CodeMode)
+    }
     pub(crate) fn update_clock(&mut self) -> bool {
         let next = clock_label();
         let changed = self.clock != next;
@@ -616,12 +671,7 @@ impl TopBar {
     }
     pub(crate) fn set_accent(&mut self, accent: [f32; 4]) { self.accent = accent; }
     pub fn active(&self) -> bool {
-        self.opening.is_active()
-            || self.controls.animating()
-            || self
-                .views
-                .iter()
-                .any(|v| v.visible && v.dots.iter().any(Spring::is_active))
+        self.opening.is_active() || self.controls.animating()
     }
     pub fn close(&mut self) {
         self.controls.close();
@@ -654,7 +704,7 @@ impl TopBar {
             self.views.push(BarView {
                 output: output.clone(),
                 canvas: Default::default(),
-                dots: Vec::new(),
+                workspaces: Vec::new(),
                 hits: Vec::new(),
                 visible,
                 hover: None,
@@ -671,6 +721,7 @@ impl TopBar {
         let hint_items = self.hint_items.clone();
         let mod_label = self.mod_label;
         let accent = self.accent;
+        let workspaces = workspace_infos(owner, &mut self.entries, &mut self.app_icons);
         let v = &mut self.views[index];
         v.visible = visible && self.enabled;
         if !v.visible {
@@ -681,7 +732,6 @@ impl TopBar {
         if self.shell_progress >= 0.999 && self.menu.is_none() && !self.opening.is_active() {
             if v.visible { v.canvas=Canvas::default(); }
             v.visible=false; v.hits.clear(); v.popover=None;
-            for dot in &mut v.dots { dot.jump(dot.target); }
             return Vec::new();
         }
         let c = &mut v.canvas;
@@ -689,8 +739,12 @@ impl TopBar {
         c.offset.y = -self.shell_progress * PANEL as f64;
         c.alpha = (1.0 - self.shell_progress) as f32;
         v.hits.clear();
-        let count = owner.map(|o| o.list.items.len()).unwrap_or(1);
-        let (l, media) = media_layout(&self.now_playing, width, count as i32 * 12 + 31, self.multiple_layouts, self.music_panel, features, self.status.battery.is_some());
+        let specs: Vec<PillSpec> = workspaces.iter().map(|w| PillSpec { windows: w.windows, active: w.active }).collect();
+        let battery = self.status.battery.is_some();
+        // The strip fits into what the title and clock leave it.
+        let cap = media_layout(&self.now_playing, width, i32::MAX / 4, self.multiple_layouts, self.music_panel, features, battery).0.workspaces.size.w;
+        let strip = geometry::workspace_strip(8, cap, &specs);
+        let (l, media) = media_layout(&self.now_playing, width, strip.rect.size.w, self.multiple_layouts, self.music_panel, features, battery);
         if self.shell_progress < 0.999 {
         c.rect(rect(0, 0, width, PANEL), 0.0, GLASS, 0.0, LINE);
         c.rect(
@@ -700,74 +754,52 @@ impl TopBar {
             0.0,
             LINE,
         );
-        let active = owner.map(|o| o.list.active).unwrap_or(0);
-        v.dots
-            .resize_with(count, || Spring::new(7.0, SpringParams::SNAPPY));
-        v.dots.truncate(count);
-        capsule(
-            c,
-            l.workspaces,
-            v.hover
-                .as_ref()
-                .is_some_and(|a| matches!(a, BarAction::Workspace(_))),
-        );
-        let mut x = l.workspaces.loc.x + 8;
-        for (i, dot) in v.dots.iter_mut().enumerate() {
-            dot.set(if i == active { 22.0 } else { 7.0 });
-            dot.advance(now);
-            let w = dot.value.round() as i32;
-            if x + w > l.workspaces.loc.x + l.workspaces.size.w - 4 {
-                break;
-            }
-            c.rect(
-                rect(x, 12, w, 8),
-                4.0,
-                if i == active {
-                    self.accent
+        capsule(c, l.workspaces, false);
+        for pill in &strip.pills {
+            let info = &workspaces[pill.index];
+            let hover = v.hover == Some(BarAction::Workspace(pill.index));
+            if pill.dot {
+                if hover {
+                    c.rect(pill.rect, radius::FIELD, SURFACE_HOVER, 0.0, LINE);
+                }
+                let (w, color) = if info.active {
+                    (22, accent)
+                } else if info.windows > 0 {
+                    (8, dim(TEXT, 0.75))
                 } else {
-                    [0.96, 0.95, 0.98, 0.5]
-                },
-                0.0,
-                LINE,
-            );
-            v.hits
-                .push((rect(x - 2, 4, w + 5, 24).to_f64(), BarAction::Workspace(i)));
-            x += w + 5;
-        }
-        capsule(c, l.toggle, v.hover == Some(BarAction::Tiling));
-        let tiling = owner.is_some_and(|o| o.list.items[active].tiling);
-        let names = if tiling {
-            &["view-grid-symbolic", "view-app-grid-symbolic"][..]
-        } else {
-            &["view-restore-symbolic", "window-symbolic"][..]
-        };
-        if !c.icon(
-            renderer,
-            &mut self.icons,
-            names,
-            &self.icon_theme,
-            rect(l.toggle.loc.x + 8, 8, 16, 16),
-        ) {
-            let x = l.toggle.loc.x + 8;
-            for i in 0..if tiling { 4 } else { 2 } {
-                c.rect(
-                    rect(
-                        x + (i % 2) * 8,
-                        8 + (i / 2) * 8,
-                        if tiling { 6 } else { 10 },
-                        if tiling { 6 } else { 14 },
-                    ),
-                    2.0,
-                    [0.85, 0.85, 0.9, 0.8],
-                    1.0,
-                    LINE,
-                );
+                    (8, dim(TEXT, 0.38))
+                };
+                c.rect(rect(pill.rect.loc.x + (pill.rect.size.w - w) / 2, 12, w, 8), 4.0, color, 0.0, LINE);
+            } else {
+                if info.active {
+                    c.rect(pill.rect, radius::FIELD, wash(accent, 0.34), 1.0, focus_line(accent));
+                } else {
+                    c.rect(pill.rect, radius::FIELD, if hover { SURFACE_HOVER } else { SURFACE_RAISED }, 0.0, LINE);
+                }
+                let mut x = pill.rect.loc.x + geometry::PILL_PAD;
+                let y = pill.rect.loc.y + (geometry::PILL_H - geometry::PILL_ICON) / 2;
+                for name in info.icons.iter().take(pill.icons) {
+                    let area = rect(x, y, geometry::PILL_ICON, geometry::PILL_ICON);
+                    if !c.colored_icon(renderer, &mut self.icons, &[name, "application-x-executable"], &self.icon_theme, area, Some(FULL_COLOR)) {
+                        c.rect(area, 4.0, dim(TEXT, 0.35), 0.0, LINE);
+                    }
+                    x += geometry::PILL_ICON + geometry::PILL_ICON_GAP;
+                }
+                if pill.extra > 0 {
+                    let style = text(size::CAPTION, Weight::SemiBold, dim(TEXT, 0.85));
+                    c.styled_label(renderer, &format!("+{}", pill.extra), x, pill.rect.loc.y + 3, geometry::extra_width(pill.extra), style);
+                }
             }
+            v.hits.push((pill.hit.to_f64(), BarAction::Workspace(pill.index)));
         }
+        v.workspaces = workspaces;
+        capsule(c, l.toggle, v.hover == Some(BarAction::Tiling));
+        let tiling = owner.is_some_and(|o| o.list.items.get(o.list.active).is_some_and(|w| w.tiling));
+        draw_tiling_glyph(c, l.toggle, tiling, accent);
         v.hits.push((l.toggle.to_f64(), BarAction::Tiling));
         // The hint strip lives in the title area and never reaches the clock,
         // the workspace dots or any other fixed capsule.
-        let strip = draw_hints(
+        let strip_w = draw_hints(
             c,
             renderer,
             &l,
@@ -779,23 +811,25 @@ impl TopBar {
             v.hover.as_ref(),
             &mut v.hits,
         );
-        // The focused app keeps its own colours; tinting turned it into a
-        // white square that looked like a dead button. No generic fallback.
-        c.colored_icon(
+        // The focused app keeps its own colours. An icon the theme lacks gets
+        // an initial on a tile instead of an empty gap.
+        if !self.app_icon.is_empty()
+            && !c.colored_icon(renderer, &mut self.icons, &[&self.app_icon], &self.icon_theme, l.app, Some(FULL_COLOR))
+        {
+            c.rect(l.app, 5.0, SURFACE_RAISED, 0.0, LINE);
+            let initial = self.app_icon.chars().next().unwrap_or('?').to_uppercase().to_string();
+            let st = text(size::CAPTION, Weight::SemiBold, TEXT);
+            let w = c.text.measure(&initial, st).ceil() as i32;
+            c.styled_label(renderer, &initial, l.app.loc.x + (l.app.size.w - w) / 2, l.app.loc.y + 1, w + 2, st);
+        }
+        draw_title(
+            c,
             renderer,
-            &mut self.icons,
-            &[&self.app_icon],
-            &self.icon_theme,
-            l.app,
-            Some(FULL_COLOR),
-        );
-        c.label(
-            renderer,
+            self.workspace_name.as_deref(),
             &self.title,
             l.title.loc.x,
             l.title.loc.y,
-            (l.title.size.w - strip - if strip > 0 { 8 } else { 0 }).max(0),
-            12.5,
+            (l.title.size.w - strip_w - if strip_w > 0 { 8 } else { 0 }).max(0),
         );
         if v.hover == Some(BarAction::Calendar) {
             capsule(c, l.clock, true);
@@ -865,11 +899,18 @@ impl TopBar {
                 push_hit(c, &mut v.hits, area, BarAction::MusicPanel);
             }
         });
+        // A tooltip waits for the hover timer and gives way to every popover.
+        if let Some((_, action)) = self.tooltip.as_ref().filter(|(o, a)| o == output && v.hover.as_ref() == Some(a)) {
+            let popover = self.menu.is_some() || self.controls.open.is_some() || self.now_playing.borrow().music.session.is_some();
+            let anchor = v.hits.iter().find(|(_, a)| a == action).map(|(r, _)| *r);
+            if let (false, Some(anchor), Some(value)) = (popover, anchor, tooltip_text(action, &v.workspaces, tiling)) {
+                draw_tooltip(c, renderer, anchor, &value, width);
+            }
+        }
         if self.shell_progress >= 0.999 { v.hits.clear(); }
         v.layout = Some(l);
         } else {
             v.layout=None;
-            for dot in &mut v.dots { dot.jump(dot.target); }
         }
         v.popover = None;
         // Keep drawing the closing panel until its spring settles.
@@ -902,6 +943,133 @@ impl TopBar {
         }
         c.finish()
     }
+}
+
+/// The app id of a window, without cloning its title.
+fn app_id_of(window: &smithay::desktop::Window) -> String {
+    use smithay::wayland::{compositor::with_states, shell::xdg::XdgToplevelSurfaceData};
+    let Some(toplevel) = window.toplevel() else { return String::new() };
+    with_states(toplevel.wl_surface(), |states| {
+        states
+            .data_map
+            .get::<XdgToplevelSurfaceData>()
+            .and_then(|d| d.lock().unwrap_or_else(|e| e.into_inner()).app_id.clone())
+            .unwrap_or_default()
+    })
+}
+/// Icon name of an app id: the desktop entry's icon, else the id itself.
+fn icon_for(entries: &mut crate::desktop_entry::DesktopEntries, cache: &mut HashMap<String, String>, app: &str) -> String {
+    if app.is_empty() {
+        return String::new();
+    }
+    if let Some(icon) = cache.get(app) {
+        return icon.clone();
+    }
+    let icon = entries.resolve(app).map(|e| e.icon).filter(|i| !i.is_empty()).unwrap_or_else(|| app.to_owned());
+    cache.insert(app.to_owned(), icon.clone());
+    icon
+}
+fn workspace_infos(
+    owner: Option<&crate::workspace::OutputWorkspaces>,
+    entries: &mut crate::desktop_entry::DesktopEntries,
+    cache: &mut HashMap<String, String>,
+) -> Vec<WorkspaceInfo> {
+    let Some(owner) = owner else {
+        return vec![WorkspaceInfo { active: true, ..Default::default() }];
+    };
+    owner
+        .list
+        .items
+        .iter()
+        .enumerate()
+        .map(|(i, ws)| WorkspaceInfo {
+            // Windows are stored back to front; the front ones lead.
+            icons: ws.windows.iter().rev().take(3).map(|w| icon_for(entries, cache, &app_id_of(&w.window))).collect(),
+            windows: ws.windows.len(),
+            name: ws.name.clone(),
+            active: i == owner.list.active,
+        })
+        .collect()
+}
+/// The tiling toggle: a tiled layout (one tall tile, two small) when tiling is
+/// on, two overlapping windows when windows float.
+fn draw_tiling_glyph(c: &mut Canvas, toggle: Rect, tiling: bool, accent: [f32; 4]) {
+    let x = toggle.loc.x + (toggle.size.w - 14) / 2;
+    let y = toggle.loc.y + (toggle.size.h - 12) / 2;
+    if tiling {
+        c.rect(rect(x, y, 6, 12), 2.0, accent, 0.0, LINE);
+        c.rect(rect(x + 8, y, 6, 5), 2.0, accent, 0.0, LINE);
+        c.rect(rect(x + 8, y + 7, 6, 5), 2.0, accent, 0.0, LINE);
+    } else {
+        let line = dim(TEXT, 0.75);
+        c.rect(rect(x, y, 10, 8), 2.0, [0.0; 4], 1.0, line);
+        c.rect(rect(x + 4, y + 4, 10, 8), 2.0, [0.06, 0.07, 0.10, 1.0], 1.0, line);
+    }
+}
+/// Tooltip text of a bar target, if it has one.
+fn tooltip_text(action: &BarAction, workspaces: &[WorkspaceInfo], tiling: bool) -> Option<String> {
+    match action {
+        BarAction::Workspace(i) => {
+            let ws = workspaces.get(*i)?;
+            let name = ws.name.clone().unwrap_or_else(|| format!("Workspace {}", i + 1));
+            let count = match ws.windows {
+                0 => "empty".to_owned(),
+                1 => "1 window".to_owned(),
+                n => format!("{n} windows"),
+            };
+            Some(format!("{name} · {count}"))
+        }
+        BarAction::Tiling => Some(if tiling {
+            "Tiling is on · click to float windows".into()
+        } else {
+            "Windows float · click to tile them".into()
+        }),
+        BarAction::Layout => Some("Switch keyboard layout".into()),
+        BarAction::CodeMode => Some("Code mode · click to leave".into()),
+        _ => None,
+    }
+}
+/// A small card under `anchor` (output-local, mapped), kept inside `width`.
+fn draw_tooltip(c: &mut Canvas, renderer: &mut GlesRenderer, anchor: Rectangle<f64, Logical>, value: &str, width: i32) {
+    let style = text(size::SMALL, Weight::Medium, TEXT);
+    let _ = c.text.render(" ", style, c.scale);
+    let w = c.text.measure(value, style).ceil() as i32;
+    let card = (w + 2 * crate::ui::style::space::SM).min((width - 16).max(1));
+    let center = (anchor.loc.x + anchor.size.w / 2.0).round() as i32;
+    let x = (center - card / 2).clamp(8, (width - card - 8).max(8));
+    let area = rect(x, PANEL + 4, card, 24);
+    crate::ui::style::card(c, area, radius::FIELD);
+    c.styled_label(renderer, value, area.loc.x + crate::ui::style::space::SM, area.loc.y + 4, card - 2 * crate::ui::style::space::SM, style);
+}
+/// The workspace name (dim), a separator and the window title, sharing `width`.
+fn draw_title(c: &mut Canvas, renderer: &mut GlesRenderer, name: Option<&str>, title: &str, x: i32, y: i32, width: i32) {
+    if width <= 0 {
+        return;
+    }
+    let main = label_style(size::LABEL);
+    let dimmed = text(size::LABEL, Weight::Medium, dim(TEXT, 0.5));
+    let _ = c.text.render(" ", main, c.scale);
+    let Some(name) = name.filter(|n| !n.is_empty()) else {
+        c.styled_label(renderer, title, x, y, width, main);
+        return;
+    };
+    if title.is_empty() {
+        c.styled_label(renderer, name, x, y, width, dimmed);
+        return;
+    }
+    // The name never takes more than 40% of the room.
+    let sep = " · ";
+    let sep_w = c.text.measure(sep, dimmed).ceil() as i32;
+    let allowed = (width * 2 / 5).max(0);
+    let name = ellipsize(&mut c.text, name, dimmed, (allowed - sep_w).max(0));
+    if name.is_empty() {
+        c.styled_label(renderer, title, x, y, width, main);
+        return;
+    }
+    let prefix = format!("{name}{sep}");
+    let prefix_w = c.text.measure(&prefix, dimmed).ceil() as i32;
+    c.styled_label(renderer, &prefix, x, y, prefix_w + 2, dimmed);
+    c.styled_label(renderer, title, x + prefix_w + 2, y, (width - prefix_w - 2).max(0), main);
 }
 fn media_layout(
     media: &crate::media::Shared, width: i32, workspace_width: i32, layouts: bool, music_panel: bool,
@@ -980,7 +1148,8 @@ fn draw_hints(
             items.push((hint, keys, key_width, label_width));
         }
     }
-    let budget = (title.size.w - CHIP - CHIP_GAP).max(0);
+    // The title keeps its minimum width; hints only use what is left.
+    let budget = geometry::hint_budget(title.size.w, CHIP, CHIP_GAP);
     let refs: Vec<&crate::hints::BindHint> = items.iter().map(|(hint, ..)| *hint).collect();
     let chosen = crate::hints::fit(&refs, budget, ITEM_GAP, |hint| {
         items
@@ -1205,18 +1374,9 @@ impl Gavno {
             .focused_window()
             .map(|w| crate::overlay::window_labels(&w))
             .unwrap_or_default();
-        // The active workspace's name leads the title when it has one.
-        let title = match self.active_workspace_name() {
-            Some(name) if !title.is_empty() => format!("{name} · {title}"),
-            Some(name) => name,
-            None => title,
-        };
-        self.topbar.app_icon = self
-            .topbar
-            .entries
-            .resolve(&app)
-            .map(|e| e.icon)
-            .unwrap_or(app);
+        // The active workspace's name is drawn dimmer before the title.
+        let workspace_name = self.active_workspace_name();
+        self.topbar.app_icon = icon_for(&mut self.topbar.entries, &mut self.topbar.app_icons, &app);
         self.topbar.multiple_layouts = self
             .config
             .xkb_layout
@@ -1236,12 +1396,21 @@ impl Gavno {
                 })
             })
             .unwrap_or_else(|| "EN".into());
-        let changed = self.topbar.title != title || self.topbar.layout != layout;
+        let changed = self.topbar.title != title || self.topbar.layout != layout || self.topbar.workspace_name != workspace_name;
+        let layout_switched = self.topbar.layout_seen && self.topbar.layout != layout;
+        self.topbar.layout_seen = true;
         self.topbar.title = title;
-        self.topbar.layout = layout;
+        self.topbar.workspace_name = workspace_name;
+        self.topbar.layout = layout.clone();
+        if layout_switched && !self.protocols.locks.locked && self.greeter.is_none() {
+            self.show_layout_osd(&layout);
+        }
         self.topbar.enabled = self.config.bar.enabled;
         self.topbar.music_panel = self.config.media.music_panel;
         self.topbar.night_light = self.config.display.night_light;
+        if self.topbar.icon_theme != self.config.dock.icon_theme {
+            self.topbar.app_icons.clear();
+        }
         self.topbar.icon_theme = self.config.dock.icon_theme.clone();
         self.sync_bar_hints();
         self.topbar.views.retain(|v| outputs.contains(&v.output));
@@ -1270,6 +1439,7 @@ impl Gavno {
     }
 
     fn bar_action_feature(&mut self, output: &Output, action: BarAction) {
+        self.topbar.tooltip = None;
         match action {
             BarAction::Tiling => self.toggle_workspace_tiling(output),
             BarAction::CodeMode => self.set_code_mode(!self.code_mode),
@@ -1439,6 +1609,7 @@ impl Gavno {
         if let Some((_, _, token)) = self.media.repeat.take() { self.loop_handle.remove(token); }
         self.refresh_bar_status(false);
         if let Some(token) = self.topbar.controls.event_token.take() { self.loop_handle.remove(token); }
+        if let Some(token) = self.topbar.tooltip_timer.take() { self.loop_handle.remove(token); }
         self.topbar.controls.close();
         self.topbar = Default::default();
         self.media.panel_volume = None;
@@ -1577,5 +1748,131 @@ mod capsule_render_tests {
         let commits=|elements:Vec<GavnoRenderElement>|elements.into_iter().filter_map(|e| {let g=e.geometry(1.0.into());(g.loc.x>=area.loc.x && g.loc.x+g.size.w<=area.loc.x+area.size.w).then(||(e.id().clone(),e.current_commit()))}).collect::<Vec<_>>();
         assert_eq!(commits(before),commits(after));
         std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod bar_redesign_tests {
+    use super::*;
+    use crate::media::ui::artifacts;
+    use crate::workspace::Workspace;
+
+    fn output(name: &str, logical: (i32, i32), scale: f64) -> Output {
+        let output = Output::new(name.into(), smithay::output::PhysicalProperties { size: (0, 0).into(), subpixel: smithay::output::Subpixel::Unknown, make: "test".into(), model: "test".into() });
+        output.change_current_state(
+            Some(smithay::output::Mode { size: ((logical.0 as f64 * scale) as i32, (logical.1 as f64 * scale) as i32).into(), refresh: 60000 }),
+            None,
+            Some(smithay::output::Scale::Fractional(scale)),
+            None,
+        );
+        output
+    }
+    fn workspaces(h: &mut crate::state::tests::Harness, output: &Output, count: usize, active: usize, named: bool) {
+        let owner = h.gv.workspaces.ensure(output);
+        while owner.list.items.len() < count {
+            let id = owner.list.items.len() as u64 + 100;
+            owner.list.items.push(Workspace { id, windows: Vec::new(), tiling: false, tree: Default::default(), name: None, user_named: false, name_sig: None });
+        }
+        if named {
+            for (i, ws) in owner.list.items.iter_mut().enumerate() {
+                ws.name = Some(format!("Space {i}"));
+            }
+        }
+        owner.list.active = active;
+    }
+
+    #[test]
+    fn workspace_pills_are_hit_testable_and_tooltips_use_the_names() {
+        let mut renderer = artifacts::renderer();
+        for (logical, scale, count) in [((1280, 800), 1.0, 6), ((2134, 1200), 1.35, 6), ((1280, 800), 1.0, 40), ((2134, 1200), 1.35, 40)] {
+            let mut h = crate::state::tests::Harness::new();
+            let out = output("bar-redesign", logical, scale);
+            h.gv.space.map_output(&out, (0, 0));
+            workspaces(&mut h, &out, count, count / 2, true);
+            let owner = h.gv.workspaces.outputs.iter().find(|o| o.output == out);
+            let _ = h.gv.topbar.elements(&mut renderer, &out, logical.0, owner, Duration::from_secs(1), true, &h.gv.features);
+            let view = &h.gv.topbar.views[0];
+            let l = view.layout.as_ref().unwrap();
+            let pills: Vec<_> = view.hits.iter().filter_map(|(r, a)| matches!(a, BarAction::Workspace(_)).then_some((*r, a.clone()))).collect();
+            assert!(!pills.is_empty());
+            // The strip stays inside its slot and clear of the toggle.
+            for (r, _) in &pills {
+                assert!(l.workspaces.to_f64().contains_rect(*r) || r.loc.x >= l.workspaces.loc.x as f64);
+                assert!(r.loc.x + r.size.w <= (l.toggle.loc.x) as f64, "{logical:?}/{count}");
+            }
+            // Every pill answers with its own index at its centre.
+            for (r, a) in &pills {
+                let centre = (r.loc.x + r.size.w / 2.0, r.loc.y + r.size.h / 2.0).into();
+                assert_eq!(h.gv.topbar.action(&out, centre).as_ref(), Some(a));
+            }
+            assert!(pills.iter().any(|(_, a)| *a == BarAction::Workspace(count / 2)), "active workspace stays reachable");
+            // Tooltip text is the workspace name plus its window count.
+            let infos = h.gv.topbar.views[0].workspaces.clone();
+            assert_eq!(tooltip_text(&BarAction::Workspace(1), &infos, false).as_deref(), Some("Space 1 · empty"));
+            assert_eq!(tooltip_text(&BarAction::Workspace(count + 5), &infos, false), None);
+            // Layout geometry never overlaps: workspaces, toggle, title, clock.
+            assert!(l.workspaces.loc.x + l.workspaces.size.w <= l.toggle.loc.x);
+            assert!(l.title.loc.x + l.title.size.w <= l.clock.loc.x);
+        }
+    }
+    #[test]
+    fn tooltip_texts_cover_the_documented_targets_only() {
+        let infos = vec![WorkspaceInfo { windows: 3, ..Default::default() }, WorkspaceInfo { windows: 1, name: Some("Code".into()), ..Default::default() }];
+        assert_eq!(tooltip_text(&BarAction::Workspace(0), &infos, false).as_deref(), Some("Workspace 1 · 3 windows"));
+        assert_eq!(tooltip_text(&BarAction::Workspace(1), &infos, false).as_deref(), Some("Code · 1 window"));
+        assert!(tooltip_text(&BarAction::Tiling, &infos, true).unwrap().starts_with("Tiling is on"));
+        assert!(tooltip_text(&BarAction::Tiling, &infos, false).unwrap().starts_with("Windows float"));
+        assert!(tooltip_text(&BarAction::Calendar, &infos, false).is_none());
+        assert!(TopBar::has_tooltip(&BarAction::Tiling) && !TopBar::has_tooltip(&BarAction::PowerMenu));
+    }
+    #[test]
+    fn code_mode_hints_never_reach_the_title_minimum_or_the_clock() {
+        let renderer_and_text = &mut crate::ui::text::TextRenderer::new();
+        let style = label_style(10.5);
+        let _ = renderer_and_text.render(" ", style, 1.0);
+        let all: Vec<&crate::hints::BindHint> = crate::hints::items(crate::hints::HintContext::Code).iter().collect();
+        assert!(!all.is_empty());
+        let sizes: Vec<(*const crate::hints::BindHint, i32)> = all
+            .iter()
+            .map(|h| (*h as *const _, renderer_and_text.measure(h.keys, style).ceil() as i32 + 10 + 6 + renderer_and_text.measure(h.label, style).ceil() as i32))
+            .collect();
+        let width = |h: &crate::hints::BindHint| sizes.iter().find(|(p, _)| std::ptr::eq(*p, h)).map_or(0, |(_, w)| *w);
+        for window in [800, 1024, 1280, 1646, 2134] {
+            for layouts in [false, true] {
+                let l = Layout::with_battery(window, 120, layouts, geometry::BATTERY_SLOT);
+                let budget = geometry::hint_budget(l.title.size.w, 44, 8);
+                let kept = crate::hints::fit(&all, budget, 14, width);
+                let used: i32 = kept.iter().map(|h| width(h)).sum::<i32>() + 14 * kept.len().saturating_sub(1) as i32;
+                assert!(used <= budget, "{window}: hints {used} > budget {budget}");
+                let total = 44 + if kept.is_empty() { 0 } else { 8 + used };
+                // Title text keeps room whenever the area has any to spare.
+                let title_left = l.title.size.w - total - 8;
+                assert!(title_left >= geometry::MIN_TITLE_TEXT - 8 || kept.is_empty(), "{window}: title squeezed to {title_left}");
+                assert!(l.title.loc.x + l.title.size.w <= l.clock.loc.x);
+            }
+        }
+        // A narrow title area drops every hint and keeps only the chip.
+        assert_eq!(geometry::hint_budget(150, 44, 8), 0);
+        assert!(crate::hints::fit(&all, 0, 14, width).is_empty());
+    }
+    #[test]
+    fn bar_draws_without_panicking_in_code_mode_at_both_scales() {
+        let mut renderer = artifacts::renderer();
+        for (logical, scale) in [((1280, 800), 1.0), ((2134, 1200), 1.35)] {
+            let mut h = crate::state::tests::Harness::new();
+            let out = output("bar-code", logical, scale);
+            h.gv.space.map_output(&out, (0, 0));
+            workspaces(&mut h, &out, 5, 1, true);
+            h.gv.topbar.code_mode = true;
+            h.gv.topbar.hint_context = Some(crate::hints::HintContext::Code);
+            h.gv.topbar.hint_items = crate::hints::items(crate::hints::HintContext::Code).iter().collect();
+            h.gv.topbar.title = "A very long focused window title that has to be shortened gracefully".into();
+            h.gv.topbar.workspace_name = Some("Writing and research".into());
+            h.gv.topbar.app_icon = "no-such-icon-anywhere".into();
+            let owner = h.gv.workspaces.outputs.iter().find(|o| o.output == out);
+            let elements = h.gv.topbar.elements(&mut renderer, &out, logical.0, owner, Duration::from_secs(1), true, &h.gv.features);
+            assert!(!elements.is_empty());
+            artifacts::capture(&mut renderer, &elements, (logical.0, 40), scale, &format!("bar2-code-{}", logical.0));
+        }
     }
 }

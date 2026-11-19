@@ -25,6 +25,8 @@ const SLIDER_HOLD: Duration = Duration::from_millis(1500);
 mod tests;
 #[path = "music_ui.rs"]
 mod ui;
+/// Where the music panel sits, for things that must keep clear of it.
+pub(crate) use ui::panel_rect;
 #[path = "music_worker.rs"]
 pub(crate) mod worker;
 
