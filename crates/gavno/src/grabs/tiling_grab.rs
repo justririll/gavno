@@ -119,10 +119,10 @@ impl PointerGrab<Gavno> for SplitterGrab {
                 });
                 if let Some(split) = primary {
                     use smithay::input::pointer::{CursorIcon, CursorImageStatus};
-                    data.cursor_status = CursorImageStatus::Named(match split.axis {
+                    data.set_cursor_status(CursorImageStatus::Named(match split.axis {
                         Axis::X => CursorIcon::ColResize,
                         Axis::Y => CursorIcon::RowResize,
-                    });
+                    }));
                     data.workspaces.splitter_hover = Some((self.output.clone(), split));
                 }
                 data.reflow_tiling(false);
@@ -243,7 +243,7 @@ impl PointerGrab<Gavno> for SplitterGrab {
     }
     fn unset(&mut self, data: &mut Gavno) {
         data.workspaces.splitter_hover = None;
-        data.cursor_status = smithay::input::pointer::CursorImageStatus::default_named();
+        data.set_cursor_status(smithay::input::pointer::CursorImageStatus::default_named());
         data.queue_redraw_all();
     }
 }

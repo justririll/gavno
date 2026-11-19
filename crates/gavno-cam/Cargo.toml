@@ -20,6 +20,7 @@ default = ["runtime"]
 runtime = ["dep:gstreamer", "dep:gstreamer-app", "dep:tract-onnx", "dep:libc"]
 
 [dependencies]
+gavno-cam-proto = { path = "../gavno-cam-proto" }
 gstreamer = { version = "0.24", optional = true }
 gstreamer-app = { version = "0.24", optional = true }
 tract-onnx = { version = "0.23", optional = true }

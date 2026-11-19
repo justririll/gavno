@@ -6,7 +6,7 @@
 
 pub mod filter;
 pub mod gesture;
-pub mod protocol;
+pub use gavno_cam_proto as protocol;
 pub mod vision;
 
 #[cfg(feature = "runtime")]

@@ -768,6 +768,18 @@ fn code_mode_hides_the_pointer_until_pointer_activity() {
 }
 
 #[test]
+fn compositor_cursor_changes_while_hidden_update_the_remembered_image() {
+    use smithay::input::pointer::{CursorIcon, CursorImageStatus};
+    let (mut h, _) = setup();
+    h.gv.set_code_mode(true);
+    h.gv.hide_pointer();
+    h.gv.set_cursor_status(CursorImageStatus::Named(CursorIcon::ColResize));
+    assert_eq!(h.gv.cursor_status, CursorImageStatus::Hidden);
+    h.gv.show_pointer();
+    assert_eq!(h.gv.cursor_status, CursorImageStatus::Named(CursorIcon::ColResize));
+}
+
+#[test]
 fn code_mode_vim_aliases_focus_the_expected_window() {
     let (mut h, _) = setup();
     h.gv.config.mod_key = crate::config::ModKey::Super;

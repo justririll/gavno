@@ -169,7 +169,7 @@ impl Gavno {
             self.release_held_buttons(&pointer);
             pointer.frame(self);
         }
-        self.cursor_status = smithay::input::pointer::CursorImageStatus::default_named();
+        self.set_cursor_status(smithay::input::pointer::CursorImageStatus::default_named());
     }
     pub fn lock_surface_under(
         &self,

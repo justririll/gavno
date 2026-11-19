@@ -62,6 +62,10 @@ pub fn deduplicate(mut networks: Vec<Network>) -> Vec<Network> {
 }
 pub trait Provider: Send {
     fn snapshot(&mut self) -> Result<Snapshot, String>;
+    /// What the bar needs while the panel is closed: radio state and the active network.
+    fn bar_snapshot(&mut self) -> Result<Snapshot, String> {
+        self.snapshot()
+    }
     fn power(&mut self, enabled: bool) -> Result<(), String>;
     fn scan(&mut self) -> Result<(), String>;
     fn connect(&mut self, network: &Network, password: Secret) -> Result<(), String>;
@@ -88,7 +92,7 @@ impl Dbus {
             failure: None,
         }
     }
-    fn read(&mut self) -> zbus::Result<Snapshot> {
+    fn read(&mut self, full: bool) -> zbus::Result<Snapshot> {
         let manager = proxy(&self.connection, ROOT, NM)?;
         let mut result = Snapshot {
             enabled: manager.get_property("WirelessEnabled")?,
@@ -122,13 +126,26 @@ impl Dbus {
         }
         let wireless = proxy(&self.connection, &self.device, WIRELESS)?;
         let active: OwnedObjectPath = wireless.get_property("ActiveAccessPoint")?;
-        let aps: Vec<OwnedObjectPath> = wireless.call("GetAllAccessPoints", &())?;
+        let aps: Vec<OwnedObjectPath> = if full {
+            wireless.call("GetAllAccessPoints", &())?
+        } else if active.as_str() != "/" {
+            vec![active.clone()]
+        } else {
+            Vec::new()
+        };
+        if aps.is_empty() && !full {
+            return Ok(result);
+        }
         let settings = proxy(
             &self.connection,
             "/org/freedesktop/NetworkManager/Settings",
             "org.freedesktop.NetworkManager.Settings",
         )?;
-        let profiles: Vec<OwnedObjectPath> = settings.call("ListConnections", &())?;
+        let profiles: Vec<OwnedObjectPath> = if full {
+            settings.call("ListConnections", &())?
+        } else {
+            Vec::new()
+        };
         let mut saved = HashMap::new();
         for path in profiles {
             let p = proxy(
@@ -184,7 +201,12 @@ impl Dbus {
 }
 impl Provider for Dbus {
     fn snapshot(&mut self) -> Result<Snapshot, String> {
-        self.read().map_err(|_| "NetworkManager unavailable".into())
+        self.read(true)
+            .map_err(|_| "NetworkManager unavailable".into())
+    }
+    fn bar_snapshot(&mut self) -> Result<Snapshot, String> {
+        self.read(false)
+            .map_err(|_| "NetworkManager unavailable".into())
     }
     fn power(&mut self, enabled: bool) -> Result<(), String> {
         self.failure = None;

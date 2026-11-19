@@ -65,11 +65,21 @@ pub(crate) struct Windows {
     dirty: bool,
     writer: Option<Writer>,
     waiting: Vec<Window>,
+    /// The store did not answer in time: windows are no longer held back.
+    gave_up: bool,
     /// Code mode was on when Classic was entered; returning turns it back on.
     code_resume: bool,
     code_saved: Vec<(Output, u64, bool)>,
 }
 impl Windows {
+    /// Whether Classic currently owns the window layout.
+    pub fn in_classic(&self) -> bool {
+        self.active
+    }
+    /// Records whether code mode should come back when Classic ends.
+    pub fn set_code_resume(&mut self, resume: bool) {
+        self.code_resume = resume;
+    }
     pub fn new(active: bool) -> Self {
         Self {
             active,
@@ -80,6 +90,7 @@ impl Windows {
             dirty: false,
             writer: None,
             waiting: Vec::new(),
+            gave_up: false,
             code_resume: false,
             code_saved: Vec::new(),
         }
@@ -208,6 +219,22 @@ fn clamp(relative: [i32; 4], area: Rect) -> Rect {
     )
 }
 
+/// Longest a new window waits for the stored Classic geometry.
+const STORE_WAIT: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// Sends the held-back initial configures.
+fn flush_waiting_windows(gv: &mut Gavno) {
+    for w in std::mem::take(&mut gv.classic.windows.waiting) {
+        if let Some(t) = w
+            .toplevel()
+            .filter(|t| w.alive() && !t.is_initial_configure_sent())
+        {
+            crate::handlers::xdg_shell::prepare_initial_configure(gv, &w);
+            t.send_configure();
+        }
+    }
+}
+
 impl Gavno {
     #[cfg(not(test))]
     pub(crate) fn start_classic_window_store(&mut self) {
@@ -239,18 +266,11 @@ impl Gavno {
                 if changed {
                     gv.persist_classic_windows();
                 }
-                for w in std::mem::take(&mut gv.classic.windows.waiting) {
-                    if let Some(t) = w
-                        .toplevel()
-                        .filter(|t| w.alive() && !t.is_initial_configure_sent())
-                    {
-                        crate::handlers::xdg_shell::prepare_initial_configure(gv, &w);
-                        t.send_configure();
-                    }
-                }
+                flush_waiting_windows(gv);
             }
         }) {
             tracing::warn!(%err, "Failed to watch Classic window store");
+            flush_waiting_windows(self);
             return;
         }
         match std::thread::Builder::new()
@@ -277,7 +297,10 @@ impl Gavno {
                     wake: write_tx,
                 })
             }
-            Err(err) => tracing::warn!(%err, "Failed to start Classic window store"),
+            Err(err) => {
+                tracing::warn!(%err, "Failed to start Classic window store");
+                flush_waiting_windows(self);
+            }
         }
     }
 
@@ -294,12 +317,34 @@ impl Gavno {
     pub(crate) fn delay_classic_configure(&mut self, w: &Window) -> bool {
         if !self.classic_windows_active()
             || self.classic.windows.loaded
+            || self.classic.windows.gave_up
             || self.classic.windows.writer.is_none()
         {
             return false;
         }
         if !self.classic.windows.waiting.contains(w) {
+            let first = self.classic.windows.waiting.is_empty();
             self.classic.windows.waiting.push(w.clone());
+            if first {
+                // One-shot, armed only while a window waits: a stuck disk must
+                // not keep a client without its first configure.
+                use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
+                let armed = self.loop_handle.insert_source(
+                    Timer::from_duration(STORE_WAIT),
+                    |_, _, gv| {
+                        if !gv.classic.windows.loaded {
+                            gv.classic.windows.gave_up = true;
+                            tracing::warn!("Classic window store is slow; configuring windows without it");
+                        }
+                        flush_waiting_windows(gv);
+                        TimeoutAction::Drop
+                    },
+                );
+                if armed.is_err() {
+                    self.classic.windows.waiting.retain(|pending| pending != w);
+                    return false;
+                }
+            }
         }
         true
     }
@@ -386,11 +431,30 @@ impl Gavno {
                     }
                 }
             }
-            if std::mem::take(&mut self.classic.windows.code_resume) {
+            let resume = std::mem::take(&mut self.classic.windows.code_resume);
+            let code_saved = std::mem::take(&mut self.classic.windows.code_saved);
+            if resume && !code_saved.is_empty() {
                 self.code_mode = true;
                 self.dock.code_mode = true;
-                self.code_mode_saved = std::mem::take(&mut self.classic.windows.code_saved);
+                self.code_mode_saved = code_saved;
                 self.sync_bar_hints();
+            } else if resume {
+                // Code mode was switched on while Classic was active: nothing
+                // was saved, so enter it the regular way.
+                self.set_code_mode(true);
+            } else {
+                // Code mode ended during Classic: the saved layouts above still
+                // carry its forced tiling, so give the workspaces their own back.
+                for owner in &mut self.workspaces.outputs {
+                    for ws in &mut owner.list.items {
+                        if let Some((_, _, tiling)) = code_saved
+                            .iter()
+                            .find(|(o, id, _)| *o == owner.output && *id == ws.id)
+                        {
+                            ws.tiling = *tiling;
+                        }
+                    }
+                }
             }
             let mut leaving = std::mem::take(&mut self.classic.windows.tiles);
             // Windows that got their Classic maximize in the initial configure
@@ -973,6 +1037,55 @@ mod tests {
             code_mode_tiles_float_in_classic_and_return(count, true);
             code_mode_tiles_float_in_classic_and_return(count, false);
         }
+    }
+
+    #[test]
+    fn code_mode_requests_made_in_classic_apply_on_return() {
+        let mut h = Harness::new();
+        let o = output(&mut h, "first", 0);
+        // Ends in Classic: code mode off there keeps workspaces floating afterwards.
+        h.gv.workspaces.ensure(&o).list.items[0].tiling = false;
+        h.gv.set_code_mode(true);
+        settle(&mut h, ShellMode::Classic);
+        assert!(h.gv.classic.windows.code_resume);
+        h.gv.set_code_mode(false);
+        assert!(!h.gv.classic.windows.code_resume);
+        settle(&mut h, ShellMode::Gavno);
+        assert!(!h.gv.code_mode);
+        assert!(!h.gv.workspaces.ensure(&o).list.items[0].tiling, "saved floating state comes back");
+        // Enabled while in Classic: resumes on return, and disabling restores the old state.
+        settle(&mut h, ShellMode::Classic);
+        h.gv.set_code_mode(true);
+        assert!(!h.gv.code_mode, "Classic itself stays out of code mode");
+        settle(&mut h, ShellMode::Gavno);
+        assert!(h.gv.code_mode);
+        assert!(h.gv.workspaces.ensure(&o).list.items.iter().all(|ws| ws.tiling));
+        h.gv.set_code_mode(false);
+        assert!(!h.gv.workspaces.ensure(&o).list.items[0].tiling);
+    }
+
+    #[test]
+    fn windows_do_not_wait_forever_for_a_stuck_store() {
+        let mut h = Harness::new();
+        output(&mut h, "first", 0);
+        settle(&mut h, ShellMode::Classic);
+        let w = h.window();
+        h.gv.unmapped.push(w.clone());
+        // A writer without a loader: the load never answers.
+        let (wake, _keep) = mpsc::sync_channel(1);
+        h.gv.classic.windows.writer = Some(Writer { pending: Arc::default(), wake });
+        crate::handlers::xdg_shell::handle_commit(&mut h.gv, w.toplevel().unwrap().wl_surface());
+        assert!(!w.toplevel().unwrap().is_initial_configure_sent());
+        for _ in 0..200 {
+            h.event_loop
+                .dispatch(std::time::Duration::from_millis(5), &mut h.gv)
+                .unwrap();
+            if w.toplevel().unwrap().is_initial_configure_sent() {
+                break;
+            }
+        }
+        assert!(w.toplevel().unwrap().is_initial_configure_sent());
+        assert!(!h.gv.classic.windows.loaded, "persisting stays gated on the real load");
     }
 
     #[test]

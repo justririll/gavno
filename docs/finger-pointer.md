@@ -62,7 +62,7 @@ RGB frames from `libcamerasrc` (falling back to `pipewiresrc`) with
 GStreamer, runs MediaPipe's palm detector only while no hand is tracked and
 the 21-point landmark network on the tracked region every frame (tract, CPU
 only), and turns landmarks into the line protocol of
-`crates/gavno-cam/src/protocol.rs`: pointer position as 0..1 fractions of the
+`crates/gavno-cam-proto/src/lib.rs`: pointer position as 0..1 fractions of the
 active output, button and scroll events, and hand present or lost. Messages
 enter the same synthetic input path the [debug IPC](debugging.md) uses, with
 no environment gate; the gate is the private socket. Held buttons are released

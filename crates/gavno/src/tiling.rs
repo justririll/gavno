@@ -917,12 +917,12 @@ impl Gavno {
         let hit = self.splitter_at(pointer.current_location());
         if let Some((_, s)) = &hit {
             use smithay::input::pointer::{CursorIcon, CursorImageStatus};
-            self.cursor_status = CursorImageStatus::Named(match s.axis {
+            self.set_cursor_status(CursorImageStatus::Named(match s.axis {
                 Axis::X => CursorIcon::ColResize,
                 Axis::Y => CursorIcon::RowResize,
-            });
+            }));
         } else if old.is_some() {
-            self.cursor_status = smithay::input::pointer::CursorImageStatus::default_named();
+            self.set_cursor_status(smithay::input::pointer::CursorImageStatus::default_named());
         }
         let key = |v: &Option<(Output, Splitter)>| {
             v.as_ref().map(|(o, s)| (o.clone(), s.path.clone(), s.cut))

@@ -1,6 +1,6 @@
 //! Webcam finger pointer. Mod+Shift+M starts the `gavno-cam` helper with one
 //! end of a private socketpair as its stdin; the helper tracks the index
-//! finger and sends pointer messages (see `gavno_cam::protocol`). Turning the
+//! finger and sends pointer messages (see `gavno_cam_proto`). Turning the
 //! mode off terminates the helper. While it is off nothing exists: no
 //! process, no event source, no descriptor, no timer.
 //!
@@ -8,16 +8,24 @@
 //! environment gate: the gate here is the private socket to our own child).
 
 use std::{
+    cell::Cell,
     io::Read,
     os::unix::net::UnixStream,
     process::{Child, Command, Stdio},
+    rc::Rc,
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     time::Duration,
 };
 
-use gavno_cam::protocol::{LineReader, Message};
+use gavno_cam_proto::{LineReader, Message};
 use smithay::{
     backend::input::{AxisSource, ButtonState},
-    reexports::calloop::{generic::Generic, Interest, Mode, PostAction, RegistrationToken},
+    reexports::calloop::{
+        channel,
+        generic::Generic,
+        timer::{TimeoutAction, Timer},
+        Interest, Mode, PostAction, RegistrationToken,
+    },
 };
 
 use crate::{ipc::debug_input, Gavno};
@@ -47,18 +55,47 @@ fn helper() -> std::path::PathBuf {
         .unwrap_or_else(|| "gavno-cam".into())
 }
 
-/// SIGTERM now; a short-lived thread reaps the child and kills it if it
-/// lingers, so the compositor thread never waits.
-fn terminate(mut child: Child) {
-    // SAFETY: signalling our own child.
-    unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
+/// Helpers that were told to stop (or are exiting) and not yet reaped. A new
+/// helper must not open the camera while an old one may still hold it.
+static TERMINATING: AtomicUsize = AtomicUsize::new(0);
+/// A restart is waiting for the old helper to go away.
+static RESTART_PENDING: AtomicBool = AtomicBool::new(false);
+/// A restart waits at most this many polls of `RESTART_POLL`.
+const RESTART_POLLS: u32 = 60;
+const RESTART_POLL: Duration = Duration::from_millis(50);
+
+struct Reaped;
+impl Drop for Reaped {
+    fn drop(&mut self) {
+        TERMINATING.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// SIGTERM now (unless the child is already exiting on its own); a short-lived
+/// thread reaps the child and kills it if it lingers, so the compositor thread
+/// never waits. A failing exit status is sent to `report`.
+fn terminate(mut child: Child, signal: bool, report: Option<channel::Sender<String>>) {
+    if signal {
+        // SAFETY: signalling our own child.
+        unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
+    }
+    TERMINATING.fetch_add(1, Ordering::SeqCst);
     let reaper = std::thread::Builder::new().name("gavno-cam-reap".into()).spawn({
         let id = child.id();
         move || {
+            let _guard = Reaped;
             for _ in 0..40 {
                 match child.try_wait() {
                     Ok(None) => std::thread::sleep(Duration::from_millis(50)),
-                    _ => return,
+                    Ok(Some(status)) => {
+                        if let (Some(report), Some(code)) = (report, status.code()) {
+                            if code != 0 {
+                                let _ = report.send(format!("gavno-cam exited with status {code}"));
+                            }
+                        }
+                        return;
+                    }
+                    Err(_) => return,
                 }
             }
             tracing::warn!(pid = id, "gavno-cam ignored SIGTERM; killing it");
@@ -67,6 +104,7 @@ fn terminate(mut child: Child) {
         }
     });
     if let Err(error) = reaper {
+        TERMINATING.fetch_sub(1, Ordering::SeqCst);
         tracing::warn!(%error, "cannot start the gavno-cam reaper");
     }
 }
@@ -84,6 +122,10 @@ impl Gavno {
     }
 
     pub fn toggle_finger_pointer(&mut self) {
+        if self.finger.is_none() && RESTART_PENDING.swap(false, Ordering::SeqCst) {
+            // Toggled off again while the restart was still waiting.
+            return;
+        }
         if self.finger.is_some() {
             self.stop_finger_pointer();
         } else if let Err(error) = self.start_finger_pointer() {
@@ -96,6 +138,16 @@ impl Gavno {
         if !self.config.pointer.camera { return Err("disabled by [pointer] camera = false".into()); }
         if let Some(reason) = self.finger_blocked() { return Err(reason.into()); }
         if self.polkit_visible() { return Err("authorization dialog visible".into()); }
+        if TERMINATING.load(Ordering::SeqCst) > 0 {
+            return self.restart_finger_when_free();
+        }
+        self.start_finger_pointer_now()
+    }
+
+    /// `start_finger_pointer` without the wait for a dying helper.
+    fn start_finger_pointer_now(&mut self) -> Result<(), String> {
+        if self.finger.is_some() { return Ok(()); }
+        if let Some(reason) = self.finger_blocked() { return Err(reason.into()); }
         let output = self.active_output().ok_or("no output")?;
         let size = output.current_mode().map(|m| m.size).ok_or("output has no mode")?;
         let mut command = Command::new(helper());
@@ -107,6 +159,33 @@ impl Gavno {
             .env("GAVNO_CAM_MIN_CUTOFF", pointer.min_cutoff.to_string())
             .env("GAVNO_CAM_BETA", pointer.beta.to_string());
         self.spawn_finger_helper(command)
+    }
+
+    /// The previous helper may still hold the camera: poll with a one-shot
+    /// timer (bounded) and start once it is reaped.
+    fn restart_finger_when_free(&mut self) -> Result<(), String> {
+        if RESTART_PENDING.swap(true, Ordering::SeqCst) { return Ok(()); }
+        let mut polls = 0;
+        let timer = self.loop_handle.insert_source(Timer::from_duration(RESTART_POLL), move |_, _, gv| {
+            if !RESTART_PENDING.load(Ordering::SeqCst) { return TimeoutAction::Drop; }
+            polls += 1;
+            if TERMINATING.load(Ordering::SeqCst) > 0 && polls < RESTART_POLLS {
+                return TimeoutAction::ToDuration(RESTART_POLL);
+            }
+            RESTART_PENDING.store(false, Ordering::SeqCst);
+            // `TERMINATING` may still be set after the bound: start anyway.
+            if gv.finger.is_none() {
+                if let Err(error) = gv.start_finger_pointer_now() {
+                    tracing::warn!(%error, "finger pointer not started");
+                }
+            }
+            TimeoutAction::Drop
+        });
+        if let Err(error) = timer {
+            RESTART_PENDING.store(false, Ordering::SeqCst);
+            return Err(format!("cannot schedule restart: {error}"));
+        }
+        Ok(())
     }
 
     /// Starts `command` with a fresh socketpair as stdin and watches the other end.
@@ -132,13 +211,12 @@ impl Gavno {
                 }
             }
             for message in messages {
-                gv.finger_message(message);
+                if gv.finger_message(message) { return Ok(PostAction::Remove); }
             }
             if closed {
                 // The helper exited by itself (no hand for 60 s, camera error).
                 // This source is dropped by the return value; do not remove it twice.
-                if let Some(finger) = gv.finger.as_mut() { finger.token = None; }
-                gv.stop_finger_pointer();
+                gv.finger_helper_exited();
                 return Ok(PostAction::Remove);
             }
             Ok(PostAction::Continue)
@@ -150,9 +228,37 @@ impl Gavno {
                 Ok(())
             }
             Err(error) => {
-                terminate(child);
+                terminate(child, true, None);
                 Err(format!("cannot watch gavno-cam: {error}"))
             }
+        }
+    }
+
+    /// The helper closed its socket: end the mode and, when it failed, say so.
+    fn finger_helper_exited(&mut self) {
+        let Some(finger) = self.finger.as_mut() else { return };
+        finger.token = None;
+        let child = finger.child.take();
+        self.stop_finger_pointer();
+        let Some(child) = child else { return };
+        let (tx, rx) = channel::channel::<String>();
+        let token = Rc::new(Cell::new(None));
+        let slot = token.clone();
+        let inserted = self.loop_handle.insert_source(rx, move |event, _, gv| {
+            match event {
+                channel::Event::Msg(error) => {
+                    tracing::warn!(%error, "finger pointer helper failed");
+                    gv.camera_notification("Camera unavailable", "The finger pointer could not use the camera.");
+                    if let Some(token) = slot.take() { gv.loop_handle.remove(token); }
+                }
+                channel::Event::Closed => {
+                    if let Some(token) = slot.take() { gv.loop_handle.remove(token); }
+                }
+            }
+        });
+        match inserted {
+            Ok(t) => { token.set(Some(t)); terminate(child, false, Some(tx)); }
+            Err(_) => terminate(child, false, None),
         }
     }
 
@@ -164,7 +270,7 @@ impl Gavno {
             if finger.left { debug_input::button(self, BTN_LEFT, ButtonState::Released); }
             if finger.right { debug_input::button(self, BTN_RIGHT, ButtonState::Released); }
         }
-        if let Some(child) = finger.child.take() { terminate(child); }
+        if let Some(child) = finger.child.take() { terminate(child, true, None); }
         self.set_camera_indicator(None);
     }
 
@@ -180,11 +286,16 @@ impl Gavno {
         if !self.config.pointer.camera { self.stop_finger_pointer(); }
     }
 
-    pub(crate) fn finger_message(&mut self, message: Message) {
-        let Some(finger) = self.finger.as_ref() else { return };
+    /// Applies one message. Returns true when it ended the mode, in which case
+    /// the calling source callback must return `PostAction::Remove`.
+    pub(crate) fn finger_message(&mut self, message: Message) -> bool {
+        let Some(finger) = self.finger.as_ref() else { return false };
         if self.finger_blocked().is_some() {
+            // Stopping from inside the source's own callback: clear the token
+            // first and let the callback's `Remove` drop the source.
+            if let Some(finger) = self.finger.as_mut() { finger.token = None; }
             self.stop_finger_pointer();
-            return;
+            return true;
         }
         // An authorization dialog must not be clicked by a stray hand; only
         // releases of buttons already held still pass.
@@ -197,13 +308,13 @@ impl Gavno {
                 }
             }
             Message::Motion { x, y } if !modal => {
-                let Some(geo) = self.active_output().and_then(|o| self.space.output_geometry(&o)) else { return };
+                let Some(geo) = self.active_output().and_then(|o| self.space.output_geometry(&o)) else { return false };
                 let (x, y) = (f64::from(geo.loc.x) + f64::from(x) * f64::from(geo.size.w), f64::from(geo.loc.y) + f64::from(y) * f64::from(geo.size.h));
                 debug_input::pointer_to(self, x, y);
             }
             Message::Button { right, pressed } => {
                 let held = if right { finger.right } else { finger.left };
-                if pressed == held || (pressed && modal) { return; }
+                if pressed == held || (pressed && modal) { return false; }
                 let finger = self.finger.as_mut().unwrap();
                 *(if right { &mut finger.right } else { &mut finger.left }) = pressed;
                 let state = if pressed { ButtonState::Pressed } else { ButtonState::Released };
@@ -212,6 +323,7 @@ impl Gavno {
             Message::Scroll { dy } if !modal => debug_input::scroll(self, 0.0, f64::from(dy), AxisSource::Wheel),
             Message::Motion { .. } | Message::Scroll { .. } => {}
         }
+        false
     }
 }
 
