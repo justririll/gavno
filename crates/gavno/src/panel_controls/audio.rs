@@ -31,6 +31,8 @@ pub struct Endpoint {
     pub icon: String,
     pub volume: u8,
     pub muted: bool,
+    /// Identifiers a desktop entry may be known by (stream endpoints only).
+    pub app_ids: Vec<String>,
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Snapshot {
@@ -54,7 +56,63 @@ fn field(v: &Value, key: &str) -> String {
         .take(256)
         .collect()
 }
+/// Symbolic icon of an output or input device from its pulse properties.
+fn device_icon(props: &Value, name: &str, source: bool) -> String {
+    let form = field(props, "device.form_factor");
+    let bus = field(props, "device.bus");
+    let hint = field(props, "device.icon_name");
+    let name = name.to_ascii_lowercase();
+    let bluetooth = bus == "bluetooth" || name.starts_with("bluez_");
+    if source {
+        return match form.as_str() {
+            "headset" | "headphone" | "hands-free" if bluetooth => "bluetooth-symbolic",
+            _ => "audio-input-microphone-symbolic",
+        }
+        .into();
+    }
+    match form.as_str() {
+        "headphone" | "headset" | "hands-free" | "hifi" if !hint.contains("speaker") => {
+            "audio-headphones-symbolic"
+        }
+        "speaker" | "computer" | "tv" | "portable" => "audio-speakers-symbolic",
+        _ if bluetooth => "bluetooth-symbolic",
+        _ if name.contains("hdmi") || name.contains("displayport") || hint.contains("video-display") => {
+            "video-display-symbolic"
+        }
+        _ if hint.contains("headphone") || hint.contains("headset") => "audio-headphones-symbolic",
+        _ => "audio-speakers-symbolic",
+    }
+    .into()
+}
+/// Resolves missing stream icons through the desktop entries. Runs on the
+/// audio worker; reading the entries never touches the compositor thread.
+pub(super) fn resolve_icons(
+    entries: &mut crate::desktop_entry::DesktopEntries,
+    streams: &mut [Endpoint],
+) {
+    for stream in streams {
+        if !stream.icon.is_empty() {
+            continue;
+        }
+        let entry = stream
+            .app_ids
+            .iter()
+            .find_map(|id| entries.resolve(id).filter(|e| !e.icon.is_empty()));
+        stream.icon = match entry {
+            Some(entry) => entry.icon,
+            // Many themes ship an icon named after the binary.
+            None => stream
+                .app_ids
+                .first()
+                .map(|id| id.to_ascii_lowercase())
+                .unwrap_or_default(),
+        };
+    }
+}
 pub fn parse_list(text: &str, streams: bool) -> Result<Vec<Endpoint>, String> {
+    parse_devices(text, streams, false)
+}
+pub fn parse_devices(text: &str, streams: bool, source: bool) -> Result<Vec<Endpoint>, String> {
     let list: Value =
         serde_json::from_str(text).map_err(|_| "Invalid audio response".to_string())?;
     let list = list.as_array().ok_or("Invalid audio list")?;
@@ -85,6 +143,25 @@ pub fn parse_list(text: &str, streams: bool) -> Result<Vec<Endpoint>, String> {
             } else {
                 (levels.iter().sum::<u64>() / levels.len() as u64 * 100 / 65536).min(100) as u8
             };
+            let icon = if streams {
+                field(props, "application.icon_name")
+            } else {
+                device_icon(props, &field(v, "name"), source)
+            };
+            let app_ids = if streams {
+                [
+                    "pipewire.access.portal.app_id",
+                    "application.id",
+                    "application.process.binary",
+                    "application.name",
+                ]
+                .iter()
+                .map(|key| field(props, key))
+                .filter(|id| !id.is_empty())
+                .collect()
+            } else {
+                Vec::new()
+            };
             Some(Endpoint {
                 id: if streams {
                     index.to_string()
@@ -96,9 +173,10 @@ pub fn parse_list(text: &str, streams: bool) -> Result<Vec<Endpoint>, String> {
                 } else {
                     name
                 },
-                icon: field(props, "application.icon_name"),
+                icon,
                 volume: level,
                 muted: v["mute"].as_bool().unwrap_or(false),
+                app_ids,
             })
         })
         .collect())
@@ -112,6 +190,7 @@ pub trait Provider: Send {
 }
 pub struct Pactl {
     subscription: Subscription,
+    entries: crate::desktop_entry::DesktopEntries,
 }
 enum SubscriptionCommand {
     Start,
@@ -201,7 +280,7 @@ impl Pactl {
             });
         let subscription = Subscription(send);
         let _ = subscription.0.send(SubscriptionCommand::Start);
-        Self { subscription }
+        Self { subscription, entries: Default::default() }
     }
 }
 fn query(args: &[&str]) -> Result<String, String> {
@@ -229,8 +308,9 @@ impl Provider for Pactl {
         let info: Value = serde_json::from_str(&query(&["--format=json", "info"])?)
             .map_err(|_| "Invalid audio server info".to_string())?;
         let sinks = parse_list(&query(&["--format=json", "list", "sinks"])?, false)?;
-        let sources = parse_list(&query(&["--format=json", "list", "sources"])?, false)?;
-        let streams = parse_list(&query(&["--format=json", "list", "sink-inputs"])?, true)?;
+        let sources = parse_devices(&query(&["--format=json", "list", "sources"])?, false, true)?;
+        let mut streams = parse_list(&query(&["--format=json", "list", "sink-inputs"])?, true)?;
+        resolve_icons(&mut self.entries, &mut streams);
         Ok(Snapshot {
             output: sinks
                 .iter()

@@ -197,6 +197,10 @@ pub struct DesktopEntries {
     entries: Option<Vec<DesktopEntry>>,
 }
 impl DesktopEntries {
+    #[cfg(test)]
+    pub fn from_entries(entries: Vec<DesktopEntry>) -> Self {
+        Self { entries: Some(entries) }
+    }
     pub fn resolve(&mut self, app: &str) -> Option<DesktopEntry> {
         let entries = self.entries.get_or_insert_with(|| load(&data_dirs()));
         let key = app.trim_end_matches(".desktop");

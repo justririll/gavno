@@ -60,7 +60,7 @@ pub enum Action {
     ToggleCodeMode,
     WindowHints,
     CheatSheet,
-    PanelControls(crate::panel_controls::Kind),
+    PanelControls(crate::panel_controls::Page),
 }
 
 impl Gavno {
@@ -505,13 +505,13 @@ impl Gavno {
             return None;
         }
         if mods.shift && !mods.ctrl {
-            let kind = match sym {
-                keysyms::KEY_n | keysyms::KEY_N => Some(crate::panel_controls::Kind::Wifi),
-                keysyms::KEY_b | keysyms::KEY_B => Some(crate::panel_controls::Kind::Bluetooth),
-                keysyms::KEY_v | keysyms::KEY_V => Some(crate::panel_controls::Kind::Audio),
+            let page = match sym {
+                keysyms::KEY_n | keysyms::KEY_N => Some(crate::panel_controls::Page::Wifi),
+                keysyms::KEY_b | keysyms::KEY_B => Some(crate::panel_controls::Page::Bluetooth),
+                keysyms::KEY_v | keysyms::KEY_V => Some(crate::panel_controls::Page::Audio),
                 _ => None,
             };
-            if let Some(kind) = kind { return Some(Action::PanelControls(kind)); }
+            if let Some(page) = page { return Some(Action::PanelControls(page)); }
         }
         if !mods.ctrl && !mods.shift && matches!(sym, keysyms::KEY_slash | keysyms::KEY_F1) { return Some(Action::CheatSheet); }
         if !mods.ctrl && !mods.shift && matches!(sym, keysyms::KEY_g | keysyms::KEY_G) { return Some(Action::WindowHints); }
@@ -594,7 +594,7 @@ impl Gavno {
             Action::CloseOverview => self.close_overview(),
             Action::WindowHints => self.toggle_window_hints(),
             Action::CheatSheet => self.toggle_cheat_sheet(),
-            Action::PanelControls(kind) => { if let Some(output) = self.active_output() { self.toggle_panel_controls(kind, &output); } },
+            Action::PanelControls(page) => { if let Some(output) = self.active_output() { self.toggle_panel_controls(page, &output); } },
             Action::ToggleCodeMode => self.set_code_mode(!self.code_mode),
             Action::Quit => self.quit(),
             Action::Spawn(cmd) => self.launch_shell(&cmd, None),
@@ -784,9 +784,8 @@ impl Gavno {
         }
         if button_state==ButtonState::Released && self.suppressed_buttons.contains(&button) {
             self.suppressed_buttons.retain(|b|*b!=button);
-            // Shell presses (bar sliders, dock) are suppressed too; their
-            // release still has to end the bar drag.
-            self.bar_release(button);
+            // Shell presses (panel sliders, dock) are suppressed too; their
+            // release still has to end the slider drag.
             self.music_release();
             self.topbar.controls.release();
             return;

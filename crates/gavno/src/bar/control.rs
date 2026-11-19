@@ -2,7 +2,7 @@
 use super::{
     osd,
     status::{self, Command, Event, Media},
-    BarAction, Gavno,
+    Gavno,
 };
 use smithay::{
     input::keyboard::keysyms,
@@ -243,7 +243,6 @@ impl Gavno {
         if self.protocols.locks.locked {
             return;
         }
-        self.bar_drag(pos);
         let outputs: Vec<_> = self.space.outputs().cloned().collect();
         let mut changed = false;
         for o in outputs {
@@ -267,97 +266,54 @@ impl Gavno {
             self.queue_redraw_all();
         }
     }
-    pub fn bar_drag(&mut self, pos: Point<f64, Logical>) -> () {
-        self.guard(crate::module::Feature::Bar, (), |gv| gv.bar_drag_feature(pos))
-    }
-    fn bar_drag_feature(&mut self, pos: Point<f64, Logical>) -> () {
-        let Some((output, action)) = self.topbar.drag.clone() else {
-            return;
-        };
-        let Some(geo) = self.space.output_geometry(&output) else {
-            return;
-        };
-        let local = pos - geo.loc.to_f64();
-        let Some(v) = self.topbar.views.iter().find(|v| v.output == output) else {
-            return;
-        };
-        let Some((r, _)) = v.hits.iter().find(|(_, a)| a == &action) else {
-            return;
-        };
-        let level = ((local.x - r.loc.x - 7.0) / (r.size.w - 14.0)).clamp(0.0, 1.0);
-        self.bar_set_slider(action, level);
-    }
     fn set_software_brightness(&mut self, level: f64) {
         self.media.brightness.set(level, self.start_time.elapsed());
         self.sync_brightness();
         self.show_bar_osd(osd::Kind::Brightness, self.media.brightness.level(), false);
     }
-    fn bar_set_slider(&mut self, action: BarAction, level: f64) {
+    /// Brightness from the quick settings slider. Backlight or software
+    /// dimming, without an OSD: the slider is its own feedback.
+    pub(crate) fn panel_set_brightness(&mut self, level: f64) {
+        self.set_brightness(level, false);
+    }
+    fn set_brightness(&mut self, level: f64, osd: bool) {
         self.sync_brightness();
-        if action == BarAction::Brightness && self.media.brightness.software {
-            self.set_software_brightness(level);
+        if self.media.brightness.software {
+            self.media.brightness.set(level, self.start_time.elapsed());
+            self.sync_brightness();
+            if osd {
+                self.show_bar_osd(osd::Kind::Brightness, self.media.brightness.level(), false);
+            }
+            self.queue_redraw_all();
             return;
         }
-        let command = if action == BarAction::Volume {
-            let muted = self.media.status.volume.is_some_and(|v| v.muted);
-            self.media.status.volume = Some(status::Volume { level, muted });
-            self.show_bar_osd(osd::Kind::Volume, level, muted);
-            Command::Volume(level)
+        let actual = if let Some(b) = self.media.status.brightness.as_mut() {
+            b.value = ((b.max as f64 * level).round() as u32).clamp(b.min_value(), b.max);
+            b.level()
         } else {
-            let actual = if let Some(b) = self.media.status.brightness.as_mut() {
-                b.value = ((b.max as f64 * level).round() as u32).clamp(b.min_value(), b.max);
-                b.level()
-            } else {
-                level
-            };
-            self.media.brightness.backlight = self.media.status.brightness.clone();
-            self.show_bar_osd(osd::Kind::Brightness, actual, false);
-            Command::Brightness(level)
+            level
         };
+        self.media.brightness.backlight = self.media.status.brightness.clone();
+        if osd {
+            self.show_bar_osd(osd::Kind::Brightness, actual, false);
+        }
         if let Some(worker) = &self.media.worker {
-            let _ = worker.send(command);
+            let _ = worker.send(Command::Brightness(level));
         }
         self.guard(crate::module::Feature::Bar, (), |gv| gv.topbar.status = gv.media.status.clone());
         self.queue_redraw_all();
-    }
-    pub fn bar_release(&mut self, button: u32) -> () {
-        self.guard(crate::module::Feature::Bar, (), |gv| gv.bar_release_feature(button))
-    }
-    fn bar_release_feature(&mut self, button: u32) -> () {
-        if button == 0x110 {
-            self.bar_drag(self.pointer_location());
-            self.topbar.drag = None;
-        }
     }
     pub fn bar_axis(&mut self, output: &Output, p: Point<f64, Logical>, delta: f64) -> bool {
         self.guard(crate::module::Feature::Bar, false, |gv| gv.bar_axis_feature(output, p, delta))
     }
     fn bar_axis_feature(&mut self, output: &Output, p: Point<f64, Logical>, delta: f64) -> bool {
-        let action = self.topbar.action(output, p);
-        if matches!(action, Some(BarAction::Volume | BarAction::Brightness)) {
-            let action = action.unwrap();
-            let old = if action == BarAction::Volume {
-                self.media.status.volume.map(|v| v.level).unwrap_or(0.0)
-            } else {
-                self.media
-                    .status
-                    .brightness
-                    .as_ref()
-                    .map(|b| b.level())
-                    .unwrap_or(0.0)
-            };
-            if delta != 0.0 {
-                self.bar_set_slider(action, (old - delta.signum() * 0.05).clamp(0.0, 1.0));
-            }
-            return true;
-        }
         let Some(v) = self.topbar.views.iter().find(|v| &v.output == output) else {
             return false;
         };
         let Some(l) = &v.layout else {
             return false;
         };
-        if l.volume.to_f64().contains(p) {
+        if l.status.to_f64().contains(p) {
             if self.topbar.controls.master_step(delta) { return true; }
             if delta != 0.0 {
                 self.bar_media(if delta < 0.0 {
@@ -394,7 +350,7 @@ mod tests {
     use super::*;
     use crate::{
         state::tests::Harness,
-        topbar::{BarView, Canvas, Layout, Popover, PopoverLayout},
+        topbar::{BarAction, BarView, Canvas},
     };
     use smithay::output::{Mode, PhysicalProperties, Subpixel};
     use std::sync::mpsc;
@@ -439,7 +395,7 @@ mod tests {
                 }), ..Default::default()
             }).unwrap();
             h.event_loop.dispatch(Duration::ZERO, &mut h.gv).unwrap();
-            let (layout, snapshot) = super::super::media_layout(&h.gv.topbar.now_playing, width, 55, true, true, &h.gv.features);
+            let (layout, snapshot) = super::super::media_layout(&h.gv.topbar.now_playing, width, 55, true, true, &h.gv.features, true);
             assert_eq!(snapshot.player.as_ref().unwrap().label(), "Track — Artist");
             let area = layout.media.expect("player update exposes capsule");
             let mut canvas = Canvas::default();
@@ -517,7 +473,7 @@ mod tests {
         h.gv.config.display.brightness_control = crate::brightness::Control::Software;
         let hardware = status::Brightness { name: "test-panel".into(), value: 80, max: 100 };
         h.gv.bar_status(Event::Status(status::Snapshot { brightness: Some(hardware.clone()), ..Default::default() }));
-        h.gv.bar_set_slider(BarAction::Brightness, 0.5);
+        h.gv.set_brightness(0.5, true);
         assert_eq!(h.gv.media.brightness.level(), 0.5);
         h.gv.protocols.locks.locked = true;
         assert!(h.gv.bar_key(keysyms::KEY_XF86MonBrightnessDown, 240, true));
@@ -525,10 +481,10 @@ mod tests {
         assert!((h.gv.media.brightness.level() - 0.45).abs() < 1e-10);
         h.gv.bar_media(Media::BrightnessUp);
         assert_eq!(h.gv.topbar.status.brightness.as_ref().unwrap().level(), 0.5);
-        h.gv.bar_set_slider(BarAction::Brightness, 0.0);
+        h.gv.set_brightness(0.0, true);
         h.gv.bar_media(Media::BrightnessDown);
         assert_eq!(h.gv.media.brightness.level(), 0.05);
-        h.gv.bar_set_slider(BarAction::Brightness, 2.0);
+        h.gv.set_brightness(2.0, true);
         assert_eq!(h.gv.media.brightness.level(), 1.0);
         // An asynchronous hardware refresh must not replace software feedback.
         h.gv.bar_status(Event::Status(status::Snapshot { brightness: Some(hardware.clone()), ..Default::default() }));
@@ -542,7 +498,7 @@ mod tests {
         assert_eq!(h.gv.topbar.status.brightness, Some(hardware));
         assert!(!h.gv.media.brightness.software);
         assert!(!h.gv.media.brightness.active());
-        h.gv.bar_set_slider(BarAction::Brightness, 0.3);
+        h.gv.set_brightness(0.3, true);
         assert!(matches!(rx.try_recv(), Ok(Command::Brightness(level)) if level == 0.3));
     }
     #[test]
@@ -564,56 +520,20 @@ mod tests {
     fn popovers_are_exclusive_and_escape_and_super_close_them() {
         let (mut h, o) = setup();
         h.gv.bar_action(&o, BarAction::PowerMenu);
-        assert_eq!(h.gv.topbar.popover, Popover::Quick);
+        assert!(h.gv.panel_controls_open());
         h.gv.bar_action(&o, BarAction::Calendar);
-        assert_eq!(h.gv.topbar.popover, Popover::Calendar);
+        assert!(!h.gv.panel_controls_open());
         assert_eq!(h.gv.topbar.menu, Some(o.clone()));
         assert!(h.gv.bar_key(keysyms::KEY_Escape, 9, true));
         assert!(h.gv.topbar.menu.is_none());
+        // Quick settings take the keyboard while open, so Escape reaches the
+        // panel; Super is the one the core filter still closes.
         h.gv.bar_action(&o, BarAction::PowerMenu);
+        assert!(h.gv.panel_controls_open());
+        h.gv.bar_action(&o, BarAction::Calendar);
         assert!(h.gv.bar_key(keysyms::KEY_Super_L, 133, true));
         assert!(h.gv.topbar.menu.is_none());
         assert!(h.gv.bar_key(keysyms::KEY_Super_L, 133, false));
         assert!(!h.gv.media.core_keys.contains(&133));
-    }
-    #[test]
-    fn slider_drag_release_keeps_the_final_value_and_never_leaks_to_clients() {
-        let (mut h, o) = setup();
-        let (tx, rx) = mpsc::channel();
-        h.gv.media.worker = Some(tx);
-        let panel = PopoverLayout::quick(1646, false);
-        let slider = panel
-            .items
-            .iter()
-            .find(|(i, _)| *i == super::super::Item::Volume)
-            .unwrap()
-            .1;
-        h.gv.topbar.views.push(BarView {
-            output: o.clone(),
-            canvas: Canvas::default(),
-            dots: vec![],
-            hits: vec![(slider.to_f64(), BarAction::Volume)],
-            visible: true,
-            hover: None,
-            layout: Some(Layout::new(1646, 55, true)),
-            popover: Some(panel),
-        });
-        h.gv.bar_action(&o, BarAction::PowerMenu);
-        h.gv.topbar.drag = Some((o, BarAction::Volume));
-        h.gv.bar_drag(
-            (
-                slider.loc.x as f64 + slider.size.w as f64 - 7.0,
-                slider.loc.y as f64 + 16.0,
-            )
-                .into(),
-        );
-        assert!(matches!(rx.try_recv(),Ok(Command::Volume(v)) if v==1.0));
-        assert!(h.gv.shell_contains((800.0, 500.0).into()));
-        h.gv.bar_release(0x110);
-        assert!(h.gv.topbar.drag.is_none());
-        assert!(matches!(rx.try_recv(),Ok(Command::Volume(v)) if v==0.0));
-        // The current pointer is at the origin, so release clamps the final
-        // drag to zero even though it is outside the popover.
-        assert_eq!(h.gv.media.status.volume.unwrap().level, 0.0);
     }
 }

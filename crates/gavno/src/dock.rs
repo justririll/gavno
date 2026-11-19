@@ -747,7 +747,6 @@ impl Gavno {
     }
     pub fn shell_button(&mut self, button: u32, pressed: bool) -> bool {
         if !pressed {
-            self.bar_release(button);
             if let Some(i) = self.suppressed_buttons.iter().position(|b| *b == button) {
                 self.suppressed_buttons.remove(i);
                 return true;

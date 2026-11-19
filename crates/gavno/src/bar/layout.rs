@@ -4,6 +4,42 @@ pub type Rect = Rectangle<i32, Logical>;
 pub fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
     Rectangle::new((x, y).into(), (w.max(0), h.max(0)).into())
 }
+/// One slot of the status cluster at the right end of the bar. Adding an
+/// indicator (for example a camera dot) means adding a variant, one entry in
+/// `Layout::status_slots` and one arm where the slot is drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StatusItem {
+    Layout,
+    Wifi,
+    Volume,
+    Bluetooth,
+    Battery,
+}
+/// Padding inside the cluster capsule and gap between its slots (8 px grid).
+pub const CLUSTER_PAD: i32 = 8;
+pub const CLUSTER_GAP: i32 = 8;
+pub const CLUSTER_ICON: i32 = 16;
+/// Width of the battery slot: fill icon, gap and a three digit percentage.
+pub const BATTERY_SLOT: i32 = 60;
+/// Width of the layout label slot ("EN", "RU").
+pub const LAYOUT_SLOT: i32 = 24;
+/// Right-aligns `slots` into one capsule ending 8 px before `width`.
+pub fn status_cluster(width: i32, slots: &[(StatusItem, i32)]) -> (Rect, Vec<(StatusItem, Rect)>) {
+    let inner: i32 = slots.iter().map(|(_, w)| *w).sum::<i32>()
+        + CLUSTER_GAP * slots.len().saturating_sub(1) as i32;
+    let total = inner + 2 * CLUSTER_PAD;
+    let x = width - 8 - total;
+    let mut at = x + CLUSTER_PAD;
+    let items = slots
+        .iter()
+        .map(|(item, w)| {
+            let r = rect(at, 8, *w, CLUSTER_ICON);
+            at += w + CLUSTER_GAP;
+            (*item, r)
+        })
+        .collect();
+    (rect(x, 4, total, 24), items)
+}
 #[derive(Debug)]
 pub struct Layout {
     pub workspaces: Rect,
@@ -12,21 +48,29 @@ pub struct Layout {
     pub title: Rect,
     pub clock: Rect,
     pub media: Option<Rect>,
+    /// The whole status capsule: one hover highlight, one click target.
     pub status: Rect,
-    pub layout: Option<Rect>,
-    pub network: Rect,
-    pub volume: Rect,
-    pub bluetooth: Rect,
-    pub battery: Rect,
+    pub slots: Vec<(StatusItem, Rect)>,
 }
 impl Layout {
+    #[cfg(test)]
     pub fn new(width: i32, workspace_width: i32, layouts: bool) -> Self {
-        let status = rect(
-            width - if layouts { 236 } else { 204 },
-            4,
-            if layouts { 228 } else { 196 },
-            24,
-        );
+        Self::with_battery(width, workspace_width, layouts, BATTERY_SLOT)
+    }
+    /// `battery` is the width of the battery slot: `BATTERY_SLOT` for a
+    /// battery, `CLUSTER_ICON` for the plug shown on machines without one.
+    pub fn with_battery(width: i32, workspace_width: i32, layouts: bool, battery: i32) -> Self {
+        let mut slots = Vec::new();
+        if layouts {
+            slots.push((StatusItem::Layout, LAYOUT_SLOT));
+        }
+        slots.extend([
+            (StatusItem::Wifi, CLUSTER_ICON),
+            (StatusItem::Volume, CLUSTER_ICON),
+            (StatusItem::Bluetooth, CLUSTER_ICON),
+            (StatusItem::Battery, battery),
+        ]);
+        let (status, slots) = status_cluster(width, &slots);
         let clock = rect(((width - 184) / 2).min(status.loc.x - 192).max(0), 4, 184, 24);
         let workspaces = rect(8, 4, workspace_width.min((clock.loc.x - 104).max(24)), 24);
         let toggle = rect(workspaces.loc.x + workspaces.size.w + 8, 4, 32, 24);
@@ -37,7 +81,6 @@ impl Layout {
             (clock.loc.x - 8 - app.loc.x - 24).max(0),
             18,
         );
-        let x = status.loc.x + if layouts { 40 } else { 8 };
         Self {
             workspaces,
             toggle,
@@ -46,12 +89,12 @@ impl Layout {
             clock,
             media: None,
             status,
-            layout: layouts.then(|| rect(status.loc.x + 8, 4, 28, 24)),
-            network: rect(x, 8, 16, 16),
-            volume: rect(x + 32, 8, 16, 16),
-            bluetooth: rect(x + 64, 8, 16, 16),
-            battery: rect(x + 124, 8, 56, 16),
+            slots,
         }
+    }
+    #[cfg(test)]
+    pub fn slot(&self, item: StatusItem) -> Option<Rect> {
+        self.slots.iter().find(|(i, _)| *i == item).map(|(_, r)| *r)
     }
     pub fn with_media(mut self, enabled: bool) -> Self {
         if enabled {
@@ -64,20 +107,8 @@ impl Layout {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Item {
-    MediaInfo,
-    MediaPrevious,
-    MediaPlayPause,
-    MediaNext,
-    VolumeIcon,
-    Volume,
-    Brightness,
-    Network,
-    Bluetooth,
-    Battery,
-    Power(usize),
     Previous,
     Next,
-    DoNotDisturb,
     ClearNotifications,
     Notification(usize),
 }
@@ -95,58 +126,6 @@ impl PopoverLayout {
         self.panel.loc.x += dx;
         self.panel.loc.y += dy;
         for (_, r) in &mut self.items { r.loc.x += dx; r.loc.y += dy; }
-    }
-    pub fn quick(width: i32, brightness: bool) -> Self {
-        let x = (width - 328).max(8);
-        let y = 40;
-        let mut items = vec![
-            (Item::VolumeIcon, rect(x + 16, y + 20, 32, 32)),
-            (Item::Volume, rect(x + 64, y + 20, 232, 32)),
-        ];
-        let offset = if brightness {
-            items.push((Item::Brightness, rect(x + 64, y + 68, 232, 32)));
-            48
-        } else {
-            0
-        };
-        items.push((Item::Network, rect(x + 16, y + 68 + offset, 288, 40)));
-        items.push((Item::Battery, rect(x + 16, y + 116 + offset, 140, 40)));
-        items.push((Item::Bluetooth, rect(x + 164, y + 116 + offset, 140, 40)));
-        for i in 0..5 {
-            items.push((
-                Item::Power(i),
-                rect(x + 20 + i as i32 * 56, y + 172 + offset, 40, 40),
-            ));
-        }
-        Self {
-            panel: rect(x, y, 320, 244 + offset),
-            items,
-        }
-    }
-    pub fn quick_notifications(width: i32, brightness: bool, enabled: bool) -> Self {
-        let mut layout = Self::quick(width, brightness);
-        if enabled {
-            let y = layout.panel.loc.y + 164 + if brightness { 48 } else { 0 };
-            for (item, r) in &mut layout.items {
-                if matches!(item, Item::Power(_)) { r.loc.y += 48; }
-            }
-            layout.items.push((Item::DoNotDisturb, rect(layout.panel.loc.x + 16, y, 288, 40)));
-            layout.panel.size.h += 48;
-        }
-        layout
-    }
-    pub fn with_media(mut self, enabled: bool) -> Self {
-        if enabled {
-            for (_, area) in &mut self.items { area.loc.y += 116; }
-            let x = self.panel.loc.x + 16;
-            let y = self.panel.loc.y + 16;
-            self.items.push((Item::MediaInfo, rect(x, y, 288, 52)));
-            for (i, item) in [Item::MediaPrevious, Item::MediaPlayPause, Item::MediaNext].into_iter().enumerate() {
-                self.items.push((item, rect(x + 76 + i as i32 * 48, y + 60, 40, 32)));
-            }
-            self.panel.size.h += 116;
-        }
-        self
     }
     pub fn calendar_notifications(width: i32, count: usize) -> Self {
         let mut layout = Self::calendar(width);
@@ -209,18 +188,33 @@ mod tests {
     #[test]
     fn popover_items_are_inside_panel_and_disjoint() {
         for l in [
-            PopoverLayout::quick(800, false),
-            PopoverLayout::quick(1646, true),
-            PopoverLayout::quick_notifications(1646, true, true).with_media(true),
-            PopoverLayout::quick_notifications(1280, false, true).with_media(true),
             PopoverLayout::calendar(1280),
             PopoverLayout::calendar_notifications(1280, 4),
-            PopoverLayout::quick_notifications(1646, true, true),
         ] {
             for (i, (_, r)) in l.items.iter().enumerate() {
                 assert!(l.panel.contains_rect(*r));
                 for (_, s) in &l.items[i + 1..] {
                     assert!(!r.overlaps(*s));
+                }
+            }
+        }
+    }
+    #[test]
+    fn status_cluster_is_one_aligned_capsule_on_the_8px_grid() {
+        for width in [800, 1280, 1646, 2560] {
+            for layouts in [false, true] {
+                for battery in [CLUSTER_ICON, BATTERY_SLOT] {
+                    let l = Layout::with_battery(width, 88, layouts, battery);
+                    assert_eq!(l.status.loc.x + l.status.size.w, width - 8);
+                    assert_eq!(l.slot(StatusItem::Layout).is_some(), layouts);
+                    let mut previous_end = l.status.loc.x + CLUSTER_PAD;
+                    for (i, (_, r)) in l.slots.iter().enumerate() {
+                        assert!(l.status.contains_rect(*r));
+                        assert_eq!(r.loc.x, previous_end + if i == 0 { 0 } else { CLUSTER_GAP });
+                        previous_end = r.loc.x + r.size.w;
+                    }
+                    assert_eq!(previous_end + CLUSTER_PAD, l.status.loc.x + l.status.size.w);
+                    assert_eq!(l.slot(StatusItem::Wifi).unwrap().size, (16, 16).into());
                 }
             }
         }

@@ -524,16 +524,21 @@ The bar's now-playing capsule also toggles playback. Quick settings and the
 built-in lock screen offer previous / play-pause / next buttons. Track text on
 the lock screen is read-only; these buttons do not change authentication state.
 
-### Wi-Fi, Bluetooth and volume mixer
+### Quick settings
 
 | Chord | Action |
 | --- | --- |
-| Mod+Shift+N | Open Wi-Fi controls. |
-| Mod+Shift+B | Open Bluetooth controls. |
-| Mod+Shift+V | Open the volume mixer. |
+| Mod+Shift+N | Open quick settings on the Wi-Fi page. |
+| Mod+Shift+B | Open quick settings on the Bluetooth page. |
+| Mod+Shift+V | Open quick settings on the sound (mixer) page. |
 
-These chords work in both shells and in code mode. Within a popover, Up/Down or
-j/k selects a row, Left/Right or h/l adjusts a slider by 5%, Space or Enter
-activates or toggles, and Escape closes. A Wi-Fi password entry consumes text;
-Enter connects and Escape clears it. See [top bar controls](bar.md) for backend
+The chord for the page that is showing closes the panel; from another page it
+slides there. These chords work in both shells and in code mode. Inside the
+panel, Up/Down or j/k (and Tab) move the selection, Left/Right or h/l adjust a
+slider by 5% (on a Wi-Fi or Bluetooth tile Right opens its page), Enter
+toggles a tile, mutes a volume slider or activates a row, Space opens the page
+behind a tile or the volume slider, Backspace goes back from a page and Escape
+closes the panel. A Wi-Fi password entry consumes text; Enter connects and
+Escape clears it. The key hint footer appears in code mode, or once the panel
+was operated with the keyboard. See [top bar controls](bar.md) for backend
 requirements and discovery lifetimes.

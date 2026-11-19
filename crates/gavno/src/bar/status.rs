@@ -118,6 +118,8 @@ pub struct Snapshot {
     pub brightness: Option<Brightness>,
     pub battery: Option<Battery>,
     pub network: Network,
+    /// power-profiles-daemon's active profile ("balanced"), when it runs.
+    pub profile: Option<String>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Media {
@@ -259,7 +261,26 @@ fn fallback_network() -> Network {
         Network::Offline
     }
 }
+/// Reads the active power profile. Absent daemon or bus means no profile row.
+fn read_power_profile() -> Option<String> {
+    let connection = Connection::system().ok()?;
+    let proxy = Builder::<Proxy>::new(&connection)
+        .destination("net.hadess.PowerProfiles")
+        .ok()?
+        .path("/net/hadess/PowerProfiles")
+        .ok()?
+        .interface("net.hadess.PowerProfiles")
+        .ok()?
+        .cache_properties(zbus::proxy::CacheProperties::No)
+        .build()
+        .ok()?;
+    proxy
+        .get_property::<String>("ActiveProfile")
+        .ok()
+        .filter(|p| !p.is_empty() && p.len() < 32)
+}
 fn refresh(snapshot: &mut Snapshot, fallback: bool) {
+    snapshot.profile = read_power_profile();
     snapshot.volume = read_volume(false);
     snapshot.brightness = read_brightness(Path::new("/sys/class/backlight"));
     snapshot.battery = super::read_battery(Path::new("/sys/class/power_supply"));
@@ -645,7 +666,8 @@ mod tests {
         assert_eq!(
             battery_icons(&Battery {
                 percent: 15,
-                charging: false
+                charging: false,
+                minutes: None
             }),
             [
                 "battery-level-10-symbolic",
@@ -656,14 +678,16 @@ mod tests {
         assert_eq!(
             battery_icons(&Battery {
                 percent: 100,
-                charging: true
+                charging: true,
+                minutes: None
             })[0],
             "battery-level-100-charging-symbolic"
         );
         assert_eq!(
             battery_icons(&Battery {
                 percent: 79,
-                charging: true
+                charging: true,
+                minutes: None
             })[1],
             "battery-good-charging-symbolic"
         );
