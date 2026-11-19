@@ -11,7 +11,10 @@ use crate::{
         geometry::{rect, Rect},
         Canvas, FULL_COLOR, LINE,
     },
-    ui::text::{TextStyleSpec, Weight},
+    ui::{
+        style::{self as look, dim, ease_out, radius, text as style, SURFACE, TEXT},
+        text::Weight,
+    },
 };
 use smithay::{
     backend::renderer::gles::GlesRenderer,
@@ -21,7 +24,7 @@ use smithay::{
 use std::time::Instant;
 
 pub(super) const WIDTH: i32 = 360;
-const PAD: i32 = 16;
+const PAD: i32 = look::space::LG;
 const TILE_H: i32 = 72;
 const SLIDER_H: i32 = 28;
 const BUTTON: i32 = 32;
@@ -38,8 +41,6 @@ const BOTTOM: i32 = 12;
 const TOP: i32 = 36;
 /// Classic keeps the panel above the taskbar.
 const TASKBAR: i32 = 40;
-const TEXT: [f32; 4] = [0.96, 0.95, 0.98, 1.0];
-const SURFACE: [f32; 4] = [1.0, 1.0, 1.0, 0.075];
 
 pub(super) struct View {
     canvas: Canvas,
@@ -420,24 +421,7 @@ pub(super) fn hits(page: Page, rows: &[Row], g: &Geometry) -> Vec<(Rect, Action,
     }
     out
 }
-fn style(size: f32, weight: Weight, color: [f32; 4]) -> TextStyleSpec {
-    TextStyleSpec { size, weight, color, tracking: 0.0 }
-}
-fn dim(color: [f32; 4], alpha: f32) -> [f32; 4] {
-    [color[0], color[1], color[2], color[3] * alpha]
-}
-/// Text and icon colour that stays readable on the accent fill.
-pub(super) fn on_accent(accent: [f32; 4]) -> [f32; 4] {
-    let luma = 0.2126 * accent[0] + 0.7152 * accent[1] + 0.0722 * accent[2];
-    if luma > 0.45 {
-        [0.06, 0.07, 0.10, 1.0]
-    } else {
-        [1.0, 1.0, 1.0, 1.0]
-    }
-}
-fn ease_out(t: f64) -> f64 {
-    1.0 - (1.0 - t.clamp(0.0, 1.0)).powi(3)
-}
+pub(super) use look::on_accent;
 /// What a page needs from the state to be painted, copied out so the
 /// canvas and the icon cache can be borrowed mutably.
 #[derive(Clone, Copy)]
@@ -535,7 +519,7 @@ impl State {
         let c = &mut self.view.canvas;
         c.begin(renderer, scale);
         let opening = open.unwrap_or(1.0);
-        c.zoom = 0.96 + 0.04 * opening;
+        c.zoom = look::OPEN_ZOOM + (1.0 - look::OPEN_ZOOM) * opening;
         // The panel grows from the status cluster at its top right corner.
         c.anchor = (
             (panel.loc.x + panel.size.w - 24) as f64,
@@ -543,8 +527,7 @@ impl State {
         )
             .into();
         c.alpha = opening as f32;
-        c.shadow(panel, 20.0);
-        c.rect(panel, 20.0, [0.065, 0.075, 0.10, 0.98], 1.0, LINE);
+        look::card(c, panel, radius::PANEL);
         let base = c.alpha;
         match &from {
             Some((from_page, from_rows, from_geo, t)) => {
@@ -641,15 +624,15 @@ fn draw_main(c: &mut Canvas, icons: &mut Icons, r: &mut GlesRenderer, p: &Paint,
                 let fg = if row.on { on_color } else { TEXT };
                 c.rect(
                     cell.area,
-                    16.0,
+                    radius::TILE,
                     if row.on { [p.accent[0], p.accent[1], p.accent[2], 0.94] } else { SURFACE },
                     selected,
                     if row.on { [1.0, 1.0, 1.0, 0.9] } else { dim(p.accent, 0.95) },
                 );
                 c.rect(
                     cell.icon,
-                    14.0,
-                    if row.on { [0.0, 0.0, 0.0, 0.14] } else { [1.0, 1.0, 1.0, 0.10] },
+                    radius::DISC,
+                    if row.on { [0.0, 0.0, 0.0, 0.14] } else { look::SURFACE_RAISED },
                     0.0,
                     LINE,
                 );
@@ -665,7 +648,7 @@ fn draw_main(c: &mut Canvas, icons: &mut Icons, r: &mut GlesRenderer, p: &Paint,
             }
             RowKind::Slider => draw_slider(c, icons, r, p, row, cell, selected, true),
             RowKind::Button => {
-                c.rect(cell.area, 16.0, SURFACE, selected, dim(p.accent, 0.95));
+                c.rect(cell.area, radius::TILE, SURFACE, selected, look::focus_line(p.accent));
                 glyph(c, icons, r, p, &[&row.icon], cell.area, TEXT);
             }
             _ => {}
@@ -698,9 +681,9 @@ fn draw_slider(
     let level = row.level.unwrap_or(0).min(100) as i32;
     let fill_w = if level == 0 { 0 } else { (track.size.w * level / 100).max(track.size.h) };
     let fill = if row.muted { [1.0, 1.0, 1.0, 0.30] } else { p.accent };
-    c.rect(track, 14.0, [1.0, 1.0, 1.0, 0.12], ring, dim(p.accent, 0.95));
+    c.rect(track, radius::DISC, look::TRACK, ring, look::focus_line(p.accent));
     if fill_w > 0 {
-        c.rect(rect(track.loc.x, track.loc.y, fill_w, track.size.h), 14.0, fill, 0.0, LINE);
+        c.rect(rect(track.loc.x, track.loc.y, fill_w, track.size.h), radius::DISC, fill, 0.0, LINE);
     }
     // Icons that sit on the accent fill switch to the dark colour.
     let covered = |x: i32| !row.muted && fill_w >= x - track.loc.x;
@@ -725,13 +708,13 @@ fn draw_detail(
     masked: Option<&str>,
 ) {
     if let Some(back) = g.back {
-        c.rect(back, 16.0, SURFACE, 0.0, LINE);
+        c.rect(back, radius::TILE, SURFACE, 0.0, LINE);
         glyph(c, icons, r, p, &["go-previous-symbolic"], back, TEXT);
     }
     c.styled_label(r, page.title(), g.title.loc.x, g.title.loc.y, g.title.size.w, style(18.0, Weight::SemiBold, TEXT));
     if let Some((i, area)) = g.switch {
         let on = rows[i].on;
-        c.rect(area, 12.0, if on { p.accent } else { [1.0, 1.0, 1.0, 0.18] }, ring(p, i), [1.0, 1.0, 1.0, 0.9]);
+        c.rect(area, radius::ROW, if on { p.accent } else { [1.0, 1.0, 1.0, 0.18] }, ring(p, i), [1.0, 1.0, 1.0, 0.9]);
         let knob = rect(area.loc.x + if on { area.size.w - 22 } else { 2 }, area.loc.y + 2, 20, 20);
         c.rect(knob, 10.0, if on { on_accent(p.accent) } else { [1.0; 4] }, 0.0, LINE);
     }
@@ -766,11 +749,11 @@ fn draw_detail(
         c.rect(thumb, 1.5, [1.0, 1.0, 1.0, 0.35], 0.0, LINE);
     }
     if let Some(error) = p.error.filter(|_| g.error.size.h > 0) {
-        c.styled_label(r, error, g.error.loc.x, g.error.loc.y + 4, g.error.size.w, style(11.0, Weight::Medium, [1.0, 0.6, 0.5, 1.0]));
+        c.styled_label(r, error, g.error.loc.x, g.error.loc.y + 4, g.error.size.w, style(11.0, Weight::Medium, look::DANGER));
     }
     if let (Some(count), true) = (p.password, g.password.size.h > 0) {
         let field = rect(g.password.loc.x, g.password.loc.y + 4, g.password.size.w, 36);
-        c.rect(field, 10.0, [p.accent[0], p.accent[1], p.accent[2], 0.12], 1.0, p.accent);
+        c.rect(field, radius::FIELD, look::wash(p.accent, 0.12), 1.0, p.accent);
         let (text, color) = match masked {
             Some(m) if count > 0 => (m, TEXT),
             _ => ("Password", dim(TEXT, 0.5)),
@@ -782,7 +765,7 @@ fn draw_detail(
 fn draw_app(c: &mut Canvas, icons: &mut Icons, r: &mut GlesRenderer, p: &Paint, row: &Row, cell: &Cell, ring: f32) {
     let a = cell.area;
     if ring > 0.0 {
-        c.rect(a, 10.0, [1.0, 1.0, 1.0, 0.06], ring, dim(p.accent, 0.95));
+        c.rect(a, radius::FIELD, [1.0, 1.0, 1.0, 0.06], ring, look::focus_line(p.accent));
     }
     let alpha = c.alpha;
     if row.muted {
@@ -796,13 +779,15 @@ fn draw_app(c: &mut Canvas, icons: &mut Icons, r: &mut GlesRenderer, p: &Paint, 
     c.styled_label(r, &row.label, a.loc.x + 44, a.loc.y + 4, a.size.w - 88, style(11.5, Weight::Medium, dim(TEXT, 0.85)));
     let level = row.level.unwrap_or(0).min(100) as i32;
     let t = cell.track;
-    c.rect(t, 7.0, [1.0, 1.0, 1.0, 0.12], 0.0, LINE);
+    c.rect(t, 7.0, look::TRACK, 0.0, LINE);
     if level > 0 {
         let fill = if row.muted { [1.0, 1.0, 1.0, 0.3] } else { p.accent };
         c.rect(rect(t.loc.x, t.loc.y, (t.size.w * level / 100).max(t.size.h), t.size.h), 7.0, fill, 0.0, LINE);
     }
     let value = if row.muted { "Muted".to_string() } else { format!("{level}%") };
-    c.styled_label(r, &value, a.loc.x + a.size.w - 40, t.loc.y - 1, 40, style(10.5, Weight::Medium, dim(TEXT, 0.65)));
+    let st = style(10.5, Weight::Medium, dim(TEXT, 0.65));
+    let w = look::tabular_width(c, &value, st);
+    look::tabular_label(c, r, &value, a.loc.x + a.size.w - w, t.loc.y - 1, st);
 }
 fn draw_entry(c: &mut Canvas, icons: &mut Icons, r: &mut GlesRenderer, p: &Paint, row: &Row, cell: &Cell, ring: f32) {
     // Rows are 4 px taller than their card, which leaves the gap between two.
@@ -810,8 +795,8 @@ fn draw_entry(c: &mut Canvas, icons: &mut Icons, r: &mut GlesRenderer, p: &Paint
     let highlight = row.on;
     c.rect(
         a,
-        12.0,
-        if highlight { [p.accent[0], p.accent[1], p.accent[2], 0.20] } else { SURFACE },
+        radius::ROW,
+        if highlight { look::wash(p.accent, 0.20) } else { SURFACE },
         if ring > 0.0 { ring } else if highlight { 1.0 } else { 0.0 },
         dim(p.accent, if ring > 0.0 { 0.95 } else { 0.8 }),
     );
@@ -842,9 +827,9 @@ fn draw_entry(c: &mut Canvas, icons: &mut Icons, r: &mut GlesRenderer, p: &Paint
     if let Some(percent) = row.battery {
         let label = style(10.5, Weight::Medium, dim(TEXT, 0.75));
         let text = format!("{percent}%");
-        let w = c.text.measure(&text, label).ceil() as i32 + 2;
+        let w = look::tabular_width(c, &text, label) + 2;
         right -= w;
-        c.styled_label(r, &text, right, mid(14), w, label);
+        look::tabular_label(c, r, &text, right, mid(14), label);
         right -= 22;
         crate::topbar::battery_glyph(c, rect(right, mid(10), 20, 10), percent, false, dim(TEXT, 0.75));
         right -= 6;

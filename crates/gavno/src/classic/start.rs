@@ -9,7 +9,11 @@ use crate::{
         geometry::{rect, Rect},
         BarAction, Canvas, PowerAction, FULL_COLOR, LINE,
     },
-    ui::spring::{Spring, SpringParams},
+    ui::{
+        spring::{Spring, SpringParams},
+        style::{self as look, radius, size as tsize, text as tstyle, TEXT},
+        text::Weight,
+    },
     Gavno,
 };
 use smithay::{
@@ -324,10 +328,10 @@ impl Start {
         c.alpha = p as f32;
         c.zoom = 0.96 + 0.04 * p;
         c.anchor = (x as f64 + width as f64 / 2.0, (y + height) as f64).into();
-        c.shadow(panel, 12.0);
-        c.rect(panel, 12.0, [0.065, 0.075, 0.10, 0.98], 1.0, LINE);
-        let search = rect(x + 24, y + 24, width - 48, 42);
-        c.rect(search, 6.0, [0.025, 0.03, 0.045, 1.0], 1.0, LINE);
+        look::card(c, panel, radius::PANEL);
+        let (xl, xxl) = (look::space::XL, look::space::XXL);
+        let search = rect(x + xl, y + xl, width - 2 * xl, 40);
+        c.rect(search, radius::FIELD, look::INSET, 1.0, LINE);
         c.icon(
             renderer,
             &mut self.icons,
@@ -335,37 +339,31 @@ impl Start {
             theme,
             rect(x + 38, y + 36, 18, 18),
         );
-        c.label(
+        let hint = self.query.is_empty();
+        c.styled_label(
             renderer,
-            if self.query.is_empty() {
-                "Search applications"
-            } else {
-                &self.query
-            },
+            if hint { "Search applications" } else { &self.query },
             x + 70,
-            y + 36,
+            y + 35,
             width - 110,
-            14.0,
+            tstyle(tsize::HEADING, Weight::Medium, if hint { look::dim(TEXT, 0.5) } else { TEXT }),
         );
         c.rect(
-            rect(search.loc.x + 8, search.loc.y + 40, search.size.w - 16, 2),
+            rect(search.loc.x + 12, search.loc.y + 37, search.size.w - 24, 2),
             1.0,
             accent,
             0.0,
             LINE,
         );
-        let all = rect(x + width - 120, y + 88, 96, 30);
-        c.rect(all, 5.0, [1.0, 1.0, 1.0, 0.06], 0.0, LINE);
-        c.label(
-            renderer,
-            if self.all { "Pinned" } else { "All apps  ›" },
-            all.loc.x + 10,
-            all.loc.y + 7,
-            80,
-            12.0,
-        );
+        let all = rect(x + width - 128, y + 84, 104, 32);
+        look::row_bg(c, all, false);
+        let all_label = if self.all { "Pinned" } else { "All apps" };
+        let st = tstyle(tsize::SMALL, Weight::SemiBold, TEXT);
+        let w = c.text.measure(all_label, st).ceil() as i32;
+        c.styled_label(renderer, all_label, all.loc.x + 14, all.loc.y + 8, w + 2, st);
+        c.icon(renderer, &mut self.icons, &["go-next-symbolic"], theme, rect(all.loc.x + 14 + w + 6, all.loc.y + 8, 16, 16));
         self.hits.push((all, Hit::All));
-        c.label(
+        c.styled_label(
             renderer,
             if !self.query.is_empty() {
                 "Search results"
@@ -374,28 +372,28 @@ impl Start {
             } else {
                 "Pinned"
             },
-            x + 32,
-            y + 94,
+            x + xxl,
+            y + 92,
             width - 180,
-            14.0,
+            tstyle(tsize::HEADING, Weight::SemiBold, TEXT),
         );
         if self.loading {
-            c.label(
+            c.styled_label(
                 renderer,
                 "Loading applications…",
                 x + 32,
                 y + 146,
                 width - 64,
-                13.0,
+                tstyle(tsize::BODY, Weight::Medium, look::dim(TEXT, 0.6)),
             );
         } else if self.results.is_empty() {
-            c.label(
+            c.styled_label(
                 renderer,
                 "No applications found",
                 x + 32,
                 y + 146,
                 width - 64,
-                13.0,
+                tstyle(tsize::BODY, Weight::Medium, look::dim(TEXT, 0.6)),
             );
         }
         let rows = ((height - 210) / if list { 44 } else { 96 }).max(1) as usize;
@@ -418,7 +416,7 @@ impl Start {
                 )
             };
             if position == self.selected {
-                c.rect(r, 6.0, [accent[0], accent[1], accent[2], 0.16], 0.0, LINE);
+                c.rect(r, radius::ROW, look::wash(accent, 0.16), 1.0, look::dim(accent, 0.6));
             }
             let icon = if list {
                 rect(r.loc.x + 8, r.loc.y + 8, 28, 28)
@@ -442,44 +440,46 @@ impl Start {
                 );
             }
             if list {
-                c.label(
+                c.styled_label(
                     renderer,
                     &app.entry.name,
                     r.loc.x + 48,
-                    r.loc.y + 14,
+                    r.loc.y + 13,
                     r.size.w - 56,
-                    13.0,
+                    tstyle(tsize::BODY, Weight::Medium, TEXT),
                 );
             } else {
-                c.label(
+                let st = tstyle(tsize::CAPTION + 0.5, Weight::Medium, TEXT);
+                let w = c.text.measure(&app.entry.name, st).ceil().min((r.size.w - 10) as f32) as i32;
+                c.styled_label(
                     renderer,
                     &app.entry.name,
-                    r.loc.x + 5,
+                    r.loc.x + (r.size.w - w) / 2,
                     r.loc.y + 55,
                     r.size.w - 10,
-                    11.0,
+                    st,
                 );
             }
             self.hits.push((r, Hit::App(index)));
         }
-        let footer = rect(x, y + height - 64, width, 64);
-        c.rect(footer, 10.0, [0.025, 0.03, 0.045, 0.5], 0.0, LINE);
-        c.icon(
-            renderer,
-            &mut self.icons,
-            &["avatar-default-symbolic"],
-            theme,
-            rect(x + 32, footer.loc.y + 20, 24, 24),
-        );
-        c.label(
+        let sm = look::space::SM;
+        let footer = rect(x + sm, y + height - 64 - sm, width - 2 * sm, 64);
+        c.rect(footer, radius::TILE, look::SURFACE, 0.0, LINE);
+        let avatar = rect(x + 24, footer.loc.y + 12, 40, 40);
+        c.rect(avatar, radius::DISC, look::wash(accent, 0.94), 0.0, LINE);
+        let on = look::on_accent(accent);
+        let rgb = [0, 1, 2].map(|i| (on[i] * 255.0).round() as u8);
+        c.colored_icon(renderer, &mut self.icons, &["avatar-default-symbolic"], theme, rect(avatar.loc.x + 8, avatar.loc.y + 8, 24, 24), Some(rgb));
+        c.styled_label(
             renderer,
             &self.user,
-            x + 72,
-            footer.loc.y + 23,
-            width - 160,
-            13.0,
+            x + 80,
+            footer.loc.y + 22,
+            width - 176,
+            tstyle(tsize::BODY, Weight::SemiBold, TEXT),
         );
         let power = rect(x + width - 64, footer.loc.y + 12, 40, 40);
+        c.rect(power, radius::DISC, look::SURFACE_RAISED, 0.0, LINE);
         c.icon(
             renderer,
             &mut self.icons,
@@ -489,9 +489,8 @@ impl Start {
         );
         self.hits.push((power, Hit::Power));
         if self.power {
-            let r = rect(x + width - 232, footer.loc.y - 190, 208, 180);
-            c.shadow(r, 8.0);
-            c.rect(r, 8.0, [0.065, 0.075, 0.10, 0.99], 1.0, LINE);
+            let r = rect(x + width - 232, footer.loc.y - 200, 208, 192);
+            look::card(c, r, radius::TILE);
             for (i, (name, action)) in [
                 ("Lock", PowerAction::Lock),
                 ("Log out", PowerAction::Logout),
@@ -502,8 +501,18 @@ impl Start {
             .into_iter()
             .enumerate()
             {
-                let r = rect(r.loc.x + 4, r.loc.y + 5 + i as i32 * 34, 200, 34);
-                c.label(renderer, name, r.loc.x + 12, r.loc.y + 9, 176, 12.0);
+                let r = rect(r.loc.x + 8, r.loc.y + 8 + i as i32 * 35, 192, 32);
+                if i == 4 {
+                    c.rect(r, radius::ROW, look::wash(look::DANGER, 0.12), 0.0, LINE);
+                }
+                c.styled_label(
+                    renderer,
+                    name,
+                    r.loc.x + 12,
+                    r.loc.y + 8,
+                    168,
+                    tstyle(tsize::LABEL, Weight::Medium, if i == 4 { look::DANGER } else { TEXT }),
+                );
                 self.hits.push((r, Hit::Action(action)));
             }
         }

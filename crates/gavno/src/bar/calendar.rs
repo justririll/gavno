@@ -142,29 +142,61 @@ mod tests {
 pub(super) fn draw_notifications(
     c: &mut super::Canvas,
     renderer: &mut smithay::backend::renderer::gles::GlesRenderer,
+    icons: &mut crate::icons::Icons,
+    theme: &str,
     panel: &super::PopoverLayout,
     history: &[crate::notify::History],
     hover: Option<&super::BarAction>,
 ) {
-    use super::{geometry::Item, BarAction};
-    if !panel.items.iter().any(|(i, _)| *i == Item::ClearNotifications) { return; }
+    use super::{geometry::{rect, Item, CALENDAR_H}, BarAction, FULL_COLOR, LINE};
+    use crate::ui::{style::{self as look, radius, size, text, TEXT}, text::Weight};
+    // The section exists when the panel is taller than the bare calendar.
+    if panel.panel.size.h <= CALENDAR_H { return; }
     let x = panel.panel.loc.x;
-    let y = panel.panel.loc.y + 316;
-    c.label(renderer, "Notifications", x + 16, y + 6, 212, 13.0);
+    let y = panel.panel.loc.y + CALENDAR_H;
+    look::heading(c, renderer, "Notifications", x + 20, y + 8, 200);
+    if history.is_empty() || !panel.items.iter().any(|(i, _)| *i == Item::ClearNotifications) {
+        let mid = x + 160;
+        c.icon(renderer, icons, &["preferences-system-notifications-symbolic", "notification-symbolic"], theme, rect(mid - 12, y + 52, 24, 24));
+        for (value, dy, st) in [
+            ("No notifications", 88, text(size::LABEL, Weight::SemiBold, look::dim(TEXT, 0.8))),
+            ("You are all caught up", 108, text(size::CAPTION, Weight::Medium, look::dim(TEXT, 0.5))),
+        ] {
+            let w = c.text.measure(value, st).ceil() as i32;
+            c.styled_label(renderer, value, mid - w / 2, y + dy, w + 2, st);
+        }
+        return;
+    }
     for (item, r) in &panel.items {
         match *item {
             Item::ClearNotifications => {
-                if hover == Some(&BarAction::ClearNotifications) { super::capsule(c, *r, true); }
-                c.label(renderer, "Clear", r.loc.x + 10, r.loc.y + 6, 48, 12.0);
+                let hot = hover == Some(&BarAction::ClearNotifications);
+                c.rect(*r, radius::FIELD, if hot { look::SURFACE_HOVER } else { look::SURFACE }, 0.0, LINE);
+                let st = text(size::CAPTION, Weight::SemiBold, TEXT);
+                let w = c.text.measure("Clear", st).ceil() as i32;
+                c.styled_label(renderer, "Clear", r.loc.x + (r.size.w - w) / 2, r.loc.y + 7, w + 2, st);
             }
             Item::Notification(i) => {
                 let Some(h) = history.get(i) else { continue };
-                if hover == Some(&BarAction::Notification(h.notice.id)) { super::capsule(c, *r, true); }
-                let title = format!("{} · {}", h.notice.app, h.time);
-                let mut style = super::label_style(10.5); style.color[3] = 0.55;
-                c.styled_label(renderer, &title, r.loc.x + 6, r.loc.y + 2, r.size.w - 12, style);
-                c.label(renderer, &h.notice.summary, r.loc.x + 6, r.loc.y + 16, r.size.w - 12, 12.0);
-                c.styled_label(renderer, &h.notice.body, r.loc.x + 6, r.loc.y + 32, r.size.w - 12, style);
+                look::row_bg(c, *r, hover == Some(&BarAction::Notification(h.notice.id)));
+                let icon = rect(r.loc.x + 12, r.loc.y + 12, 24, 24);
+                let names: Vec<String> = [h.notice.icon.clone(), h.notice.desktop.clone(), h.notice.app.to_lowercase()]
+                    .into_iter().filter(|n| !n.is_empty()).collect();
+                let names: Vec<&str> = names.iter().map(String::as_str).collect();
+                if !c.colored_icon(renderer, icons, &names, theme, icon, Some(FULL_COLOR)) {
+                    c.rect(icon, radius::CHIP + 2.0, look::SURFACE_RAISED, 0.0, LINE);
+                    let initial = h.notice.app.chars().next().unwrap_or('?').to_uppercase().to_string();
+                    let st = text(size::SMALL, Weight::SemiBold, TEXT);
+                    let w = c.text.measure(&initial, st).ceil() as i32;
+                    c.styled_label(renderer, &initial, icon.loc.x + (24 - w) / 2, icon.loc.y + 4, w + 2, st);
+                }
+                let time = text(size::CAPTION, Weight::Medium, look::dim(TEXT, 0.5));
+                let tw = look::tabular_width(c, &h.time, time);
+                look::tabular_label(c, renderer, &h.time, r.loc.x + r.size.w - 12 - tw, r.loc.y + 8, time);
+                let width = r.size.w - 48 - 12 - tw - 8;
+                c.styled_label(renderer, &h.notice.summary, r.loc.x + 44, r.loc.y + 6, width, text(size::LABEL, Weight::SemiBold, TEXT));
+                let sub = if h.notice.body.is_empty() { h.notice.app.clone() } else { format!("{} · {}", h.notice.app, h.notice.body) };
+                c.styled_label(renderer, &sub, r.loc.x + 44, r.loc.y + 25, r.size.w - 56, text(size::CAPTION, Weight::Medium, look::dim(TEXT, 0.55)));
             }
             _ => {}
         }

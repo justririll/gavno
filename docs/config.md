@@ -509,12 +509,19 @@ open_maximized = true
 align = "left"                   # "left" (default) or "center"
 # pinned = ["foot", "firefox"]   # omitted: inherit [dock].pinned; []: no pins
 start_pinned = ["@terminal", "@files", "firefox", "@settings"]
+start_icon = ""                   # icon name for the Start button; "" = distribution logo
 settings_command = "gavno-settings"
 task_manager = "foot -e btop"
 ```
 
 Start always opens at the left edge above the Start button, including when
 app items are centered.
+
+The Start button shows the distribution logo: `LOGO=` from `/etc/os-release`
+(for example `gentoo`), resolved through the icon theme as `LOGO`,
+`LOGO-symbolic`, then `distributor-logo`. The lookup runs on a background
+thread; until it finishes, or when nothing is found, the built-in four-pane
+glyph is drawn. `start_icon` names an icon explicitly (empty means automatic).
 
 Pins name desktop-entry IDs, with or without `.desktop`. Missing applications
 are skipped. Start also accepts `@terminal`, `@files` and `@settings`, which use

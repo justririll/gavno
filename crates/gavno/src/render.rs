@@ -378,7 +378,7 @@ fn output_elements_inner(
     elements.extend(features.call(Feature::ResizeMode, Vec::new(), || overlay.resize_mode.elements(renderer, output, output_geo, scale.x)));
     if !locks.locked && !lock.internal() {
         elements.extend(features.call(Feature::Notifications, Vec::new(), || {
-            topbar.notifications.borrow_mut().elements(renderer, output, output_geo.size, scale.x, time, &config.dock.icon_theme, topbar.shell_progress)
+            topbar.notifications.borrow_mut().elements(renderer, output, output_geo.size, scale.x, time, &config.dock.icon_theme, topbar.shell_progress, topbar.accent())
         }));
     }
     let accent = topbar.accent();

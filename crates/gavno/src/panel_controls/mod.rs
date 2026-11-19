@@ -195,8 +195,7 @@ struct Anim {
     opened: Option<std::time::Instant>,
     slide: Option<(Page, std::time::Instant)>,
 }
-const OPEN_TIME: std::time::Duration = std::time::Duration::from_millis(120);
-const SLIDE_TIME: std::time::Duration = std::time::Duration::from_millis(160);
+use crate::ui::style::{OPEN_TIME, SLIDE_TIME};
 #[derive(Default)]
 pub struct State {
     pub wifi: wifi::Snapshot,

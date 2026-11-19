@@ -3,6 +3,7 @@ pub mod binds;
 pub mod cache;
 pub mod decor;
 pub mod desktop;
+pub mod logo;
 mod desktop_input;
 mod desktop_io;
 #[cfg(test)]
@@ -65,6 +66,8 @@ pub struct ClassicConfig {
     /// None inherits the dock pins; an explicit empty list means no pins.
     pub pinned: Option<Vec<String>>,
     pub start_pinned: Vec<String>,
+    /// Icon name for the Start button; empty picks the distribution logo.
+    pub start_icon: String,
     pub settings_command: String,
     pub task_manager: String,
     pub desktop_home: bool,
@@ -86,6 +89,7 @@ impl Default for ClassicConfig {
                 "firefox".into(),
                 "@settings".into(),
             ],
+            start_icon: String::new(),
             settings_command: "gavno-settings".into(),
             task_manager: "foot -e btop".into(),
             desktop_home: true,
