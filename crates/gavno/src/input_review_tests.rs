@@ -1292,3 +1292,79 @@ fn disabled_overview_is_hidden_from_the_cheat_sheet_and_the_bar_hints() {
     assert_eq!(h.gv.bind_for(smithay::input::keyboard::Keysym::from(smithay::input::keyboard::keysyms::KEY_f), &mods), None);
     assert_eq!(h.gv.bind_for(smithay::input::keyboard::Keysym::from(smithay::input::keyboard::keysyms::KEY_g), &mods), Some(crate::input::Action::WindowHints));
 }
+
+fn spawned_dropdown(h: &mut crate::state::tests::Harness) -> smithay::desktop::Window {
+    let window = h.window();
+    smithay::wayland::compositor::with_states(window.toplevel().unwrap().wl_surface(), |states| {
+        states.data_map.get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>().unwrap().lock().unwrap().app_id =
+            Some(crate::dropdown::APP_ID.into());
+    });
+    h.gv.unmapped.push(window.clone());
+    h.commit_size(&window, 400, 200);
+    window
+}
+
+#[test]
+fn mod_grave_toggles_the_dropdown_by_physical_key_on_both_layouts() {
+    for russian in [false, true] {
+        let (mut h, _) = setup();
+        let dropdown = spawned_dropdown(&mut h);
+        let main = h.window();
+        h.gv.map_new_window(main.clone());
+        h.commit_size(&main, 300, 200);
+        h.gv.focus_window(Some(&main));
+        if russian {
+            let keyboard = h.gv.seat.get_keyboard().unwrap();
+            keyboard.with_xkb_state(&mut h.gv, |mut ctx| ctx.set_layout(smithay::input::keyboard::Layout(1)));
+        }
+        let alt = 64; // Left Alt, the nested Mod key.
+        assert_eq!(h.gv.config.mod_key, crate::config::ModKey::Alt);
+        // Without the Mod key the key reaches the focused client.
+        tap_key(&mut h, 49);
+        assert!(!h.gv.overlay.dropdown.shown());
+        dispatch_key(&mut h, alt, KeyState::Pressed);
+        // Mod+Ctrl+` is not the toggle.
+        dispatch_key(&mut h, 37, KeyState::Pressed);
+        tap_key(&mut h, 49);
+        dispatch_key(&mut h, 37, KeyState::Released);
+        assert!(!h.gv.overlay.dropdown.shown(), "mod+ctrl+grave must not toggle, russian={russian}");
+        tap_key(&mut h, 49);
+        assert!(h.gv.overlay.dropdown.shown(), "russian={russian}");
+        assert_eq!(h.gv.seat.get_keyboard().unwrap().current_focus(), Some(dropdown.toplevel().unwrap().wl_surface().clone()));
+        tap_key(&mut h, 49);
+        dispatch_key(&mut h, alt, KeyState::Released);
+        assert!(!h.gv.overlay.dropdown.shown());
+        assert_eq!(h.gv.focused_window(), Some(main));
+    }
+}
+
+#[test]
+fn dropdown_click_focuses_it_and_pointer_follows_the_slide() {
+    let (mut h, output) = setup();
+    let dropdown = spawned_dropdown(&mut h);
+    let main = h.window();
+    h.gv.map_new_window(main.clone());
+    h.commit_size(&main, 300, 200);
+    h.gv.config.dropdown.hide_on_focus_loss = false;
+    h.gv.toggle_dropdown();
+    h.gv.focus_window(Some(&main));
+    h.gv.on_loop_idle();
+    h.gv.overlay.dropdown.advance(std::time::Duration::from_secs(1));
+    h.gv.overlay.dropdown.advance(std::time::Duration::from_secs(2));
+    let rect = h.gv.dropdown_rect(&output);
+    let inside: Point<f64, Logical> = (rect.loc.x as f64 + 30.0, rect.loc.y as f64 + 30.0).into();
+    let pointer = h.gv.seat.get_pointer().unwrap();
+    let under = h.gv.surface_under(inside);
+    motion(&mut h.gv, under, inside);
+    assert_eq!(pointer.current_focus(), Some(dropdown.toplevel().unwrap().wl_surface().clone()));
+    button(&mut h.gv, BTN_LEFT, ButtonState::Pressed);
+    button(&mut h.gv, BTN_LEFT, ButtonState::Released);
+    assert!(h.gv.dropdown_focused());
+    assert!(h.gv.overlay.dropdown.shown());
+    // Hiding drops the pointer target on the next idle refresh.
+    h.gv.toggle_dropdown();
+    h.gv.overlay.dropdown.advance(std::time::Duration::from_secs(3));
+    h.gv.overlay.dropdown.advance(std::time::Duration::from_secs(4));
+    h.gv.on_loop_idle();
+    assert_ne!(pointer.current_focus(), Some(dropdown.toplevel().unwrap().wl_surface().clone()));
+}

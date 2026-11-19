@@ -35,8 +35,18 @@ impl CompositorHandler for Gavno {
         while let Some(parent) = get_parent(&root) { root = parent; }
         let mut hidden_commit = self.window_for_surface(&root).is_some_and(|w| self.space.element_location(&w).is_none());
 
+        let mut dropdown_commit = false;
         if !is_sync_subsurface(surface) {
-            if let Some(window) = self.window_for_surface(&root) {
+            if let Some(window) = self.overlay.dropdown.window().filter(|w| w.toplevel().is_some_and(|t| t.wl_surface() == &root)).cloned() {
+                // The dropdown terminal lives outside the space and workspaces.
+                window.on_commit();
+                dropdown_commit = true;
+                let has_buffer = with_renderer_surface_state(&root, |s| s.buffer().is_some()).unwrap_or(false);
+                if window.toplevel().is_some_and(|t| t.wl_surface() == surface) && !has_buffer {
+                    self.dropdown_closed();
+                    self.unmapped.push(window);
+                }
+            } else if let Some(window) = self.window_for_surface(&root) {
                 window.on_commit();
                 let has_buffer = with_renderer_surface_state(&root, |s| s.buffer().is_some()).unwrap_or(false);
                 hidden_commit = self.space.element_location(&window).is_none();
@@ -61,9 +71,13 @@ impl CompositorHandler for Gavno {
                 let window = self.unmapped[idx].clone();
                 window.on_commit();
                 if has_buffer {
-                    self.launch_commit(&window);
                     self.unmapped.remove(idx);
-                    self.map_new_window(window);
+                    if self.is_dropdown_window(&window) {
+                        self.adopt_dropdown(window);
+                    } else {
+                        self.launch_commit(&window);
+                        self.map_new_window(window);
+                    }
                 }
             }
         }
@@ -75,6 +89,7 @@ impl CompositorHandler for Gavno {
             resize_grab::settle_directed(self, &w);
         }
         if shm_bytes != 0 { account_shm_outputs(self, &root, shm_bytes); }
+        if dropdown_commit && self.overlay.dropdown.visible() { self.queue_redraw_all(); }
         if !hidden_commit || (self.features.on(crate::module::Feature::Overview) && self.overview.visible()) { self.queue_redraw_all(); }
     }
 }

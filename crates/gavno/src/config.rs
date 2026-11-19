@@ -55,6 +55,7 @@ pub struct Config {
     pub display: DisplayConfig,
     pub pointer: PointerConfig,
     pub clipboard: ClipboardConfig,
+    pub dropdown: DropdownConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -183,6 +184,7 @@ struct FileConfig {
     display: DisplayConfig,
     pointer: PointerConfig,
     clipboard: ClipboardConfig,
+    dropdown: DropdownConfig,
     #[serde(flatten)]
     unknown: toml::Table,
 }
@@ -276,7 +278,7 @@ impl Config {
             "file_manager":self.file_manager,"polkit_agent":self.polkit_agent,"autostart":self.autostart,"gap":self.gap,
             "output":{"internal_scale":self.internal_scale,"mode":mode,"hdr":self.output_hdr,"sdr_white_nits":self.sdr_white_nits},
             "keyboard":{"layout":self.xkb_layout,"variant":self.xkb_variant,"options":self.xkb_options,"repeat_delay":self.repeat_delay,"repeat_rate":self.repeat_rate,"code_mode":self.code_mode,"bar_hints":self.bar_hints},
-            "display":self.display,"media":self.media,"pointer":self.pointer,"clipboard":self.clipboard,"modules":self.modules,"classic":self.classic,"dock":self.dock,"bar":self.bar,"tiling":self.tiling,"lock":self.lock,"notifications":self.notifications,"outputs":self.outputs})
+            "display":self.display,"media":self.media,"pointer":self.pointer,"clipboard":self.clipboard,"dropdown":self.dropdown,"modules":self.modules,"classic":self.classic,"dock":self.dock,"bar":self.bar,"tiling":self.tiling,"lock":self.lock,"notifications":self.notifications,"outputs":self.outputs})
     }
 
     /// Pure merge: defaults < file < environment. Empty environment values are unset.
@@ -293,7 +295,7 @@ impl Config {
         // Capture unknown fields during deserialization, so this list cannot drift from the schema.
         let mut unknown = Vec::new();
         for (prefix, extra) in
-            [("display.", &file.display.unknown), ("", &file.unknown), ("output.", &file.output.unknown), ("keyboard.", &file.keyboard.unknown), ("classic.", &file.classic.unknown), ("dock.", &file.dock.unknown), ("bar.", &file.bar.unknown), ("tiling.", &file.tiling.unknown), ("media.", &file.media.unknown), ("pointer.", &file.pointer.unknown), ("clipboard.", &file.clipboard.unknown), ("notifications.", &file.notifications.unknown), ("lock.", &file.lock.unknown), ("modules.", &file.modules.unknown)]
+            [("display.", &file.display.unknown), ("", &file.unknown), ("output.", &file.output.unknown), ("keyboard.", &file.keyboard.unknown), ("classic.", &file.classic.unknown), ("dock.", &file.dock.unknown), ("bar.", &file.bar.unknown), ("tiling.", &file.tiling.unknown), ("media.", &file.media.unknown), ("pointer.", &file.pointer.unknown), ("clipboard.", &file.clipboard.unknown), ("dropdown.", &file.dropdown.unknown), ("notifications.", &file.notifications.unknown), ("lock.", &file.lock.unknown), ("modules.", &file.modules.unknown)]
         {
             unknown.extend(extra.keys().map(|key| format!("{prefix}{key}")));
         }
@@ -409,6 +411,7 @@ impl Config {
                 display: file.display,
                 pointer: file.pointer.clamped(),
                 clipboard: file.clipboard.clamped(),
+                dropdown: file.dropdown.clamped(),
             },
             warnings,
         )
@@ -555,6 +558,7 @@ options = "caps:escape"
             display: Default::default(),
             pointer: Default::default(),
             clipboard: Default::default(),
+            dropdown: Default::default(),
         };
         assert_eq!(build(false, None, &[]), (expected.clone(), vec![]));
         let example = include_str!("../../../dist/config.toml");
@@ -626,6 +630,7 @@ options = "caps:escape"
             display: Default::default(),
             pointer: Default::default(),
             clipboard: Default::default(),
+            dropdown: Default::default(),
         };
         assert_eq!(build(false, Some(FULL), &[]), (expected, vec![]));
         let mut partial = build(false, None, &[]).0;
@@ -1056,6 +1061,62 @@ mod clipboard_config_tests {
         let (config, _) = Config::build(false, Some("[clipboard]\nhistory_size = 0"), |_| None);
         assert_eq!(config.clipboard.history_size, 1);
         assert_eq!(config.values()["clipboard"]["history"], true);
+    }
+}
+
+/// The quake-style dropdown terminal, see `dropdown.rs`.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct DropdownConfig {
+    /// Shell command that starts the terminal; it must give its window the
+    /// app id `gavno-dropdown`.
+    pub command: String,
+    /// Fraction of the work area height, 0.2-0.9.
+    pub height: f64,
+    /// Fraction of the work area width, 0.3-1.0, centred.
+    pub width: f64,
+    /// Slide the terminal away when another window takes keyboard focus.
+    pub hide_on_focus_loss: bool,
+    #[serde(flatten)]
+    unknown: toml::Table,
+}
+impl Default for DropdownConfig {
+    fn default() -> Self {
+        Self { command: "foot --app-id gavno-dropdown".into(), height: 0.45, width: 1.0, hide_on_focus_loss: true, unknown: Default::default() }
+    }
+}
+impl DropdownConfig {
+    fn clamped(mut self) -> Self {
+        let clamp = |value: f64, min: f64, max: f64, default: f64| if value.is_finite() { value.clamp(min, max) } else { default };
+        self.height = clamp(self.height, 0.2, 0.9, 0.45);
+        self.width = clamp(self.width, 0.3, 1.0, 1.0);
+        if self.command.trim().is_empty() { self.command = Self::default().command; }
+        self
+    }
+}
+
+#[cfg(test)]
+mod dropdown_config_tests {
+    use super::*;
+    #[test]
+    fn defaults_parse_clamp_and_report_unknown_keys() {
+        let config = Config::build(false, None, |_| None).0;
+        assert_eq!(config.dropdown, DropdownConfig::default());
+        assert_eq!(config.dropdown.command, "foot --app-id gavno-dropdown");
+        assert_eq!((config.dropdown.height, config.dropdown.width), (0.45, 1.0));
+        assert!(config.dropdown.hide_on_focus_loss);
+        let text = "[dropdown]\ncommand = \"kitty --class gavno-dropdown\"\nheight = 0.6\nwidth = 0.8\nhide_on_focus_loss = false\nwrong = 1";
+        let (config, warnings) = Config::build(false, Some(text), |_| None);
+        assert_eq!(warnings, ["unknown config keys ignored: dropdown.wrong"]);
+        assert_eq!(config.dropdown.command, "kitty --class gavno-dropdown");
+        assert_eq!((config.dropdown.height, config.dropdown.width), (0.6, 0.8));
+        assert!(!config.dropdown.hide_on_focus_loss);
+        let (config, _) = Config::build(false, Some("[dropdown]\nheight = 5.0\nwidth = 0.0\ncommand = \"  \""), |_| None);
+        assert_eq!((config.dropdown.height, config.dropdown.width), (0.9, 0.3));
+        assert_eq!(config.dropdown.command, DropdownConfig::default().command);
+        let (config, _) = Config::build(false, Some("[dropdown]\nheight = 0.01"), |_| None);
+        assert_eq!(config.dropdown.height, 0.2);
+        assert_eq!(config.values()["dropdown"]["height"], 0.2);
     }
 }
 

@@ -8,6 +8,7 @@ mod perf;
 mod anim;
 mod classic;
 mod decor;
+mod dropdown;
 mod desktop_entry;
 mod dock;
 mod icons;
