@@ -245,7 +245,25 @@ fn output_elements_inner(
             }
             if let Some(stall) = stall.as_deref_mut() { stall.mark("elements.cursor"); }
             elements.extend(osd.elements(renderer, output, output_geo.size, time, &config.dock.icon_theme, topbar.accent()));
-            let lock_elements = lock.elements(renderer, output_geo.size, scale.x, time, &config.theme);
+            let name = output.name();
+            if lock.backdrop_wanted(&name) {
+                // The first lock frame captures the desktop once; the blur happens
+                // on a worker and arrives as a small texture a frame or two later.
+                lock.set_capturing(true);
+                let open = crate::handlers::session_lock::Locks::default();
+                let desktop = output_elements_inner(renderer, space, output, pointer_pos, cursor_status, cursor, time, None, lock, overlay, window_decor, animations, &open, workspaces, overview, dock, topbar, config, features, osd, launcher, classic, polkit, background, None);
+                lock.set_capturing(false);
+                let physical = (
+                    (output_geo.size.w as f64 * scale.x).round() as i32,
+                    (output_geo.size.h as f64 * scale.x).round() as i32,
+                );
+                match capture_elements(renderer, &desktop, physical, scale.x) {
+                    Some(rgba) => lock.start_backdrop(&name, rgba, physical.0 as usize, physical.1 as usize),
+                    None => lock.start_backdrop(&name, Vec::new(), 0, 0),
+                }
+            }
+            let battery = topbar.status().battery.as_ref().map(|b| (b.percent, b.charging));
+            let lock_elements = lock.elements(renderer, &name, output_geo.size, scale.x, time, &config.theme, battery);
             let media_elements = features.call(Feature::Media, Vec::new(), || {
                 lock.media_elements(renderer, output_geo.size, scale.x, &topbar.now_playing.borrow().snapshot, &config.dock.icon_theme)
             });
@@ -326,7 +344,7 @@ fn output_elements_inner(
 
     // The screenshot overlay freezes the output: nothing below it renders.
     // Its toast floats above the live desktop.
-    if !locks.locked && !lock.internal() {
+    if !locks.locked && !lock.shell_hidden() {
         let shot = overlay.screenshot.elements(renderer, output, output_geo.size, scale.x, time, topbar.accent());
         elements.extend(shot.elements);
         if shot.frozen {
@@ -337,7 +355,7 @@ fn output_elements_inner(
 
     // The polkit dialog is modal: above every window and shell panel, beneath
     // only the cursor and OSD. It waits hidden while the session is locked.
-    if !locks.locked && !lock.internal() && !polkit.queue.is_empty() {
+    if !locks.locked && !lock.shell_hidden() && !polkit.queue.is_empty() {
         let here = match &polkit.output {
             Some(shown) => shown == output || space.output_geometry(shown).is_none(),
             None => true,
@@ -353,13 +371,13 @@ fn output_elements_inner(
         }
     }
 
-    if !locks.locked && !lock.internal() {
+    if !locks.locked && !lock.shell_hidden() {
         let accent = topbar.accent();
         let media_on = features.on(Feature::Media);
         elements.extend(features.call(Feature::Bar, Vec::new(), || topbar.panel_elements(renderer, output, output_geo.size, scale.x, accent, &config.dock.icon_theme, classic.progress.value > 0.5, media_on)));
     }
 
-    if !locks.locked && !lock.internal() {
+    if !locks.locked && !lock.shell_hidden() {
         elements.extend(features.call(Feature::Media, Vec::new(), || {
             topbar.now_playing.borrow_mut().music.session.as_mut()
                 .map(|s| s.elements(renderer, output, output_geo.size, scale.x, topbar.accent())).unwrap_or_default()
@@ -376,7 +394,7 @@ fn output_elements_inner(
     window_decor.classic = features.on(Feature::Classic) && classic.settled == crate::classic::ShellMode::Classic;
     window_decor.pointer = pointer_pos;
     elements.extend(features.call(Feature::ResizeMode, Vec::new(), || overlay.resize_mode.elements(renderer, output, output_geo, scale.x)));
-    if !locks.locked && !lock.internal() {
+    if !locks.locked && !lock.shell_hidden() {
         elements.extend(features.call(Feature::Notifications, Vec::new(), || {
             topbar.notifications.borrow_mut().elements(renderer, output, output_geo.size, scale.x, time, &config.dock.icon_theme, topbar.shell_progress, topbar.accent())
         }));
@@ -386,7 +404,7 @@ fn output_elements_inner(
     elements.extend(features.call(Feature::Launcher, Vec::new(), || {
         launcher.elements(renderer, output, output_geo.size, scale.x, time, accent, &config.dock.icon_theme)
     }));
-    if !locks.locked && !lock.internal() {
+    if !locks.locked && !lock.shell_hidden() {
         elements.extend(overlay.clipboard.picker_elements(renderer, output, output_geo.size, scale.x, time, accent));
     }
     elements.extend(features.call(Feature::Switcher, Vec::new(), || crate::overlay::overlay_elements(overlay, renderer, output, output_geo, scale.x, time)));

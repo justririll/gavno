@@ -161,6 +161,12 @@ impl Fake {
     fn set_volume(&self, volume: f64) {
         self.record("SetVolume", &volume.to_string(), "");
     }
+    fn set_shuffle(&self, on: bool) {
+        self.record("SetShuffle", &on.to_string(), "");
+    }
+    fn set_repeat(&self, mode: &str) {
+        self.record("SetRepeat", mode, "");
+    }
     fn login(&self) {
         self.record("Login", "", "");
     }
@@ -1141,6 +1147,48 @@ fn stale_daemon_volume_does_not_pull_back_the_slider() {
 }
 
 #[test]
+fn shuffle_and_repeat_buttons_follow_daemon_state_and_send_commands() {
+    let Some((_bus, address)) = bus() else { return };
+    let (fake, _connection) = fake(&address, true);
+    let (mut h, output) = setup(&address);
+    h.gv.toggle_music(&output);
+    ready(&mut h);
+    let mut renderer = renderer();
+    // A daemon without the properties shows no buttons.
+    draw(&mut h, &mut renderer, &output);
+    for hit in [Hit::Shuffle, Hit::Repeat] {
+        assert!(!session(&h.gv).view.hits.iter().any(|(_, h)| *h == hit));
+    }
+    {
+        let mut s = session_mut(&mut h);
+        s.state.shuffle = Some(false);
+        s.state.repeat = Some(RepeatMode::None);
+        s.dirty = true;
+    }
+    draw(&mut h, &mut renderer, &output);
+    click(&mut h, Hit::Shuffle);
+    pump(&mut h, |_| !fake.calls("SetShuffle").is_empty());
+    assert_eq!(fake.calls("SetShuffle"), [("true".into(), String::new())]);
+    assert_eq!(session(&h.gv).state.shuffle, Some(true));
+    draw(&mut h, &mut renderer, &output);
+    for expected in ["Playlist", "Track", "None"] {
+        let calls = fake.calls("SetRepeat").len();
+        click(&mut h, Hit::Repeat);
+        draw(&mut h, &mut renderer, &output);
+        pump(&mut h, |_| fake.calls("SetRepeat").len() > calls);
+        assert_eq!(fake.calls("SetRepeat").last().unwrap().0, expected);
+    }
+    // Both buttons and the three transport buttons sit on one row, in order.
+    let s = session(&h.gv);
+    let x = |hit| s.view.hits.iter().find(|(_, h)| *h == hit).unwrap().0;
+    let order = [Hit::Shuffle, Hit::Control("previous"), Hit::Control("toggle"), Hit::Control("next"), Hit::Repeat];
+    for pair in order.windows(2) {
+        let (a, b) = (x(pair[0]), x(pair[1]));
+        assert!(a.loc.x + a.size.w <= b.loc.x && a.loc.y < b.loc.y + b.size.h);
+    }
+}
+
+#[test]
 fn dj_row_plays_the_dj_without_a_context() {
     let Some((_bus, address)) = bus() else { return };
     let (fake, _connection) = fake(&address, true);
@@ -1589,6 +1637,9 @@ fn music_design_artifacts_and_timings() {
         };
         s.selected = 3;
         s.state.volume = 0.63;
+        s.state.shuffle = Some(true);
+        s.state.repeat = Some(RepeatMode::Playlist);
+        s.state.message = "Playing on GAVNO".into();
         s.state.position_ms = 73_000;
         s.state.upcoming = vec![item("track", "A walk after dark")];
         s.state.item.as_mut().unwrap().cover_path = Some(paths[0].clone());
@@ -1804,7 +1855,7 @@ fn music_empty_states_keep_login_and_transport_targets() {
     let before = counters(&h);
     build(&mut h, &mut renderer, &output, 1.0, accent);
     assert_eq!(counters(&h), before);
-    assert_eq!(ui::panel_rect((1280, 800).into(), None).size.h, 660);
+    assert_eq!(ui::panel_rect((1280, 800).into(), None).size.h, ui::PANEL_HEIGHT.min(800 - 48));
 }
 
 #[test]
@@ -1979,7 +2030,7 @@ fn top_level_rows_follow_tabs_but_search_back_and_loading_keep_headers() {
             .find(|(text, _, _)| text == "RECOMMENDED")
             .unwrap()
             .1;
-        assert_eq!(section.loc.y, panel.loc.y + 330 + 4 + 22);
+        assert_eq!(section.loc.y, ui::Layout::new(panel, false).list_top + 4 + 22);
         let track = s
             .view
             .hits
@@ -1987,7 +2038,7 @@ fn top_level_rows_follow_tabs_but_search_back_and_loading_keep_headers() {
             .find(|(_, hit)| *hit == Hit::Row(1))
             .unwrap()
             .0;
-        assert_eq!(track.loc.y, panel.loc.y + 330 + 4 + 52);
+        assert_eq!(track.loc.y, ui::Layout::new(panel, false).list_top + 4 + 52);
     }
     for kind in ["search", "back", "loading"] {
         {
@@ -2017,7 +2068,7 @@ fn top_level_rows_follow_tabs_but_search_back_and_loading_keep_headers() {
             .find(|(_, hit)| *hit == Hit::Row(1))
             .unwrap()
             .0;
-        assert_eq!(track.loc.y, panel.loc.y + 330 + 36 + 52);
+        assert_eq!(track.loc.y, ui::Layout::new(panel, false).list_top + 36 + 52);
     }
 }
 
@@ -2243,7 +2294,7 @@ fn login_is_reachable_on_short_outputs_and_keeps_the_tall_card() {
                         .iter()
                         .find(|(text, _, _)| text == "Connect Spotify");
                     if size.1 == 800 {
-                        let list_top = panel.loc.y + 330 + if message.is_empty() { 0 } else { 22 };
+                        let list_top = ui::Layout::new(panel, false).list_top + if message.is_empty() { 0 } else { 22 };
                         let bottom = panel.loc.y + panel.size.h - 12;
                         let cy = list_top + (bottom - list_top - 164) / 2;
                         assert_eq!(heading.unwrap().1.loc.y, cy + 52);

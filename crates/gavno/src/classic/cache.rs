@@ -204,14 +204,17 @@ impl Layer {
             ));
         }
     }
-    /// Reuse the shared, rounded 160 px music cover without decoding it here.
+    /// Reuse the shared, rounded hero-size music cover without decoding it here.
     pub fn decoded_image(&mut self, buffer: &MemoryRenderBuffer, r: Rect) {
         self.primitives.push(Primitive::Image(
             r,
             Image {
                 alpha: 1.0,
                 buffer: buffer.clone(),
-                physical: (160, 160),
+                physical: {
+                    let hero = crate::media::music::worker::CoverKind::Hero.size() as i32;
+                    (hero, hero)
+                },
                 logical: (r.size.w, r.size.h),
             },
         ));

@@ -1,5 +1,6 @@
 //! Built-in session lock. The protocol gate is set before any fallible UI work.
 mod auth;
+pub(crate) mod backdrop;
 mod logind;
 
 use crate::{
@@ -29,6 +30,9 @@ use std::{
 #[derive(Default)]
 pub struct Lock {
     internal: bool,
+    backdrop: backdrop::Backdrop,
+    /// True only while the renderer builds the desktop scene for the backdrop.
+    capturing: bool,
     media_canvas: crate::topbar::Canvas,
     media_icons: crate::icons::Icons,
     authenticated: bool,
@@ -67,6 +71,20 @@ impl Lock {
     }
     pub fn internal(&self) -> bool {
         self.internal
+    }
+    /// The internal lock is hiding the shell. False while the one-off desktop
+    /// capture for the backdrop is built, which never reaches the screen.
+    pub fn shell_hidden(&self) -> bool {
+        self.internal && !self.capturing
+    }
+    pub fn set_capturing(&mut self, on: bool) {
+        self.capturing = on;
+    }
+    pub fn backdrop_wanted(&self, output: &str) -> bool {
+        self.internal && !self.failed && !self.authenticated && self.backdrop.wants(output)
+    }
+    pub fn start_backdrop(&mut self, output: &str, rgba: Vec<u8>, width: usize, height: usize) {
+        self.backdrop.start(output, rgba, width, height);
     }
     pub fn desktop_visible(&self) -> bool {
         self.internal && self.authenticated && !self.failed
@@ -107,13 +125,21 @@ impl Lock {
     pub fn elements(
         &mut self,
         renderer: &mut GlesRenderer,
+        output: &str,
         size: Size<i32, Logical>,
         scale: f64,
         now: Duration,
         theme: &crate::config::ThemeConfig,
+        battery: Option<(u8, bool)>,
     ) -> Vec<GavnoRenderElement> {
+        let backdrop = self.backdrop.buffer(output);
         let elements = self
-            .ui_call(|ui| { ui.set_location(theme); ui.elements(renderer, size, scale, now) })
+            .ui_call(|ui| {
+                ui.set_location(theme);
+                ui.set_backdrop(backdrop);
+                ui.set_battery(battery);
+                ui.elements(renderer, size, scale, now)
+            })
             .unwrap_or_default();
         if elements.is_empty() && !self.failed {
             // Shader initialization failure is reported without a panic. Stop
@@ -139,8 +165,27 @@ impl Lock {
         let Some((line, buttons)) = crate::media::ui::lock_geometry(size) else { return Vec::new(); };
         let c = &mut self.media_canvas;
         c.begin(renderer, scale);
-        c.label(renderer, &player.label(), line.loc.x, line.loc.y, line.size.w, 12.0);
-        for (command, area) in buttons { crate::media::ui::button(c, renderer, &mut self.media_icons, theme, player, command, area, false); }
+        // Title and artist, centred above the buttons and cut with an ellipsis.
+        let (title_style, _) = crate::media::ui::capsule_styles(player.playback);
+        let artist = player.artist();
+        let title_style = crate::ui::text::TextStyleSpec { size: 14.0, ..title_style };
+        let label = if artist.is_empty() { player.title().to_owned() } else { format!("{} · {artist}", player.title()) };
+        let label = crate::topbar::ellipsize(&mut c.text, &label, title_style, line.size.w);
+        let width = (c.text.measure(&label, title_style).ceil() as i32).min(line.size.w);
+        c.styled_label(renderer, &label, line.loc.x + (line.size.w - width) / 2, line.loc.y, width + 2, title_style);
+        for (command, area) in buttons {
+            crate::media::ui::transport(
+                c,
+                renderer,
+                &mut self.media_icons,
+                theme,
+                command,
+                player.playback == crate::media::Playback::Playing,
+                player.allows(command),
+                area,
+                false,
+            );
+        }
         c.finish()
     }
     pub fn key(&mut self, sym: Keysym, ch: Option<char>, mods: &ModifiersState) {
@@ -196,6 +241,7 @@ impl Gavno {
             crate::handlers::session_lock::Locks::internal(self.space.outputs().cloned());
         self.refresh_lock_idle(false, false);
         self.lock.internal = true;
+        self.start_lock_backdrop();
         self.lock.authenticated = false;
         self.lock.failed = false;
         self.lock.ui_panics = 0;
@@ -221,6 +267,27 @@ impl Gavno {
         self.refresh_internal_lock();
         self.queue_redraw_all();
         true
+    }
+    /// One desktop capture per output is taken by the next frame; the blur
+    /// runs on a worker and arrives over this channel.
+    fn start_lock_backdrop(&mut self) {
+        if let Some(token) = self.lock.backdrop.source.take() {
+            self.loop_handle.remove(token);
+        }
+        let (tx, rx) = channel::channel::<backdrop::Blurred>();
+        match self.loop_handle.insert_source(rx, |event, _, gv| {
+            if let channel::Event::Msg(blurred) = event {
+                if gv.lock.internal && gv.lock.backdrop.accept(blurred) {
+                    gv.queue_redraw_all();
+                }
+            }
+        }) {
+            Ok(token) => {
+                self.lock.backdrop.request(tx);
+                self.lock.backdrop.source = Some(token);
+            }
+            Err(error) => tracing::warn!(%error, "cannot register the lock backdrop channel"),
+        }
     }
     pub(crate) fn update_lock_modifiers(&mut self) {
         if let Some(keyboard) = self.seat.get_keyboard() {
@@ -342,6 +409,10 @@ impl Gavno {
             self.lock.internal = false;
             self.lock.authenticated = false;
             self.lock.ui = None;
+            if let Some(token) = self.lock.backdrop.source.take() {
+                self.loop_handle.remove(token);
+            }
+            self.lock.backdrop.clear();
             for token in [self.lock.minute_timer.take(), self.lock.retry_timer.take()]
                 .into_iter()
                 .flatten()
@@ -546,6 +617,59 @@ mod tests {
             assert!(!h.gv.lock.authenticated);
             assert!(!h.gv.lock.checking);
             assert_eq!(h.gv.lock.generation, generation);
+        }
+    }
+    /// Renders the lock screen headlessly in a day and a night state. Set
+    /// GAVNO_LOCK_TEST_ARTIFACTS to keep the PNGs.
+    #[test]
+    fn lock_screen_renders_with_backdrop_battery_and_media() {
+        let mut renderer = crate::media::ui::artifacts::renderer();
+        let size: Size<i32, Logical> = (1280, 800).into();
+        // A busy fake desktop: a wallpaper gradient and two bright windows.
+        let (w, h) = (1280usize, 800usize);
+        let mut rgba = Vec::with_capacity(w * h * 4);
+        for y in 0..h {
+            for x in 0..w {
+                let mut px = [40 + (x * 90 / w) as u8, 60 + (y * 80 / h) as u8, 120, 255];
+                if (100..700).contains(&x) && (120..560).contains(&y) { px = [235, 235, 240, 255]; }
+                if (640..1180).contains(&x) && (300..720).contains(&y) { px = [30, 30, 34, 255]; }
+                rgba.extend(px);
+            }
+        }
+        let now = crate::ui::theme::LocalTime::now();
+        let utc_hour = f64::from(now.hour) - now.utc_offset as f64 / 3600.0;
+        for (name, noon_offset_hours) in [("day", 0.0), ("night", 12.0)] {
+            let longitude = ((12.0 - utc_hour - noon_offset_hours) * 15.0 + 540.0).rem_euclid(360.0) - 180.0;
+            let mut config = crate::config::ThemeConfig::default();
+            config.latitude = Some(10.0);
+            config.longitude = Some(longitude);
+            let (tx, _rx) = mpsc::channel();
+            let mut lock = Lock::default();
+            lock.internal = true;
+            let mut ui = Greeter::for_lock(tx, crate::greeter::User { name: "kirill".into(), display: "Kirill".into() });
+            ui.settle_intro();
+            lock.ui = Some(ui);
+            let (btx, _brx) = channel::channel();
+            lock.backdrop.request(btx);
+            let (bw, bh, argb) = backdrop::blur(&rgba, w, h).unwrap();
+            assert!(lock.backdrop.accept(backdrop::Blurred { epoch: lock.backdrop.epoch(), output: "t".into(), width: bw as i32, height: bh as i32, argb }));
+            let mut elements = lock.media_elements(
+                &mut renderer, size, 1.0,
+                &crate::media::Snapshot { player: Some(crate::media::ui::artifacts::player()), ..Default::default() },
+                "Adwaita",
+            );
+            assert!(!elements.is_empty(), "media controls must be drawn when music plays");
+            elements.extend(lock.elements(&mut renderer, "t", size, 1.0, Duration::from_secs(1), &config, Some((73, false))));
+            assert!(lock.backdrop.buffer("t").is_some());
+            if let Some(dir) = std::env::var_os("GAVNO_LOCK_TEST_ARTIFACTS") {
+                let dir = std::path::PathBuf::from(dir);
+                std::fs::create_dir_all(&dir).unwrap();
+                let bytes = crate::render::capture_elements(&mut renderer, &elements, (1280, 800), 1.0).unwrap();
+                let mut encoder = png::Encoder::new(std::fs::File::create(dir.join(format!("lock-{name}.png"))).unwrap(), 1280, 800);
+                encoder.set_color(png::ColorType::Rgba);
+                encoder.set_depth(png::BitDepth::Eight);
+                encoder.write_header().unwrap().write_image_data(&bytes).unwrap();
+            }
         }
     }
     #[test]

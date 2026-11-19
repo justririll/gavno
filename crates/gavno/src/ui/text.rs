@@ -182,6 +182,33 @@ impl TextRenderer {
         advance.max(ink / scale)
     }
 
+    /// Cell width of one digit: the widest digit of the font at this style, so
+    /// a ticking clock never shifts its neighbours.
+    pub fn digit_cell(&mut self, style: TextStyleSpec) -> f32 {
+        ('0'..='9')
+            .map(|d| self.measure(d.encode_utf8(&mut [0; 4]), style))
+            .fold(0.0, f32::max)
+    }
+
+    /// Per-character x offsets of `text` with every digit in a fixed cell
+    /// (digits centred in it), and the total logical width.
+    pub fn tabular_cells(&mut self, text: &str, style: TextStyleSpec) -> (Vec<(char, f32)>, f32) {
+        let cell = self.digit_cell(style);
+        let mut x = 0.0;
+        let mut cells = Vec::with_capacity(text.len());
+        for ch in text.chars() {
+            let own = self.measure(ch.encode_utf8(&mut [0; 4]), style);
+            if ch.is_ascii_digit() {
+                cells.push((ch, x + (cell - own) / 2.0));
+                x += cell + style.tracking;
+            } else {
+                cells.push((ch, x));
+                x += own + style.tracking;
+            }
+        }
+        (cells, (x - style.tracking).max(0.0))
+    }
+
     /// Rasterizes `text` at `scale` (physical px per logical px).
     pub fn render(&mut self, text: &str, style: TextStyleSpec, scale: f64) -> Option<TextImage> {
         let to8 = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
@@ -280,6 +307,20 @@ impl TextRenderer {
 #[cfg(test)]
 mod measure_tests {
     use super::*;
+    #[test]
+    fn tabular_text_has_the_same_width_for_every_digit_string() {
+        let mut t = TextRenderer::new();
+        let style = crate::topbar::label_style(14.0);
+        if t.font(style.weight).is_none() { return; }
+        let widths: Vec<f32> = ["0:00", "1:11", "8:88", "4:57"]
+            .iter()
+            .map(|s| t.tabular_cells(s, style).1)
+            .collect();
+        assert!(widths.windows(2).all(|w| (w[0] - w[1]).abs() < 0.01), "{widths:?}");
+        let (cells, _) = t.tabular_cells("12:30", style);
+        assert_eq!(cells.len(), 5);
+        assert!(cells.windows(2).all(|w| w[1].1 > w[0].1));
+    }
     #[test]
     fn canvases_share_parsed_fonts_and_release_them_with_their_last_owner() {
         let mut first = TextRenderer::new();
