@@ -24,12 +24,34 @@ pub(super) fn close_rect(r: Rect) -> Rect {
     rect(r.loc.x + r.size.w - 34, r.loc.y + 8, 26, 26)
 }
 
+/// Height one toast needs at least; used to decide whether a column fits.
+const NEED_H: i32 = 96;
+/// Where the toast column goes: the top right corner, or beside or below an
+/// open popover. `None` holds the toasts until the popover closes.
+pub(super) fn column(size: Size<i32, Logical>, width: i32, avoid: Option<Rect>) -> Option<(i32, i32)> {
+    let right = size.w - width - 8;
+    let top = 40;
+    let Some(a) = avoid else { return Some((right, top)) };
+    let overlaps = |x: i32, y: i32| rect(x, y, width, NEED_H).overlaps(a);
+    if !overlaps(right, top) {
+        return Some((right, top));
+    }
+    let aside = a.loc.x - width - 8;
+    if aside >= 8 && !overlaps(aside, top) {
+        return Some((aside, top));
+    }
+    let below = a.loc.y + a.size.h + 8;
+    (below + NEED_H <= size.h - 8).then_some((right, below))
+}
+
 impl Notifications {
     pub(super) fn layout(&mut self, size: Size<i32, Logical>) {
         let width = 360.min((size.w - 16).max(1));
-        let mut y = 40;
+        let column = column(size, width, self.avoid);
+        let (column_x, top) = column.unwrap_or((size.w - width - 8, 40));
+        let mut y = top;
         for c in &mut self.cards {
-            if !c.visible {
+            if !c.visible || column.is_none() || y + NEED_H > size.h - 8 {
                 c.rect = None;
                 continue;
             }
@@ -47,7 +69,7 @@ impl Notifications {
                 .collect();
             let buttons_y = BODY_Y + lines * LINE_H + look::space::XS;
             let height = buttons_y + if actions.is_empty() { 6 } else { BUTTONS_H };
-            let x = size.w - width - 8
+            let x = column_x
                 + ((1.0 - c.spring.value.clamp(0.0, 1.0)) * (width + 8) as f64) as i32;
             let panel = rect(x, y, width, height);
             c.rect = Some(panel);

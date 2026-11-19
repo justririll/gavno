@@ -100,14 +100,29 @@ impl Gavno {
             self.queue_redraw_all();
         }
     }
-    fn show_bar_osd(&mut self, kind: osd::Kind, value: f64, muted: bool) {
+    pub(crate) fn show_bar_osd(&mut self, kind: osd::Kind, value: f64, muted: bool) {
         if let Some(t) = self.media.osd_timer.take() {
             self.loop_handle.remove(t);
         }
         let now = self.start_time.elapsed();
         self.media.osd.show(kind, value, muted, now);
+        self.arm_osd_timer();
+        self.queue_redraw_all();
+    }
+    /// The keyboard layout changed: "EN", "RU".
+    pub(crate) fn show_layout_osd(&mut self, label: &str) {
+        if let Some(t) = self.media.osd_timer.take() {
+            self.loop_handle.remove(t);
+        }
+        let now = self.start_time.elapsed();
+        self.media.osd.show_layout(label, now);
+        self.arm_osd_timer();
+        self.queue_redraw_all();
+    }
+    /// One one-shot timer, only while the capsule is visible.
+    fn arm_osd_timer(&mut self) {
         match self.loop_handle.insert_source(
-            Timer::from_duration(Duration::from_millis(1500)),
+            Timer::from_duration(osd::HOLD),
             |_, _, gv| {
                 let _stall = crate::perf::Stall::new("timer.bar_osd");
                 gv.media.osd_timer = None;
@@ -119,7 +134,6 @@ impl Gavno {
             Ok(t) => self.media.osd_timer = Some(t),
             Err(error) => tracing::warn!(%error,"cannot schedule OSD dismissal"),
         }
-        self.queue_redraw_all();
     }
     pub fn bar_media(&mut self, action: Media) {
         self.refresh_bar_status(self.media.status_visible);
@@ -245,6 +259,7 @@ impl Gavno {
         }
         let outputs: Vec<_> = self.space.outputs().cloned().collect();
         let mut changed = false;
+        let mut tooltip_for = None;
         for o in outputs {
             let Some(geo) = self.space.output_geometry(&o) else {
                 continue;
@@ -257,13 +272,44 @@ impl Gavno {
             };
             if let Some(v) = self.topbar.views.iter_mut().find(|v| v.output == o) {
                 if v.hover != hit {
-                    v.hover = hit;
+                    v.hover = hit.clone();
                     changed = true;
+                    tooltip_for = Some((o.clone(), hit));
                 }
             }
         }
+        if let Some((output, hit)) = tooltip_for {
+            self.arm_tooltip(output, hit);
+        }
         if changed {
             self.queue_redraw_all();
+        }
+    }
+    /// A tooltip appears after a short hover; the one-shot timer exists only
+    /// while the pointer rests on a target that has one.
+    fn arm_tooltip(&mut self, output: Output, hit: Option<super::BarAction>) {
+        if let Some(t) = self.topbar.tooltip_timer.take() {
+            self.loop_handle.remove(t);
+        }
+        self.topbar.tooltip = None;
+        if !hit.as_ref().is_some_and(super::TopBar::has_tooltip) {
+            return;
+        }
+        match self.loop_handle.insert_source(
+            Timer::from_duration(super::TOOLTIP_DELAY),
+            move |_, _, gv| {
+                let _stall = crate::perf::Stall::new("timer.bar_tooltip");
+                gv.topbar.tooltip_timer = None;
+                let hovered = gv.topbar.views.iter().find(|v| v.output == output).and_then(|v| v.hover.clone());
+                if let Some(action) = hovered {
+                    gv.topbar.tooltip = Some((output.clone(), action));
+                    gv.queue_redraw_all();
+                }
+                TimeoutAction::Drop
+            },
+        ) {
+            Ok(t) => self.topbar.tooltip_timer = Some(t),
+            Err(error) => tracing::warn!(%error, "cannot schedule bar tooltip"),
         }
     }
     fn set_software_brightness(&mut self, level: f64) {
@@ -403,7 +449,7 @@ mod tests {
             let mut hits = Vec::new();
             super::super::push_hit(&canvas, &mut hits, area, BarAction::Media(crate::media::Command::PlayPause));
             h.gv.topbar.views.push(BarView {
-                output: o.clone(), canvas, dots: vec![], hits, visible: true, hover: None,
+                output: o.clone(), canvas, workspaces: vec![], hits, visible: true, hover: None,
                 layout: Some(layout), popover: None,
             });
             // Exercise the shell's real pointer dispatch with a point inside the capsule.
@@ -535,5 +581,48 @@ mod tests {
         assert!(h.gv.topbar.menu.is_none());
         assert!(h.gv.bar_key(keysyms::KEY_Super_L, 133, false));
         assert!(!h.gv.media.core_keys.contains(&133));
+    }
+    #[test]
+    fn layout_change_shows_the_osd_but_startup_and_unchanged_layouts_do_not() {
+        let (mut h, _) = setup();
+        h.gv.refresh_shell();
+        assert!(h.gv.media.osd.deadline.is_none(), "first refresh only learns the layout");
+        assert!(h.gv.media.osd_timer.is_none());
+        h.gv.refresh_shell();
+        assert!(h.gv.media.osd.deadline.is_none(), "same layout: nothing to announce");
+        h.gv.topbar.layout = "RU".into();
+        h.gv.refresh_shell();
+        assert_eq!(h.gv.media.osd.kind(), osd::Kind::Layout);
+        assert!(h.gv.media.osd.deadline.is_some());
+        assert!(h.gv.media.osd_timer.is_some(), "one one-shot timer while visible");
+        assert!(h.gv.is_animating(), "fading in");
+    }
+    #[test]
+    fn osd_timer_is_replaced_not_stacked_and_gone_after_it_fires() {
+        let (mut h, _) = setup();
+        h.gv.show_bar_osd(osd::Kind::Volume, 0.4, false);
+        let first = h.gv.media.osd_timer.clone().unwrap();
+        h.gv.show_bar_osd(osd::Kind::Brightness, 0.6, false);
+        assert_ne!(h.gv.media.osd_timer.clone().unwrap(), first);
+        assert!(h.gv.media.osd.visible() || h.gv.media.osd.is_animating());
+        // Fire it by hand the way the timer does.
+        let at = h.gv.start_time.elapsed() + osd::HOLD;
+        h.gv.media.osd.expire(at);
+        assert!(h.gv.media.osd.deadline.is_none());
+    }
+    #[test]
+    fn hover_over_a_workspace_arms_one_tooltip_timer_and_leaving_cancels_it() {
+        let (mut h, output) = setup();
+        h.gv.topbar.test_view(&output, crate::topbar::geometry::Layout::new(1646, 88, true));
+        let target = Some(super::super::BarAction::Workspace(0));
+        h.gv.topbar.views[0].hover = target.clone();
+        h.gv.arm_tooltip(output.clone(), target);
+        assert!(h.gv.topbar.tooltip_timer.is_some());
+        assert!(h.gv.topbar.tooltip.is_none(), "not before the delay");
+        h.gv.arm_tooltip(output.clone(), None);
+        assert!(h.gv.topbar.tooltip_timer.is_none());
+        // Targets without a tooltip never start a timer.
+        h.gv.arm_tooltip(output.clone(), Some(super::super::BarAction::Calendar));
+        assert!(h.gv.topbar.tooltip_timer.is_none());
     }
 }

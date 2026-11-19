@@ -475,3 +475,56 @@ fn battery_warns_once_per_threshold_and_only_while_discharging() {
     assert_eq!(battery_warning(Some(&b(4, true)), None), None);
     assert_eq!(battery_warning(None, None), None);
 }
+
+#[test]
+fn toast_column_moves_beside_or_below_a_popover_or_is_held() {
+    use super::ui::column;
+    use crate::topbar::geometry::rect;
+    // Quick settings: 360 wide at the right edge below the bar.
+    for (w, h) in [(1280, 800), (2134, 1200)] {
+        let panel = rect(w - 368, 36, 360, 520);
+        let (x, y) = column((w, h).into(), 360, Some(panel)).unwrap();
+        assert!(!rect(x, y, 360, 96).overlaps(panel), "{w}x{h}: {x},{y}");
+        assert_eq!((x, y), (w - 368 - 368, 40), "beside the popover, same height");
+        // Calendar in the middle never touches the corner column.
+        let calendar = rect((w - 320) / 2, 40, 320, 460);
+        assert_eq!(column((w, h).into(), 360, Some(calendar)), Some((w - 368, 40)));
+        assert_eq!(column((w, h).into(), 360, None), Some((w - 368, 40)));
+    }
+    // Too narrow for a side column: below the popover when it fits.
+    let panel = rect(332, 36, 360, 400);
+    let (x, y) = column((700, 800).into(), 360, Some(panel)).unwrap();
+    assert!(y >= 36 + 400 + 8 && !rect(x, y, 360, 96).overlaps(panel));
+    // Neither beside nor below: held until the popover closes.
+    assert_eq!(column((700, 800).into(), 360, Some(rect(332, 36, 360, 700))), None);
+}
+#[test]
+fn toasts_stay_off_an_open_popover_and_return_when_it_closes() {
+    use crate::topbar::geometry::rect;
+    let (mut h, _) = harness();
+    let tx = channel(&h.gv.loop_handle).unwrap();
+    tx.send(Request::Active).unwrap();
+    tx.send(Request::Notify(notice(1))).unwrap();
+    tx.send(Request::Notify(notice(2))).unwrap();
+    h.event_loop.dispatch(Duration::ZERO, &mut h.gv).unwrap();
+    settle(&mut h);
+    let corner: Vec<_> = h.gv.notifications.borrow().cards.iter().map(|c| c.rect.unwrap()).collect();
+    assert!(corner.iter().all(|r| r.loc.x + r.size.w == 1646 - 8));
+    let panel = rect(1646 - 368, 36, 360, 560);
+    h.gv.notifications.borrow_mut().avoid = Some(panel);
+    settle(&mut h);
+    let moved: Vec<_> = h.gv.notifications.borrow().cards.iter().map(|c| c.rect.unwrap()).collect();
+    assert!(moved.iter().all(|r| !r.overlaps(panel)), "{moved:?} vs {panel:?}");
+    // Hit testing follows the moved cards, not the corner.
+    let output = h.gv.notifications.borrow().output.clone().unwrap();
+    let on_panel = (panel.loc.x as f64 + 100.0, panel.loc.y as f64 + 60.0).into();
+    assert!(!h.gv.notifications.borrow().contains(&output, on_panel));
+    // A popover with no free column beside or below it holds the toasts.
+    h.gv.notifications.borrow_mut().avoid = Some(rect(8, 36, 1630, 860));
+    settle(&mut h);
+    assert!(h.gv.notifications.borrow().cards.iter().all(|c| c.rect.is_none()));
+    h.gv.notifications.borrow_mut().avoid = None;
+    settle(&mut h);
+    let back: Vec<_> = h.gv.notifications.borrow().cards.iter().map(|c| c.rect.unwrap()).collect();
+    assert_eq!(back, corner);
+}
