@@ -28,6 +28,11 @@ Space or Enter activates a row or toggles mute. Escape closes the popover.
 Scroll to reach additional rows on small displays. Code mode displays these
 popover keys in its bar hints.
 
+A small camera icon left of the status capsule (in the Classic tray, the first
+icon) shows while the [finger pointer](finger-pointer.md) camera is on: dim
+while no hand is in view, accent-coloured while one is tracked. It has no
+action; Mod+Shift+M turns the mode off.
+
 NetworkManager and BlueZ run on system D-Bus. Audio uses pipewire-pulse through
 `pactl` JSON queries and one long-lived `pactl subscribe` child. All queries,
 commands and subscriptions run on worker threads. Queries follow service events

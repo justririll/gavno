@@ -24,6 +24,8 @@ toml = "0.9"
 smithay-drm-extras = { git = "https://github.com/Smithay/smithay", tag = "v0.7.0", default-features = false }
 # Same version as drm-rs uses; needed for a connector query that never probes.
 drm-ffi = "0.9"
+# Wire protocol only; the camera and inference runtime stay in the helper binary.
+gavno-cam = { path = "../gavno-cam", default-features = false }
 
 wayland-protocols = { version = "0.32", features = ["server", "staging"] }
 

@@ -101,10 +101,7 @@ pub fn dispatch(gv: &mut Gavno, method: &str, params: &Value) -> Result<Value, S
         "inject_pointer" => {
             let x = number(params, "x", None)?;
             let y = number(params, "y", None)?;
-            let origin = gv.space.outputs().next().and_then(|o| gv.space.output_geometry(o)).ok_or("no output")?.loc;
-            gv.process_input_event::<Backend>(InputEvent::PointerMotionAbsolute { event: events::Position {
-                time, x: x - f64::from(origin.x), y: y - f64::from(origin.y),
-            } });
+            pointer_to(gv, x, y).ok_or("no output")?;
         }
         "inject_button" => {
             let code = match params["button"].as_str() {
@@ -117,7 +114,7 @@ pub fn dispatch(gv: &mut Gavno, method: &str, params: &Value) -> Result<Value, S
                 Some("click") => &[ButtonState::Pressed, ButtonState::Released],
                 _ => return Err("state must be press, release or click".into()),
             };
-            for &state in states { gv.process_input_event::<Backend>(InputEvent::PointerButton { event: events::Button { time, code, state } }); }
+            for &state in states { button(gv, code, state); }
         }
         "inject_scroll" => {
             let dx = number(params, "dx", Some(0.0))?;
@@ -126,11 +123,30 @@ pub fn dispatch(gv: &mut Gavno, method: &str, params: &Value) -> Result<Value, S
                 Some("finger") => AxisSource::Finger, Some("wheel") => AxisSource::Wheel,
                 _ => return Err("source must be finger or wheel".into()),
             };
-            gv.process_input_event::<Backend>(InputEvent::PointerAxis { event: events::Scroll { time, dx, dy, source } });
+            scroll(gv, dx, dy, source);
         }
         _ => return Err(format!("{method} requires asynchronous IPC")),
     }
     Ok(json!({"ok": true}))
+}
+
+/// The synthetic pointer path shared with the finger pointer: `x` and `y` are
+/// global logical coordinates. Returns `None` when there is no output.
+pub(crate) fn pointer_to(gv: &mut Gavno, x: f64, y: f64) -> Option<()> {
+    let time = gv.start_time.elapsed().as_micros() as u64;
+    let origin = gv.space.outputs().next().and_then(|o| gv.space.output_geometry(o))?.loc;
+    gv.process_input_event::<Backend>(InputEvent::PointerMotionAbsolute { event: events::Position {
+        time, x: x - f64::from(origin.x), y: y - f64::from(origin.y),
+    } });
+    Some(())
+}
+pub(crate) fn button(gv: &mut Gavno, code: u32, state: ButtonState) {
+    let time = gv.start_time.elapsed().as_micros() as u64;
+    gv.process_input_event::<Backend>(InputEvent::PointerButton { event: events::Button { time, code, state } });
+}
+pub(crate) fn scroll(gv: &mut Gavno, dx: f64, dy: f64, source: AxisSource) {
+    let time = gv.start_time.elapsed().as_micros() as u64;
+    gv.process_input_event::<Backend>(InputEvent::PointerAxis { event: events::Scroll { time, dx, dy, source } });
 }
 
 fn state(gv: &Gavno) -> Value {
@@ -149,7 +165,7 @@ fn state(gv: &Gavno) -> Value {
         "resize_mode_open": gv.overlay.resize_mode.active(),
         "window_hints_open": gv.overlay.keyboard.windows.is_some(), "keyboard_overlay_open": gv.overlay.keyboard.open(),
         "overview_selected": gv.overview.selected.as_ref().map(|w| crate::overlay::window_labels(w).0), "outputs": outputs, "focused": focused,
-        "code_mode": gv.code_mode, "pointer_hidden": gv.pointer_hidden,
+        "code_mode": gv.code_mode, "finger_pointer": gv.finger.is_some(), "pointer_hidden": gv.pointer_hidden,
         "launcher_open": gv.launcher.open, "start_open": gv.classic.start.open,
         "panel_controls_open": gv.panel_controls_open(),
         "music_open": gv.music_open(), "polkit_open": gv.polkit_visible(),
