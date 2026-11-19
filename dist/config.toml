@@ -107,6 +107,12 @@
 # idle_stop_minutes = 10
 # workspace_names = true
 
+# Focus emphasis for GAVNO windows (Classic title bars show focus themselves).
+# dim_inactive darkens unfocused windows; 0 turns it off. These settings reload live.
+# [appearance]
+# dim_inactive = 0.06
+# focus_border = true
+
 # Local sun/season colors. These settings reload live.
 # [theme]
 # background = "living" # or "solid"

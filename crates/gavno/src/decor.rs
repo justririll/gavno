@@ -36,7 +36,128 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 
 /// Logical pixels. Maximized and fullscreen windows always have square corners.
 pub const CORNER_RADIUS: f32 = 12.0;
-const ACCENT: [f32; 4] = [242.0 / 255.0, 164.0 / 255.0, 106.0 / 255.0, 0.55];
+/// Accent of the focus ring and glow. Local until the shared style module lands.
+const ACCENT: [f32; 3] = [242.0 / 255.0, 164.0 / 255.0, 106.0 / 255.0];
+/// Focus ring thickness in logical px and glow reach in logical px.
+const RING_WIDTH: f32 = 2.0;
+const GLOW_BLUR: i32 = 14;
+const GLOW_ALPHA: f32 = 0.5;
+/// Cross-fade between the old and new focused window.
+pub const FOCUS_FADE: Duration = Duration::from_millis(120);
+
+/// Focus emphasis settings, copied from `[appearance]` every frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FocusStyle {
+    pub dim: f32,
+    pub border: bool,
+    /// The living theme's accent, so the ring matches the bar and panels.
+    pub accent: [f32; 3],
+}
+impl Default for FocusStyle {
+    fn default() -> Self {
+        Self { dim: 0.06, border: true, accent: ACCENT }
+    }
+}
+
+/// What one window draws for focus: ring/glow strength and dimming, both 0..1
+/// already scaled by the cross-fade. All zero draws nothing at all.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct FocusDraw {
+    ring: f32,
+    dim: f32,
+}
+impl FocusDraw {
+    /// `ssd`: Classic title bars show focus themselves. `any_focused`: with no
+    /// focused window (a layer surface has the keyboard) nothing is dimmed.
+    fn new(style: FocusStyle, mode: WindowMode, ssd: bool, level: f32, any_focused: bool) -> Self {
+        if ssd || mode == WindowMode::Fullscreen {
+            return Self::default();
+        }
+        Self {
+            ring: if style.border { level } else { 0.0 },
+            dim: if any_focused { style.dim.clamp(0.0, 1.0) * (1.0 - level) } else { 0.0 },
+        }
+    }
+}
+
+/// Keyboard-focus cross-fade state. A window that has no entry is settled:
+/// focused means 1.0, anything else 0.0, so the settled state stores nothing
+/// and schedules no frames.
+#[derive(Debug)]
+pub struct FocusFade<K> {
+    focused: Option<K>,
+    fades: Vec<Fade<K>>,
+    now: Duration,
+}
+#[derive(Debug)]
+struct Fade<K> {
+    key: K,
+    from: f32,
+    to: f32,
+    /// Set by the first frame that draws the fade, so it always starts at `from`.
+    start: Option<Duration>,
+}
+impl<K> Default for FocusFade<K> {
+    fn default() -> Self {
+        Self { focused: None, fades: Vec::new(), now: Duration::ZERO }
+    }
+}
+impl<K: PartialEq + Clone> FocusFade<K> {
+    pub fn focused(&self) -> Option<&K> {
+        self.focused.as_ref()
+    }
+    /// Returns whether the focus actually changed. Fades in flight continue
+    /// from their current level, so quick switches never jump.
+    pub fn set(&mut self, key: Option<K>) -> bool {
+        if self.focused == key {
+            return false;
+        }
+        let old = self.focused.clone();
+        let starts: Vec<(K, f32, f32)> = [(old, 0.0), (key.clone(), 1.0)]
+            .into_iter()
+            .filter_map(|(k, to)| k.map(|k| (self.level(&k, self.now), to, k)))
+            .map(|(from, to, k)| (k, from, to))
+            .collect();
+        for (k, from, to) in starts {
+            self.fades.retain(|f| f.key != k);
+            if from != to {
+                self.fades.push(Fade { key: k, from, to, start: None });
+            }
+        }
+        self.focused = key;
+        true
+    }
+    pub fn level(&self, key: &K, now: Duration) -> f32 {
+        match self.fades.iter().find(|f| &f.key == key) {
+            Some(f) => match f.start {
+                None => f.from,
+                Some(start) => {
+                    let t = (now.saturating_sub(start).as_secs_f32() / FOCUS_FADE.as_secs_f32()).clamp(0.0, 1.0);
+                    f.from + (f.to - f.from) * (1.0 - (1.0 - t) * (1.0 - t))
+                }
+            },
+            None => f32::from(self.focused.as_ref() == Some(key)),
+        }
+    }
+    /// Frame time: starts new fades and settles finished ones.
+    pub fn advance(&mut self, now: Duration) {
+        self.now = self.now.max(now);
+        for f in &mut self.fades {
+            f.start.get_or_insert(now);
+        }
+        self.fades.retain(|f| f.start.is_some_and(|s| now < s + FOCUS_FADE));
+    }
+    /// A fade is waiting for its first frame (the focus change itself queues one).
+    #[cfg(test)]
+    pub fn pending(&self) -> bool {
+        self.fades.iter().any(|f| f.start.is_none())
+    }
+    /// A started fade needs the next frame. A fade that has not drawn yet does
+    /// not: the focus change already queued the frame that starts it.
+    pub fn active(&self) -> bool {
+        self.fades.iter().any(|f| f.start.is_some())
+    }
+}
 pub fn corner_radius(mode: WindowMode) -> f32 {
     if mode == WindowMode::Floating {
         CORNER_RADIUS
@@ -368,6 +489,10 @@ struct Cache {
     snapshot: Option<(TextureBuffer<GlesTexture>, Rectangle<i32, Physical>)>,
     trackers: HashMap<Id, Tracker>,
     border: ShaderBox,
+    ring: ShaderBox,
+    glow: ShaderBox,
+    dim: ShaderBox,
+    draw: FocusDraw,
     shadows: [ShaderBox; 2],
     titlebar: crate::topbar::Canvas,
     icons: crate::icons::Icons,
@@ -386,7 +511,8 @@ pub struct WindowDecor {
     caches: Vec<WindowCache>,
     dropdown_caches: Vec<(Output, Cache)>,
     stack: Vec<Window>,
-    focused: Option<Window>,
+    fade: FocusFade<Window>,
+    pub style: FocusStyle,
     pub classic: bool,
     pub pointer: smithay::utils::Point<f64, smithay::utils::Logical>,
 }
@@ -507,7 +633,7 @@ fn warm_window_elements(renderer: &mut GlesRenderer, programs: &Programs, shader
             geometry: rect, clip: rect, radius: 4.0, opacity: 1.0,
         }, Scale::from(1.0));
         let (border, shadows) = decorations(&mut cache, shaders, rect.to_f64().to_logical(1.0),
-            WindowMode::Floating, true, 1.0, 1.0);
+            WindowMode::Floating, true, FocusDraw { ring: 1.0, dim: 0.1 }, ACCENT, 1.0, 1.0);
         elements.extend(border);
         elements.push(GavnoRenderElement::Window(content));
         elements.extend(shadows);
@@ -539,42 +665,79 @@ fn decorations(
     rect: Rect,
     mode: WindowMode,
     focused: bool,
+    focus: FocusDraw,
+    accent: [f32; 3],
     opacity: f32,
     scale: f64,
 ) -> (Vec<GavnoRenderElement>, Vec<GavnoRenderElement>) {
-    if mode != WindowMode::Floating {
-        return (Vec::new(), Vec::new());
-    }
     let rect = rect.to_i32_round();
-    let border = shader::rrect(
+    let mut front = Vec::new();
+    let mut behind = Vec::new();
+    let radius = corner_radius(mode);
+    if focus.ring > 0.0 {
+        front.push(GavnoRenderElement::Shader(shader::rrect(
+            &mut cache.ring,
+            shaders,
+            rect,
+            radius * scale as f32,
+            [0.0; 4],
+            RING_WIDTH * scale as f32,
+            [accent[0], accent[1], accent[2], 1.0],
+            opacity * focus.ring,
+            scale,
+        )));
+        behind.push(GavnoRenderElement::Shader(shader::shadow(
+            &mut cache.glow,
+            shaders,
+            rect,
+            radius,
+            GLOW_BLUR,
+            0,
+            [accent[0], accent[1], accent[2], GLOW_ALPHA],
+            opacity * focus.ring,
+            scale,
+        )));
+    }
+    if focus.dim > 0.0 {
+        front.push(GavnoRenderElement::Shader(shader::rrect(
+            &mut cache.dim,
+            shaders,
+            rect,
+            radius * scale as f32,
+            [0.0, 0.0, 0.0, 1.0],
+            0.0,
+            [0.0; 4],
+            opacity * focus.dim,
+            scale,
+        )));
+    }
+    if mode != WindowMode::Floating {
+        return (front, behind);
+    }
+    front.push(GavnoRenderElement::Shader(shader::rrect(
         &mut cache.border,
         shaders,
         rect,
         CORNER_RADIUS * scale as f32,
         [0.0; 4],
         scale as f32,
-        if focused {
-            ACCENT
-        } else {
-            [1.0, 1.0, 1.0, 0.12]
-        },
+        [1.0, 1.0, 1.0, 0.12],
         opacity,
         scale,
-    );
+    )));
     // The mockup's two shadow layers, including negative spread.
     let specs = if focused {
         [(80, 34, 18, 0.50), (26, 10, 8, 0.36)]
     } else {
         [(54, 22, 18, 0.32), (16, 6, 6, 0.24)]
     };
-    let mut shadows = Vec::new();
     for (sb, (blur, offset, spread, alpha)) in cache.shadows.iter_mut().zip(specs) {
         let inset = spread.min((rect.size.w.min(rect.size.h) - 1).max(0) / 2);
         let smaller = Rectangle::new(
             (rect.loc.x + inset, rect.loc.y + inset).into(),
             (rect.size.w - 2 * inset, rect.size.h - 2 * inset).into(),
         );
-        shadows.push(GavnoRenderElement::Shader(shader::shadow(
+        behind.push(GavnoRenderElement::Shader(shader::shadow(
             sb,
             shaders,
             smaller,
@@ -586,7 +749,7 @@ fn decorations(
             scale,
         )));
     }
-    (vec![GavnoRenderElement::Shader(border)], shadows)
+    (front, behind)
 }
 
 impl WindowDecor {
@@ -699,7 +862,18 @@ impl WindowDecor {
         if !self.dropdown_caches.is_empty() { self.dropdown_caches.retain(|(o, _)| o != output); }
     }
     pub fn focus(&mut self, window: Option<&Window>) {
-        self.focused = window.cloned();
+        self.fade.set(window.cloned());
+    }
+    pub fn focused(&self) -> Option<&Window> {
+        self.fade.focused()
+    }
+    #[cfg(test)]
+    pub(crate) fn advance_focus(&mut self, now: Duration) {
+        self.fade.advance(now);
+    }
+    /// True while the started focus cross-fade needs frames.
+    pub fn fading(&self) -> bool {
+        self.fade.active()
     }
     /// Front-to-back layer order matches Smithay's space renderer, including popups.
     pub fn elements(
@@ -708,17 +882,19 @@ impl WindowDecor {
         space: &Space<Window>,
         output: &Output,
         animations: &mut WindowAnimations,
-        _time: Duration,
+        time: Duration,
         scene: Option<&[crate::overview::SceneWindow]>,
         features: &crate::module::Features,
         mut stall: Option<&mut crate::perf::Stall<'_>>,
     ) -> Vec<GavnoRenderElement> {
+        let accent = self.style.accent;
 
         self.caches.retain(|c| {
             (features.read(crate::module::Feature::Animations, None, || animations.motion(&c.window)).is_some() || space.element_location(&c.window).is_some())
                 && space.outputs().any(|o| o == &c.output)
         });
         self.ensure_programs(renderer);
+        self.fade.advance(time);
         let (Some(programs), Some(shaders)) = (&self.programs, &self.shaders) else {
             return crate::render::plain_elements(renderer, space, output, scene, stall);
         };
@@ -848,6 +1024,8 @@ impl WindowDecor {
                     shown,
                     cache.mode,
                     cache.focused,
+                    cache.draw,
+                    accent,
                     opacity,
                     scale.x,
                 );
@@ -901,8 +1079,10 @@ impl WindowDecor {
                 .unwrap_or(1.0)
                 .clamp(0.0, 1.0);
             let mode = mode_state(window).mode;
-            let focused = self.focused.as_ref() == Some(window);
-            let radius = if self.classic && crate::classic::decor::ssd(window) { 0.0 } else { corner_radius(mode) * scale.x as f32 };
+            let focused = self.fade.focused() == Some(window);
+            let ssd = self.classic && crate::classic::decor::ssd(window);
+            let draw = FocusDraw::new(self.style, mode, ssd, self.fade.level(window, time), self.fade.focused().is_some());
+            let radius = if ssd { 0.0 } else { corner_radius(mode) * scale.x as f32 };
             let Some(toplevel) = window.toplevel() else {
                 continue;
             };
@@ -966,6 +1146,7 @@ impl WindowDecor {
             cache.rect = Some(shown);
             cache.mode = mode;
             cache.focused = focused;
+            cache.draw = draw;
             cache.visibility = opacity as f64;
             cache.window_scale = motion.map(|m| m.scale()).unwrap_or(1.0);
             cache
@@ -973,11 +1154,11 @@ impl WindowDecor {
                 .retain(|id, _| content.iter().any(|e| e.id() == id));
             cache.last = content.clone();
             let (border, shadow) =
-                decorations(cache, shaders, shown, mode, focused, opacity, scale.x);
+                decorations(cache, shaders, shown, mode, focused, draw, accent, opacity, scale.x);
             // Popups must remain above the parent's focus ring.
             result.extend(content.drain(..popup_count).map(GavnoRenderElement::Window));
             result.extend(border);
-            if self.classic && mode != WindowMode::Fullscreen && crate::classic::decor::ssd(window) {
+            if ssd && mode != WindowMode::Fullscreen {
                 let r = crate::classic::decor::title_rect(shown.to_i32_round());
                 let c = &mut cache.titlebar;
                 c.begin(renderer, scale.x);
@@ -1013,16 +1194,117 @@ mod tests {
         let mut h = crate::state::tests::Harness::new();
         let window = h.window();
         h.gv.map_new_window(window.clone());
-        assert_eq!(h.gv.window_decor.focused.as_ref(), Some(&window));
+        assert_eq!(h.gv.window_decor.focused(), Some(&window));
         h.gv.focus_window(None);
         assert!(h.gv.seat.get_keyboard().unwrap().current_focus().is_none());
-        assert!(h.gv.window_decor.focused.is_none());
+        assert!(h.gv.window_decor.focused().is_none());
 
         h.gv.focus_window(Some(&window));
         h.gv.space.unmap_elem(&window);
         h.gv.focus_topmost();
         assert!(h.gv.seat.get_keyboard().unwrap().current_focus().is_none());
-        assert!(h.gv.window_decor.focused.is_none());
+        assert!(h.gv.window_decor.focused().is_none());
+    }
+    fn ms(v: u64) -> Duration {
+        Duration::from_millis(v)
+    }
+    #[test]
+    fn settled_focus_is_exact_and_costs_no_frames() {
+        let mut f = FocusFade::<u32>::default();
+        assert!(!f.active());
+        assert_eq!(f.level(&1, ms(0)), 0.0);
+        assert!(f.set(Some(1)));
+        assert!(!f.set(Some(1)), "same focus is no change");
+        assert!(f.pending() && !f.active(), "the focus change queues its own first frame");
+        f.advance(ms(999));
+        assert!(f.active());
+        let mut f = FocusFade::<u32>::default();
+        f.set(Some(1));
+        assert_eq!(f.level(&1, ms(500)), 0.0, "a fade starts at its first frame, not at the focus event");
+        f.advance(ms(1000));
+        assert_eq!(f.level(&1, ms(1000)), 0.0);
+        f.advance(ms(1060));
+        let mid = f.level(&1, ms(1060));
+        assert!(mid > 0.5 && mid < 1.0, "ease-out is past halfway at half time: {mid}");
+        f.advance(ms(1120));
+        assert!(!f.active());
+        assert_eq!((f.level(&1, ms(1120)), f.level(&2, ms(1120))), (1.0, 0.0));
+        assert_eq!(f.focused(), Some(&1));
+    }
+    #[test]
+    fn crossfade_swaps_levels_and_switching_mid_fade_is_continuous() {
+        let mut f = FocusFade::<u32>::default();
+        f.set(Some(1));
+        f.advance(ms(0));
+        f.advance(ms(200));
+        f.set(Some(2));
+        f.advance(ms(1000));
+        f.advance(ms(1030));
+        let (a, b) = (f.level(&1, ms(1030)), f.level(&2, ms(1030)));
+        assert!(a < 1.0 && a > 0.0 && b > 0.0 && b < 1.0);
+        assert!((a + b - 1.0).abs() < 1e-5, "complementary during a clean cross-fade");
+        // Switch to a third window half way: the fading-in window continues from its level.
+        f.set(Some(3));
+        assert_eq!(f.level(&2, ms(1030)), b);
+        f.advance(ms(1040));
+        f.advance(ms(2000));
+        assert!(!f.active());
+        assert_eq!((f.level(&1, ms(2000)), f.level(&2, ms(2000)), f.level(&3, ms(2000))), (0.0, 0.0, 1.0));
+    }
+    #[test]
+    fn clearing_focus_fades_the_old_window_out() {
+        let mut f = FocusFade::<u32>::default();
+        f.set(Some(1));
+        f.advance(ms(0));
+        f.advance(ms(500));
+        assert!(f.set(None));
+        f.advance(ms(600));
+        f.advance(ms(660));
+        let level = f.level(&1, ms(660));
+        assert!(level > 0.0 && level < 1.0);
+        f.advance(ms(800));
+        assert!(!f.active());
+        assert_eq!(f.level(&1, ms(800)), 0.0);
+    }
+    #[test]
+    fn focus_draw_exclusions() {
+        let style = FocusStyle { dim: 0.1, border: true };
+        let on = FocusDraw::new(style, WindowMode::Floating, false, 1.0, true);
+        assert_eq!(on, FocusDraw { ring: 1.0, dim: 0.0 });
+        let off = FocusDraw::new(style, WindowMode::Maximized, false, 0.0, true);
+        assert_eq!(off, FocusDraw { ring: 0.0, dim: 0.1 });
+        let half = FocusDraw::new(style, WindowMode::Floating, false, 0.5, true);
+        assert_eq!(half, FocusDraw { ring: 0.5, dim: 0.05 });
+        let fullscreen = FocusDraw::new(style, WindowMode::Fullscreen, false, 1.0, true);
+        assert_eq!(fullscreen, FocusDraw::default());
+        assert_eq!(FocusDraw::new(style, WindowMode::Fullscreen, false, 0.0, true), FocusDraw::default());
+        assert_eq!(FocusDraw::new(style, WindowMode::Floating, true, 0.0, true), FocusDraw::default(), "Classic title bars show focus");
+        assert_eq!(FocusDraw::new(FocusStyle { dim: 0.0, border: true }, WindowMode::Floating, false, 0.0, true), FocusDraw::default());
+        assert_eq!(FocusDraw::new(FocusStyle { dim: 0.1, border: false }, WindowMode::Floating, false, 1.0, true), FocusDraw::default());
+        // A layer surface holds the keyboard: nobody is dimmed.
+        assert_eq!(FocusDraw::new(style, WindowMode::Floating, false, 0.0, false), FocusDraw::default());
+    }
+    #[test]
+    fn real_focus_changes_drive_the_fade_and_idle_cost() {
+        let mut h = crate::state::tests::Harness::new();
+        h.gv.config.modules.animations = false;
+        h.gv.features = crate::module::Features::new(&h.gv.config);
+        let a = h.window();
+        h.gv.map_new_window(a.clone());
+        let b = h.window();
+        h.gv.map_new_window(b.clone());
+        h.gv.window_decor.advance_focus(Duration::from_secs(10));
+        h.gv.window_decor.advance_focus(Duration::from_secs(11));
+        assert!(!h.gv.window_decor.fading());
+        assert!(!h.gv.is_animating());
+        h.gv.focus_window(Some(&a));
+        assert!(!h.gv.is_animating(), "an unstarted fade relies on the redraw the focus change queued");
+        h.gv.window_decor.advance_focus(Duration::from_secs(12));
+        assert!(h.gv.window_decor.fading());
+        assert!(h.gv.is_animating());
+        h.gv.window_decor.advance_focus(Duration::from_secs(13));
+        assert!(!h.gv.window_decor.fading());
+        assert!(!h.gv.is_animating());
     }
     #[test]
     fn radius_follows_mode() {

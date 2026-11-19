@@ -960,7 +960,11 @@ impl Gavno {
             return;
         };
         let baseline = app.windows.len();
-        self.launch_shell_at(action, &command, Some(id));
+        let source = self.active_output().and_then(|output| {
+            let geo = self.space.output_geometry(&output)?;
+            Some(if self.classic_mode() { self.classic.taskbar.target(&output, id, geo) } else { self.dock.target(&output, id, geo) })
+        });
+        self.launch_shell_from(action, &command, Some(id), source);
         if let Some(index) = self.dock.launches.iter().position(|l| l.id == id) {
             if let Some(t) = self.dock.launches.remove(index).timer {
                 self.loop_handle.remove(t);

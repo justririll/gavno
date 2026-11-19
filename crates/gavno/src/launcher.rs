@@ -20,7 +20,7 @@ use smithay::{
         timer::{TimeoutAction, Timer},
         RegistrationToken,
     },
-    utils::{Logical, Point, Size},
+    utils::{Logical, Point, Rectangle, Size},
 };
 use std::time::{Duration, Instant};
 
@@ -462,12 +462,18 @@ impl Gavno {
             return;
         }
         let app_id = self.launcher.selected_entry().map(|e| e.id.clone());
+        // The selected row from the last frame is where the window grows from.
+        let source = self.active_output().and_then(|output| {
+            let geo = self.space.output_geometry(&output)?;
+            let (row, _) = self.launcher.rows.iter().find(|(_, i)| *i == self.launcher.selected)?;
+            Some(Rectangle::new(row.loc.to_f64() + geo.loc.to_f64(), row.size.to_f64()))
+        });
         let command = if self.launcher.run_style {
             Some(self.launcher.query.trim().to_owned()).filter(|s| !s.is_empty())
         } else { self.launcher.selected_entry().and_then(|e| e.command(&self.config.terminal)) };
         self.launcher.hide();
         if let Some(command) = command {
-            self.launch_shell_at(action, &command, app_id.as_deref());
+            self.launch_shell_from(action, &command, app_id.as_deref(), source);
         }
         self.queue_redraw_all();
     }

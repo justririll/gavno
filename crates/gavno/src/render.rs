@@ -393,6 +393,8 @@ fn output_elements_inner(
     dock.shell_progress = p;
     window_decor.classic = features.on(Feature::Classic) && classic.settled == crate::classic::ShellMode::Classic;
     window_decor.pointer = pointer_pos;
+    let [r, g, b, _] = topbar.accent();
+    window_decor.style = crate::decor::FocusStyle { dim: config.appearance.dim_inactive as f32, border: config.appearance.focus_border, accent: [r, g, b] };
     elements.extend(features.call(Feature::ResizeMode, Vec::new(), || overlay.resize_mode.elements(renderer, output, output_geo, scale.x)));
     if !locks.locked && !lock.shell_hidden() {
         elements.extend(features.call(Feature::Notifications, Vec::new(), || {

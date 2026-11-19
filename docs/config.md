@@ -68,6 +68,8 @@ default": see `terminal` and `launcher` below.
 | `[dropdown] height` | float, 0.2-0.9 | `0.45` | none |
 | `[dropdown] width` | float, 0.3-1.0 | `1.0` | none |
 | `[dropdown] hide_on_focus_loss` | boolean | `true` | none |
+| `[appearance] dim_inactive` | float, 0.0-0.5 | `0.06` | none |
+| `[appearance] focus_border` | boolean | `true` | none |
 
 `mod_key` is the modifier for every bind listed in [keybinds.md](keybinds.md).
 Nested mode defaults to Alt because the host compositor keeps Super for itself.

@@ -12,6 +12,9 @@ use std::time::Duration;
 
 pub type Rect = Rectangle<f64, Logical>;
 
+/// Opening from a dock icon or launcher row: about 220 ms with a slight overshoot.
+pub const OPEN_FROM_SOURCE: SpringParams = SpringParams { k: 800.0, zeta: 0.7 };
+
 /// Linear rectangle interpolation, including an anchored edge when both endpoints share it.
 pub fn interpolate_rect(a: Rect, b: Rect, t: f64) -> Rect {
     Rectangle::new(
@@ -34,6 +37,9 @@ pub struct Motion {
     geometry: Option<(Rect, Rect, Spring)>,
     pub closing: bool,
     closing_visibility: f64,
+    /// Opened from a launch source: the target tracks the live window geometry,
+    /// because a first buffer rarely has its final size.
+    follows_window: bool,
 }
 impl Motion {
     pub fn open(now: Duration) -> Self {
@@ -45,6 +51,27 @@ impl Motion {
             geometry: None,
             closing: false,
             closing_visibility: 1.0,
+            follows_window: false,
+        }
+    }
+    /// Grow from `from` (a dock icon or launcher row) to `to`. The window is at
+    /// full size from the start, so only the geometry spring moves.
+    pub fn open_from(now: Duration, from: Rect, to: Rect) -> Self {
+        let mut progress = Spring::new(0.0, OPEN_FROM_SOURCE);
+        progress.set(1.0);
+        progress.advance(now);
+        Self {
+            visibility: Spring::new(1.0, SpringParams::SMOOTH),
+            geometry: (from != to).then_some((from, to, progress)),
+            closing: false,
+            closing_visibility: 1.0,
+            follows_window: true,
+        }
+    }
+    /// Aim a source-open at the window's current slot until it retires.
+    pub fn follow_window(&mut self, slot: Rect) {
+        if let (true, Some((_, to, _))) = (self.follows_window, &mut self.geometry) {
+            *to = slot;
         }
     }
     pub fn close(&mut self, now: Duration) {
@@ -138,6 +165,14 @@ impl WindowAnimations {
             motion: Motion::open(now),
         });
     }
+    /// Open `window` growing from `from` into its slot `to`.
+    pub fn open_from(&mut self, window: &Window, now: Duration, from: Rect, to: Rect) {
+        self.entries.retain(|a| &a.window != window);
+        self.entries.push(WindowAnimation {
+            window: window.clone(),
+            motion: Motion::open_from(now, from, to),
+        });
+    }
     pub fn close(&mut self, window: &Window, now: Duration) {
         if let Some(a) = self.entries.iter_mut().find(|a| &a.window == window) {
             if !a.motion.closing {
@@ -171,8 +206,9 @@ impl WindowAnimations {
                 // A configure acknowledgement does not describe the buffer geometry.
                 // Keep the displayed slot until the actual client geometry matches.
                 let size = a.window.geometry().size;
-                a.motion
-                    .retire_geometry(Rectangle::new(loc, size).to_f64());
+                let slot = Rectangle::new(loc, size).to_f64();
+                a.motion.follow_window(slot);
+                a.motion.retire_geometry(slot);
             }
         }
         // A dead window that is not playing its close animation (it died
@@ -297,6 +333,63 @@ mod tests {
         assert!(h.gv.window_animations.motion(&w).unwrap().geometry.is_none());
     }
     #[test]
+    fn open_from_source_starts_at_the_source_and_settles_on_the_slot() {
+        let source = Rectangle::new((600.0, 800.0).into(), (48.0, 48.0).into());
+        let slot = Rectangle::new((100.0, 100.0).into(), (800.0, 600.0).into());
+        let mut m = Motion::open_from(Duration::ZERO, source, slot);
+        assert_eq!(m.rect(slot), source);
+        assert_eq!(m.scale(), 1.0, "only the geometry moves");
+        assert_eq!(m.opacity(), 1.0);
+        assert!(m.active());
+        let mut peak = 0.0f64;
+        let mut settled_at = None;
+        for i in 1..400u64 {
+            m.advance(Duration::from_millis(i * 4));
+            peak = peak.max(m.rect(slot).size.w);
+            if settled_at.is_none() && !m.active() {
+                settled_at = Some(i * 4);
+            }
+        }
+        assert!(peak > slot.size.w && peak < slot.size.w * 1.1, "slight overshoot, got {peak}");
+        let settled_at = settled_at.expect("settles");
+        assert!((150..450).contains(&settled_at), "about 220 ms, got {settled_at}");
+        assert_eq!(m.rect(source), slot);
+        m.retire_geometry(slot);
+        assert!(m.geometry.is_none());
+        assert!(!m.active());
+    }
+    #[test]
+    fn source_open_follows_a_window_that_commits_a_different_size() {
+        let source = r(0.0, 48.0);
+        let mut m = Motion::open_from(Duration::ZERO, source, r(100.0, 300.0));
+        m.advance(Duration::from_millis(50));
+        let actual = r(100.0, 640.0);
+        m.follow_window(actual);
+        for i in 1..300 {
+            m.advance(Duration::from_millis(50 + i * 8));
+        }
+        assert_eq!(m.rect(source), actual);
+        m.retire_geometry(actual);
+        assert!(m.geometry.is_none(), "no stale override is left stretching the buffer");
+    }
+    #[test]
+    fn open_from_the_same_rect_is_a_plain_still_window() {
+        let slot = r(10.0, 100.0);
+        let m = Motion::open_from(Duration::ZERO, slot, slot);
+        assert!(!m.active());
+        assert_eq!(m.rect(slot), slot);
+    }
+    #[test]
+    fn open_from_source_can_still_close() {
+        let source = r(0.0, 48.0);
+        let mut m = Motion::open_from(Duration::ZERO, source, r(100.0, 300.0));
+        m.close(Duration::from_millis(50));
+        for i in 1..400 {
+            m.advance(Duration::from_millis(50 + i * 8));
+        }
+        assert!(m.finished());
+    }
+    #[test]
     fn open_close_and_idle() {
         let mut m = Motion::open(Duration::ZERO);
         assert!(m.active());
@@ -409,6 +502,24 @@ mod tests {
 }
 
 impl Gavno {
+    /// Start the open animation of a freshly mapped window: from the dock icon
+    /// or launcher row that launched it, otherwise from the centre as before.
+    pub(crate) fn start_open_animation(&mut self, window: &Window) {
+        let now = self.start_time.elapsed();
+        let source = self.launch_source(window);
+        let target = self.space.element_location(window).map(|loc| {
+            let size = window
+                .toplevel()
+                .and_then(|t| t.with_pending_state(|s| s.size))
+                .unwrap_or(window.geometry().size);
+            Rectangle::new(loc, size).to_f64()
+        });
+        self.features.call(crate::module::Feature::Animations, (), || match (source, target) {
+            (Some(from), Some(to)) => self.window_animations.open_from(window, now, from, to),
+            _ => self.window_animations.open(window, now),
+        });
+    }
+
     pub fn seed_geometry_velocity(&mut self, w: &Window, velocity: smithay::utils::Point<f64, Logical>) {
         self.guard(crate::module::Feature::Animations, Default::default(), |gv| gv.seed_geometry_velocity_feature(w, velocity))
     }

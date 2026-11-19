@@ -129,6 +129,8 @@ struct Launch {
     token: String,
     spawned: Spawned,
     surface: Option<ObjectId>,
+    /// Where the launching dock icon or launcher row was, global logical px.
+    source: Option<crate::anim::Rect>,
 }
 struct LaunchToken {
     created: Instant,
@@ -253,6 +255,10 @@ impl Gavno {
         self.launch_shell_at(Instant::now(), command, app_id);
     }
     pub(crate) fn launch_shell_at(&mut self, action: Instant, command: &str, app_id: Option<&str>) {
+        self.launch_shell_from(action, command, app_id, None);
+    }
+    /// `source` is the rectangle the new window grows from.
+    pub(crate) fn launch_shell_from(&mut self, action: Instant, command: &str, app_id: Option<&str>, source: Option<crate::anim::Rect>) {
         self.expire_launches();
         let token = self
             .protocols
@@ -277,6 +283,7 @@ impl Gavno {
             token: token_text,
             spawned,
             surface: None,
+            source,
         });
         self.arm_launch_expiry();
     }
@@ -329,6 +336,12 @@ impl Gavno {
     fn finish_launches(&mut self) {
         self.launches.finish();
         self.arm_launch_expiry();
+    }
+    /// The launch source of a window, once launch tracking matched it by
+    /// activation token or app id.
+    pub(crate) fn launch_source(&self, window: &Window) -> Option<crate::anim::Rect> {
+        let id = window.toplevel()?.wl_surface().id();
+        self.launches.pending.iter().find(|l| l.surface.as_ref() == Some(&id)).and_then(|l| l.source)
     }
     pub(crate) fn launch_commit(&mut self, window: &Window) {
         if self.launches.pending.is_empty() {
@@ -482,6 +495,7 @@ mod tests {
             token: token.into(),
             spawned,
             surface: None,
+            source: None,
         }
     }
     fn set_app_id(window: &Window, app_id: &str) {
@@ -851,6 +865,67 @@ mod tests {
         assert_eq!(h.gv.launches.observed[0].submitted, Some(output.clone()));
         h.gv.launch_presented(&output, "test");
         assert!(h.gv.launches.pending.is_empty());
+    }
+
+    fn source_rect(x: f64) -> crate::anim::Rect {
+        use smithay::utils::Rectangle;
+        Rectangle::new((x, 700.0).into(), (48.0, 48.0).into())
+    }
+    #[test]
+    fn launch_source_matches_by_app_id_and_by_token() {
+        let mut h = crate::state::tests::Harness::new();
+        let by_app = h.window();
+        let by_token = h.window();
+        let other = h.window();
+        set_app_id(&by_app, "files");
+        set_app_id(&by_token, "mystery");
+        set_app_id(&other, "unrelated");
+        let now = Instant::now();
+        let mut dock = launch(now, Some("files"), "files", "t1");
+        dock.source = Some(source_rect(10.0));
+        let mut launcher = launch(now, None, "wrapper --run", "t2");
+        launcher.source = Some(source_rect(20.0));
+        let plain = launch(now, Some("plain"), "plain", "t3");
+        h.gv.launches.pending = vec![dock, launcher, plain];
+        h.gv.launch_commit(&by_app);
+        h.gv.launch_commit(&by_token);
+        h.gv.launch_commit(&other);
+        assert_eq!(h.gv.launch_source(&by_app), Some(source_rect(10.0)));
+        assert_eq!(h.gv.launch_source(&by_token), None, "unknown app id and no token yet");
+        h.gv.launch_activation("t2", by_token.toplevel().unwrap().wl_surface());
+        assert_eq!(h.gv.launch_source(&by_token), Some(source_rect(20.0)));
+        assert_eq!(h.gv.launch_source(&other), None);
+        let stranger = h.window();
+        assert_eq!(h.gv.launch_source(&stranger), None, "never launched from the shell");
+    }
+    #[test]
+    fn launched_window_grows_from_its_source_and_others_from_the_centre() {
+        let mut h = crate::state::tests::Harness::new();
+        let launched = h.window();
+        set_app_id(&launched, "files");
+        let mut dock = launch(Instant::now(), Some("files"), "files", "t1");
+        dock.source = Some(source_rect(10.0));
+        h.gv.launches.pending = vec![dock];
+        h.gv.launch_commit(&launched);
+        h.gv.map_new_window(launched.clone());
+        let motion = h.gv.window_animations.motion(&launched).expect("animates");
+        assert!(motion.active());
+        assert_eq!(motion.rect(source_rect(0.0)), source_rect(10.0), "first frame is the dock icon");
+        let plain = h.window();
+        h.gv.map_new_window(plain.clone());
+        let motion = h.gv.window_animations.motion(&plain).expect("animates");
+        assert!(motion.active());
+        assert_eq!(motion.scale(), 0.94, "the old scale-in from the centre");
+        let fallback = source_rect(99.0);
+        assert_eq!(motion.rect(fallback), fallback, "no geometry override");
+    }
+    #[test]
+    fn launch_shell_records_the_source() {
+        let mut h = crate::state::tests::Harness::new();
+        h.gv.launch_shell_from(Instant::now(), "true", Some("x"), Some(source_rect(5.0)));
+        h.gv.launch_shell_at(Instant::now(), "true", Some("y"));
+        assert_eq!(h.gv.launches.pending[0].source, Some(source_rect(5.0)));
+        assert_eq!(h.gv.launches.pending[1].source, None);
     }
 
     #[test]

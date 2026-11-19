@@ -336,6 +336,7 @@ impl Gavno {
         if let Some(g) = self.greeter.as_mut() { return g.safe_call(false, |g| g.is_animating()) || self.media.osd.is_animating(); }
         let theme = self.guard(Feature::Theme, false, |gv| gv.background.active() && gv.theme_visible());
         let animations = self.guard(Feature::Animations, false, |gv| gv.window_animations.is_animating());
+        let fading = self.guard(Feature::Decorations, false, |gv| gv.window_decor.fading());
         let overlay = self.guard(Feature::Switcher, false, |gv| gv.overlay.is_animating());
         let overview = self.guard(Feature::Overview, false, |gv| gv.overview.progress.is_active()
             || gv.overview.flick.as_ref().is_some_and(|(_, x, y)| x.is_active() || y.is_active()));
@@ -346,7 +347,7 @@ impl Gavno {
         let notifications = self.guard(Feature::Notifications, false, |gv| gv.notifications.borrow().animating());
         // Animated named cursors (wait, progress) need frames while shown.
         let cursor = !self.pointer_hidden && matches!(&self.cursor_status, smithay::input::pointer::CursorImageStatus::Named(icon) if self.cursor.animated(icon.name()));
-        theme || classic || cursor || animations || overlay || self.workspaces.active() || overview || dock || bar || launcher || notifications || self.media.osd.is_animating()
+        theme || classic || cursor || animations || fading || overlay || self.workspaces.active() || overview || dock || bar || launcher || notifications || self.media.osd.is_animating()
             || self.overlay.screenshot.is_animating() || self.overlay.clipboard.picker.is_animating() || self.overlay.dropdown.is_animating()
     }
 
@@ -516,7 +517,7 @@ impl Gavno {
         }
         self.track_classic_map(&window);
         self.reflow_tiling(true);
-        self.features.call(crate::module::Feature::Animations, (), || self.window_animations.open(&window, self.start_time.elapsed()));
+        self.start_open_animation(&window);
         if !urgent { self.focus_window(Some(&window)); }
         self.launch_mapped(&window);
         if let Some(output) = &output { crate::backend::udev::queue_first_window_frame(self, output); }

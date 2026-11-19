@@ -733,4 +733,20 @@ mod tests {
         let size = window.toplevel().unwrap().with_pending_state(|s| s.size);
         assert_eq!(size, Some(h.gv.dropdown_rect(&output).size));
     }
+
+    #[test]
+    fn dropdown_focus_leaves_window_emphasis_alone_and_never_fades() {
+        let mut h = Harness::new();
+        quiet(&mut h);
+        output(&mut h, "o", 0, (1600, 900), 1.0);
+        let main = plain_window(&mut h);
+        let dropdown = spawned(&mut h);
+        h.gv.focus_window(Some(&main));
+        h.gv.window_decor.advance_focus(Duration::from_secs(10));
+        h.gv.window_decor.advance_focus(Duration::from_secs(11));
+        h.gv.toggle_dropdown();
+        assert_eq!(focus_of(&h), Some(surface(&dropdown)));
+        assert_eq!(h.gv.window_decor.focused(), Some(&main), "the dropdown never becomes the highlighted window");
+        assert!(!h.gv.window_decor.fading());
+    }
 }
