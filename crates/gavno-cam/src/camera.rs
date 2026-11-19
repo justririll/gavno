@@ -28,6 +28,9 @@ const CAPS: &str = "video/x-raw,format=RGB,width=640";
 fn libcamera_names() -> Vec<String> {
     let monitor = gst::DeviceMonitor::new();
     monitor.add_filter(Some("Video/Source"), None);
+    // In a session PipeWire's provider hides the libcamera devices it also
+    // exposes; its own camera node cannot negotiate this sensor's formats.
+    monitor.set_show_all_devices(true);
     if monitor.start().is_err() {
         return Vec::new();
     }
@@ -56,6 +59,10 @@ impl Camera {
         // libcamera is chatty about harmless sensor-database gaps.
         if std::env::var_os("LIBCAMERA_LOG_LEVELS").is_none() {
             std::env::set_var("LIBCAMERA_LOG_LEVELS", "*:FATAL");
+        }
+        // The GPU debayer cannot read this sensor's packed 10-bit Bayer format.
+        if std::env::var_os("LIBCAMERA_SOFTISP_MODE").is_none() {
+            std::env::set_var("LIBCAMERA_SOFTISP_MODE", "cpu");
         }
         gst::init().map_err(|e| format!("gstreamer: {e}"))?;
         let mut errors = Vec::new();
