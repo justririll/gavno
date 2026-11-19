@@ -1268,7 +1268,7 @@ mod tests {
     }
     #[test]
     fn focus_draw_exclusions() {
-        let style = FocusStyle { dim: 0.1, border: true };
+        let style = FocusStyle { dim: 0.1, border: true, accent: ACCENT };
         let on = FocusDraw::new(style, WindowMode::Floating, false, 1.0, true);
         assert_eq!(on, FocusDraw { ring: 1.0, dim: 0.0 });
         let off = FocusDraw::new(style, WindowMode::Maximized, false, 0.0, true);
@@ -1279,8 +1279,8 @@ mod tests {
         assert_eq!(fullscreen, FocusDraw::default());
         assert_eq!(FocusDraw::new(style, WindowMode::Fullscreen, false, 0.0, true), FocusDraw::default());
         assert_eq!(FocusDraw::new(style, WindowMode::Floating, true, 0.0, true), FocusDraw::default(), "Classic title bars show focus");
-        assert_eq!(FocusDraw::new(FocusStyle { dim: 0.0, border: true }, WindowMode::Floating, false, 0.0, true), FocusDraw::default());
-        assert_eq!(FocusDraw::new(FocusStyle { dim: 0.1, border: false }, WindowMode::Floating, false, 1.0, true), FocusDraw::default());
+        assert_eq!(FocusDraw::new(FocusStyle { dim: 0.0, border: true, accent: ACCENT }, WindowMode::Floating, false, 0.0, true), FocusDraw::default());
+        assert_eq!(FocusDraw::new(FocusStyle { dim: 0.1, border: false, accent: ACCENT }, WindowMode::Floating, false, 1.0, true), FocusDraw::default());
         // A layer surface holds the keyboard: nobody is dimmed.
         assert_eq!(FocusDraw::new(style, WindowMode::Floating, false, 0.0, false), FocusDraw::default());
     }
