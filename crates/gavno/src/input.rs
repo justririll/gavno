@@ -69,8 +69,6 @@ pub enum Action {
     WindowHints,
     CheatSheet,
     PanelControls(crate::panel_controls::Page),
-    /// Webcam finger pointer on/off (Mod+Shift+M).
-    ToggleFingerPointer,
 }
 
 impl Gavno {
@@ -495,7 +493,6 @@ impl Gavno {
             Action::ToggleCodeMode if self.classic_mode() => return false,
             Action::Classic(_) => Feature::Classic,
             Action::PanelControls(_) => Feature::Bar,
-            Action::ToggleFingerPointer => return self.config.pointer.camera,
             Action::Minimize => Feature::Dock,
             Action::ToggleTiling | Action::ToggleFloating | Action::RotateSplit | Action::Swap(_) => Feature::Tiling,
             Action::Snap(_) | Action::Resize(_) => Feature::Snap,
@@ -548,7 +545,6 @@ impl Gavno {
             };
             if let Some(page) = page { return Some(Action::PanelControls(page)); }
         }
-        if mods.shift && !mods.ctrl && matches!(sym, keysyms::KEY_m | keysyms::KEY_M) { return Some(Action::ToggleFingerPointer); }
         if !mods.ctrl && !mods.shift && matches!(sym, keysyms::KEY_slash | keysyms::KEY_F1) { return Some(Action::CheatSheet); }
         if !mods.ctrl && !mods.shift && matches!(sym, keysyms::KEY_g | keysyms::KEY_G) { return Some(Action::WindowHints); }
         if !self.classic_mode() && mods.shift && !mods.ctrl && matches!(sym, keysyms::KEY_c | keysyms::KEY_C) {
@@ -637,7 +633,6 @@ impl Gavno {
             Action::CheatSheet => self.toggle_cheat_sheet(),
             Action::PanelControls(page) => { if let Some(output) = self.active_output() { self.toggle_panel_controls(page, &output); } },
             Action::ToggleCodeMode => self.set_code_mode(!self.code_mode),
-            Action::ToggleFingerPointer => self.toggle_finger_pointer(),
             Action::Quit => self.quit(),
             Action::Spawn(cmd) => self.launch_shell(&cmd, None),
             Action::CloseWindow => self.close_focused(),

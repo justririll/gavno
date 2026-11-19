@@ -53,7 +53,6 @@ pub struct Config {
     pub notifications: NotificationsConfig,
     pub media: MediaConfig,
     pub display: DisplayConfig,
-    pub pointer: PointerConfig,
     pub clipboard: ClipboardConfig,
     pub dropdown: DropdownConfig,
 }
@@ -182,7 +181,6 @@ struct FileConfig {
     notifications: NotificationsConfig,
     media: MediaConfig,
     display: DisplayConfig,
-    pointer: PointerConfig,
     clipboard: ClipboardConfig,
     dropdown: DropdownConfig,
     #[serde(flatten)]
@@ -278,7 +276,7 @@ impl Config {
             "file_manager":self.file_manager,"polkit_agent":self.polkit_agent,"autostart":self.autostart,"gap":self.gap,
             "output":{"internal_scale":self.internal_scale,"mode":mode,"hdr":self.output_hdr,"sdr_white_nits":self.sdr_white_nits},
             "keyboard":{"layout":self.xkb_layout,"variant":self.xkb_variant,"options":self.xkb_options,"repeat_delay":self.repeat_delay,"repeat_rate":self.repeat_rate,"code_mode":self.code_mode,"bar_hints":self.bar_hints},
-            "display":self.display,"media":self.media,"pointer":self.pointer,"clipboard":self.clipboard,"dropdown":self.dropdown,"modules":self.modules,"classic":self.classic,"dock":self.dock,"bar":self.bar,"tiling":self.tiling,"lock":self.lock,"notifications":self.notifications,"outputs":self.outputs})
+            "display":self.display,"media":self.media,"clipboard":self.clipboard,"dropdown":self.dropdown,"modules":self.modules,"classic":self.classic,"dock":self.dock,"bar":self.bar,"tiling":self.tiling,"lock":self.lock,"notifications":self.notifications,"outputs":self.outputs})
     }
 
     /// Pure merge: defaults < file < environment. Empty environment values are unset.
@@ -295,7 +293,7 @@ impl Config {
         // Capture unknown fields during deserialization, so this list cannot drift from the schema.
         let mut unknown = Vec::new();
         for (prefix, extra) in
-            [("display.", &file.display.unknown), ("", &file.unknown), ("output.", &file.output.unknown), ("keyboard.", &file.keyboard.unknown), ("classic.", &file.classic.unknown), ("dock.", &file.dock.unknown), ("bar.", &file.bar.unknown), ("tiling.", &file.tiling.unknown), ("media.", &file.media.unknown), ("pointer.", &file.pointer.unknown), ("clipboard.", &file.clipboard.unknown), ("dropdown.", &file.dropdown.unknown), ("notifications.", &file.notifications.unknown), ("lock.", &file.lock.unknown), ("modules.", &file.modules.unknown)]
+            [("display.", &file.display.unknown), ("", &file.unknown), ("output.", &file.output.unknown), ("keyboard.", &file.keyboard.unknown), ("classic.", &file.classic.unknown), ("dock.", &file.dock.unknown), ("bar.", &file.bar.unknown), ("tiling.", &file.tiling.unknown), ("media.", &file.media.unknown), ("clipboard.", &file.clipboard.unknown), ("dropdown.", &file.dropdown.unknown), ("notifications.", &file.notifications.unknown), ("lock.", &file.lock.unknown), ("modules.", &file.modules.unknown)]
         {
             unknown.extend(extra.keys().map(|key| format!("{prefix}{key}")));
         }
@@ -409,7 +407,6 @@ impl Config {
                 notifications: file.notifications,
                 media: file.media,
                 display: file.display,
-                pointer: file.pointer.clamped(),
                 clipboard: file.clipboard.clamped(),
                 dropdown: file.dropdown.clamped(),
             },
@@ -556,7 +553,6 @@ options = "caps:escape"
             notifications: Default::default(),
             media: Default::default(),
             display: Default::default(),
-            pointer: Default::default(),
             clipboard: Default::default(),
             dropdown: Default::default(),
         };
@@ -628,7 +624,6 @@ options = "caps:escape"
             notifications: Default::default(),
             media: Default::default(),
             display: Default::default(),
-            pointer: Default::default(),
             clipboard: Default::default(),
             dropdown: Default::default(),
         };
@@ -997,33 +992,6 @@ impl Default for MediaConfig {
     fn default() -> Self { Self { music_panel: true, unknown: Default::default() } }
 }
 
-/// Webcam finger pointer, see `docs/finger-pointer.md`.
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
-#[serde(default)]
-pub struct PointerConfig {
-    /// Allow Mod+Shift+M to start the camera pointer.
-    pub camera: bool,
-    /// Percent of the mirrored camera frame, centred, that maps to the output.
-    pub active_box: u32,
-    /// One-Euro filter: lower smooths more while the finger is slow.
-    pub min_cutoff: f64,
-    /// One-Euro filter: higher reduces lag during fast moves.
-    pub beta: f64,
-    #[serde(flatten)]
-    unknown: toml::Table,
-}
-impl Default for PointerConfig {
-    fn default() -> Self { Self { camera: true, active_box: 70, min_cutoff: 1.0, beta: 0.01, unknown: Default::default() } }
-}
-impl PointerConfig {
-    fn clamped(mut self) -> Self {
-        self.active_box = self.active_box.clamp(30, 100);
-        self.min_cutoff = if self.min_cutoff.is_finite() { self.min_cutoff.clamp(0.1, 10.0) } else { 1.0 };
-        self.beta = if self.beta.is_finite() { self.beta.clamp(0.0, 1.0) } else { 0.01 };
-        self
-    }
-}
-
 /// Clipboard history, see `docs/screenshots.md`.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
@@ -1117,23 +1085,6 @@ mod dropdown_config_tests {
         let (config, _) = Config::build(false, Some("[dropdown]\nheight = 0.01"), |_| None);
         assert_eq!(config.dropdown.height, 0.2);
         assert_eq!(config.values()["dropdown"]["height"], 0.2);
-    }
-}
-
-#[cfg(test)]
-mod pointer_config_tests {
-    use super::*;
-    #[test]
-    fn defaults_parse_clamp_and_report_unknown_keys() {
-        let config = Config::build(false, None, |_| None).0;
-        assert_eq!(config.pointer, PointerConfig::default());
-        assert!(config.pointer.camera);
-        let text = "[pointer]\ncamera = false\nactive_box = 5\nmin_cutoff = 99.0\nbeta = 0.5\nwrong = 1";
-        let (config, warnings) = Config::build(false, Some(text), |_| None);
-        assert_eq!(warnings, ["unknown config keys ignored: pointer.wrong"]);
-        assert!(!config.pointer.camera);
-        assert_eq!((config.pointer.active_box, config.pointer.min_cutoff, config.pointer.beta), (30, 10.0, 0.5));
-        assert_eq!(config.values()["pointer"]["camera"], false);
     }
 }
 

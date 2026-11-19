@@ -384,17 +384,6 @@ See [the lock screen](lock.md).
 
 In `--greeter` mode every key except VT switching and hardware media keys goes to the login screen.
 
-## Finger pointer (webcam)
-
-| Chord | Action |
-| --- | --- |
-| Mod+Shift+M | Turn the webcam finger pointer on or off. |
-
-Works in both shells and in code mode; Mod+M (minimize) is unchanged. The
-chord does nothing while the session is locked or when `[pointer] camera` is
-`false`. See [finger-pointer.md](finger-pointer.md) for the gestures and the
-privacy model.
-
 ## HDR output (DRM backend)
 
 - Mod+Shift+H: toggle HDR on the active output, when EDID and DRM support it.

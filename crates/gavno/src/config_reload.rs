@@ -195,7 +195,6 @@ pub(crate) fn apply(gv: &mut Gavno, prepared: Prepared) -> Result<Value, String>
     let old_hint_items = gv.topbar.hint_items.clone();
     gv.config = config;
     gv.reload_features();
-    gv.finger_config_changed();
     gv.clipboard_config_changed();
     gv.dropdown_config_changed();
     if code_mode_changed { gv.set_code_mode(gv.config.code_mode); }
