@@ -1,0 +1,17 @@
+# Interactive local AI for the GAVNO launcher (crates/gavno-ai, design/ai.md).
+# CPU only, small context and a quantized KV cache, so it stays out of the
+# desktop's way. Started and stopped by gavno-ai through systemd; inactive
+# (zero cost) otherwise.
+[Unit]
+Description=llama.cpp: Qwen3-4B-Instruct-2507 for the GAVNO launcher (CPU, port 8090)
+After=network.target
+
+[Service]
+Environment=LD_LIBRARY_PATH=/root/llm/llama/llama-b11517/lib
+ExecStart=/root/llm/llama/llama-b11517/bin/llama-server -m /root/llm/Qwen3-4B-Instruct-2507-Q4_0.gguf --port 8090 --alias gavno-ai --device none -ngl 0 -t 6 -fa on -c 4096 -np 1 --cache-type-k q8_0 --cache-type-v q8_0 --jinja --host 127.0.0.1
+Restart=no
+KillSignal=SIGINT
+TimeoutStopSec=30
+MemoryMax=6G
+Nice=10
+CPUWeight=20

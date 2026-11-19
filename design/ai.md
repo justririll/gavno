@@ -1,7 +1,8 @@
 # Local AI for GAVNO
 
-Status: design, not built. Nothing here is installed or downloaded until the user
-approves the "Approval needed" list at the end.
+Status: v1 built (CPU only, 2026-11-19). The decisions the user approved are in
+"Decisions for v1" at the end; the measurements are in "Measurements". Nothing is
+downloaded: llama.cpp and the models were already on the laptop.
 
 ## Goal
 
@@ -50,6 +51,7 @@ Nothing needs downloading. Everything below is under `/root/llm` and `/root/npu`
 | `llama-ru-giga` | GigaChat 10B-A1.8B Q4_0 | NPU (HTP0,HTP1) | 8084 |
 | `llama-npu` | Qwen2.5-Coder-7B Q4_0 | NPU | 8081 |
 | `llama-coder` | Qwen3-Coder-30B-A3B | CPU | 8082 |
+| `llama-gavno` (new) | Qwen3-4B-Instruct-2507 Q4_0 | CPU, `-t 6`, ctx 4096, q8_0 KV | 8090 |
 
 - The NPU units set `DSPQUEUE_MONITOR=1`, `GGML_HEXAGON_DEVICES=2`, the FastRPC
   library paths, and `WorkingDirectory=/root/npu/dsp/cdsp`, where the DSP shells live.
@@ -79,10 +81,16 @@ Our requests have a short prompt (most of it cached) and a short answer of about
 The NPU wins only on long prompts with dense models, and none of the v1 features
 have long prompts.
 
-**Decision for v1:** the CPU runs the interactive features. The NPU stays an opt-in
-backend (`backend = "npu"`) for background jobs, once energy per token has been
-measured. This revises the "NPU first" note from 2026-11-15, because the measurements
-contradict it for this workload.
+**Decision for v1:** the CPU runs the interactive features. There is no NPU work in v1
+at all: gavno-ai never touches `/dev/fastrpc*`, `cdsprpcd` or an NPU unit, and there
+is no `backend` config key. The NPU may return later as an opt-in
+backend for background jobs, once energy per token has been measured. This revises the
+"NPU first" note from 2026-11-15, because the measurements contradict it for this
+workload.
+
+**Model (changed 2026-11-19):** the user chose Qwen3-4B-Instruct-2507 Q4_0 (2.4 GB) over
+GigaChat 10B-A1.8B. It is smaller in RAM and has no thinking mode; the prompt gives
+Russian examples and the JSON schema keeps the output valid.
 
 ## Architecture
 
@@ -94,7 +102,7 @@ gavno-ai  (separate binary, session bus org.gavno.AI1, D-Bus activated, exits wh
    | systemd D-Bus StartUnit/StopUnit (system bus; polkit lets wheel do it)
    | HTTP to 127.0.0.1:<port> (/health, /v1/chat/completions)
    v
-llama-server  (an existing or new system unit, see "Approval needed")
+llama-server  (system unit llama-gavno.service, see "Decisions for v1")
 ```
 
 ### Why a separate binary
@@ -110,7 +118,7 @@ call.
 
 | Method | Purpose |
 |---|---|
-| `Prewarm()` | Start the model unit if it is not running. Returns at once. |
+| `Prewarm(context: s)` | Start the model unit if it is not running and evaluate the stable prompt prefix (system prompt, apps, windows) from the context JSON, which may be empty. Returns at once. |
 | `Interpret(query: s, context: s) -> s` | Context and result are JSON (below). |
 | `NameWorkspace(windows: s) -> s` | Returns `{"name": "..."}`, or an error when the model is not already running. |
 | `Status() -> a{sv}` | `running`, `backend`, `model`, `last_latency_ms`. |
@@ -120,7 +128,7 @@ call.
 1. **GAVNO builds the context.** It is small JSON:
    - windows: id, app_id, title cut to 60 characters, workspace;
    - workspaces: index and name;
-   - the top 150 installed apps by frecency: desktop id and name;
+   - the dock-pinned apps, then installed apps by name, 60 at most: desktop id and name;
    - the music state;
    - the action list (below).
 2. **gavno-ai prepares the model.**
@@ -162,11 +170,17 @@ polkit or password surface, and no network.
   - it has at least 2 words and nothing matches strongly (top score below a
     threshold); or
   - the user presses Tab on the "Ask AI" row, which appears as the last row.
-- **Prewarm.** The first keystroke that makes a query a candidate calls `Prewarm()`.
-  While the user finishes typing, the model loads: about 0.5 s from the page cache,
-  2–3 s cold.
-- **Latency target.** With the model warm, Enter to preview row should take under 1.5 s.
-  The row shows a spinner until then.
+- **Prewarm.** The first keystroke that makes a query a candidate calls
+  `Prewarm(context)`, once per opening of the launcher. While the user finishes typing,
+  the model loads (about 1 to 2 s) and its prompt prefix is evaluated (several seconds
+  for 60 apps), so the first answer is not delayed by the whole prompt.
+- **Latency.** With the model warm, Enter to preview row takes 0.7 to 1.1 s (measured).
+  The row shows "Thinking…" until then.
+- **Row behaviour as built.** The "Ask AI" row is the last row. It appears when the
+  query has two or more words and no application matches by name prefix or word.
+  When no application matches at all, or only weakly, the row starts selected; Enter on
+  it sends `Interpret`, Enter on the preview runs it, and editing the query or Esc drops
+  the answer. Errors show as the row's text and Enter retries.
 - **Idle exit.** gavno-ai stops the unit gracefully after `idle_stop_minutes` without a
   request (default 10), then exits. The model's pages stay in the page cache, which the
   kernel can reclaim, so the next start is warm.
@@ -182,7 +196,7 @@ polkit or password surface, and no network.
   for 30 s. Naming alone never starts a model.
 - **User names win:** a name the user set is never replaced.
 
-## NPU rules (only for `backend = "npu"`)
+## NPU rules (for a future NPU backend; v1 has none)
 
 The user found these the hard way:
 
@@ -206,56 +220,104 @@ The user found these the hard way:
 ```toml
 [ai]
 enabled = false            # nothing starts until this is true
-backend = "cpu"            # "cpu" or "npu"
 idle_stop_minutes = 10
 workspace_names = true     # heuristic always; AI refinement only while the model runs
 ```
 
-## Measurements before building
+gavno-ai reads this `[ai]` table itself (`GAVNO_CONFIG` or `~/.config/gavno/config.toml`)
+when it starts. The compositor shows the names in the bar (`Name · window title`) and
+lists them per output as `workspace_names` in `gavno msg state`.
 
-These are CPU only and need the user's OK, because they run a model.
+## Measurements (2026-11-19, the laptop, CPU only)
 
-1. Latency from Enter to the parsed action, for 10 sample commands (Russian and
-   English), at `-t 6` and `-t 10`:
-   - GigaChat3.1-10B-A1.8B Q4_0 vs Qwen3-4B-Instruct-2507 Q4_0;
-   - with and without the cached system prompt.
-2. GAVNO `gavno::stall` warnings and the input latency during a request, so the
-   model must not make the desktop stutter. If it does, use fewer threads or a
-   `CPUWeight=` limit on the unit.
-3. RSS and KV memory at ctx 4096, with an f16 vs a q8_0 KV cache.
-4. Later, for the NPU backend: energy per answer from `power_now`, on the NPU vs the
-   CPU, on battery.
+Setup: `llama-gavno` as installed (`-t 6 -c 4096 -np 1`, q8_0 KV, `Nice=10`,
+`CPUWeight=20`), the user's desktop running. The request is the real one: 386-token
+system prompt, 60 apps, 4 windows, a JSON-schema grammar. "Warm" means the prompt
+prefix is in llama-server's cache.
 
-## Build plan (codex, after approval)
+**Enter to parsed action, Qwen3-4B-Instruct-2507 Q4_0, through gavno-ai** (D-Bus call
+to validated result, 60 apps; ms):
 
-1. **`crates/gavno-ai`.** D-Bus service, systemd unit control, the HTTP client, the
-   schema and validation, and idle stop.
-   - Tests against a fake llama-server that returns canned JSON;
-   - whitelist rejection tests: unknown ids, out-of-range values, extra fields.
-2. **Launcher integration in GAVNO.**
-   - Candidate detection, the "Ask AI" row, prewarm, the preview row.
-   - An action executor that maps onto existing functions.
-   - A worker thread for D-Bus with a calloop channel back.
-   - Tests: nothing runs without Enter, and an error shows as a row.
-3. **Workspace-name heuristic in GAVNO**, then the AI refinement hook.
-4. **Docs:** `docs/config.md` `[ai]`, and a short section in `docs/debugging.md`.
+| Command | ms | Result |
+|---|---|---|
+| move firefox to the second workspace | 1056 | move_to_workspace window 1 -> 2 |
+| открой папку загрузки | 852 | open_folder ~/Downloads |
+| поставь яркость на 30 | 1014 | set brightness 30 |
+| play something calm | 902 | music play "calm" |
+| выключи уведомления | 965 | set dnd on |
+| switch to workspace 3 | 750 | switch_workspace 3 |
+| запусти терминал | 775 | launch foot |
+| перемести телеграм на четвертый рабочий стол | 1114 | move_to_workspace window 3 -> 4 |
+| pause the music | 683 | music pause |
+| включи ночной свет | 948 | set night_light on |
+| delete all my files | 351 | `{"error": "I could not turn that into an action"}` |
 
-## Approval needed (nothing done yet)
+All ten were correct, in Russian and English. The second Enter runs the action in
+the compositor and has no model cost.
 
-1. **No downloads.** The models and llama.cpp are already on the laptop.
-2. **New unit `llama-gavno.service`** for the interactive path:
-   - a copy of `llama-ru-giga-cpu` with `-t 6 -c 4096 --cache-type-k q8_0
-     --cache-type-v q8_0`, `Nice=10` and `CPUWeight=20`, on port 8090;
-   - the polkit regex in `50-local-llm.rules` gains `gavno`.
+**Cold and cached prompt** (same 1606-token prompt with 100 apps): evaluated once it
+takes 17.8 s at `-t 6` (13.3 s at `-t 10`); cached, only the query is read. Without
+the cache every request took 19 s. This is why `Prewarm(context)` evaluates the
+stable prefix while the user is still typing, and why the compositor sends at most 60
+apps. With 60 apps, a first request 4 s after the first keystroke of a cold model
+returned in 7.6 s (the model loads in about 1.1 to 2.2 s; the prefix takes the rest).
+Later requests take under 1.2 s.
 
-   Without it, gavno-ai uses `llama-ru-giga-cpu` as is: 10 threads, ctx 16384, more
-   RAM, and more risk of desktop stutter.
-3. **`SendSIGKILL=no`** on `llama-npu`, `llama-ru-giga` and `llama-ru-yandex`.
-   This is only needed for the NPU backend.
-4. **The CPU measurements** above.
+**Threads and KV cache** (median over the 10 commands, 100 apps):
 
-Open questions for the user:
+| Variant | warm-up | median | max | RSS |
+|---|---|---|---|---|
+| `-t 6`, q8_0 KV (shipped) | 17.8 s | 997 ms | 1272 ms | 4.98 GB |
+| `-t 10`, q8_0 KV | 13.3 s | 904 ms | 1177 ms | 4.98 GB |
+| `-t 6`, f16 KV | 13.8 s | 869 ms | 1111 ms | 5.26 GB |
+| `-t 6`, q8_0 KV, `--no-repack` | 38.1 s | 1139 ms | 1581 ms | 2.73 GB |
 
-- CPU first for v1? (Recommended by the numbers.)
-- Which model: GigaChat 10B-A1.8B (Russian-native, faster generation, 6 GB) or
-  Qwen3-4B (2.4 GB)?
+- RSS counts the mapped model once and llama.cpp's repacked CPU copy of the weights
+  again, so it is about twice the 2.4 GB file; the cgroup (`MemoryCurrent`) showed
+  2.85 GB after the run. The q8_0 KV cache saves about 280 MB at ctx 4096 and costs
+  about 15 % in latency; f16 is faster if RAM allows.
+- `--no-repack` halves RSS but doubles the cold prefix time; not used.
+- More threads help little for 20-token answers. `-t 6` is kept so the desktop keeps cores.
+
+**Other models** (same ten commands, `-t 6`): Gemma-4-E4B Q4_0 produced valid but
+pretty-printed JSON, needed 3.6 to 5.8 s per command, cut two answers at the token
+limit and used 7.6 GB RSS. Qwen3-4B is clearly better for this format and ships.
+GigaChat was not measured (the user chose Qwen3-4B).
+
+**Desktop impact:** no `gavno::stall` warning appeared during any run: model start,
+the 10-command sets for every variant above, the Gemma run and the gavno-ai runs
+(checked with `journalctl -b _COMM=gavno --since <start> | grep -c stall`, 0 each
+time). `Nice=10` and `CPUWeight=20` were enough; no thread or weight change was
+needed. The baseline already has about 180 stall lines per boot from unrelated 8 ms
+render events.
+
+## Still unmeasured
+
+Energy per answer (`power_now`) on the NPU vs the CPU, on battery. Not needed for v1,
+which is CPU only.
+
+## Build plan (done)
+
+1. `crates/gavno-ai`: D-Bus service, systemd unit control, a small blocking HTTP client,
+   the schema and validation, idle stop. Tests run against a fake llama-server.
+2. Launcher integration (`crates/gavno/src/ai`, `launcher.rs`): candidate detection, the
+   Ask AI row, prewarm, the preview row, the action executor, a worker thread with a
+   calloop channel back.
+3. Workspace names: heuristic in GAVNO, AI refinement hook (30 s stable, model already running).
+4. Docs: `docs/config.md` `[ai]`, `docs/debugging.md`.
+
+Differences from the plan above: apps sent to the model are the dock-pinned ones first,
+then alphabetical (there is no frecency data yet); `max_tokens` is 128 so three actions
+cannot be cut off; music `play` with a query opens the music panel with the search
+filled in (the user picks the track) rather than playing blindly.
+
+## Decisions for v1 (approved)
+
+1. No downloads.
+2. New unit `dist/systemd/llama-gavno.service`: a copy of `llama-ru-giga-cpu` for
+   Qwen3-4B-Instruct-2507 Q4_0 with `-t 6 -c 4096 --cache-type-k q8_0 --cache-type-v q8_0`,
+   `Nice=10`, `CPUWeight=20`, port 8090. `dist/polkit-1/rules.d/50-local-llm.rules`
+   adds `gavno` to the wheel regex. `scripts/install-greeter.sh` installs both, plus
+   `gavno-ai` and its D-Bus service file.
+3. CPU only. `SendSIGKILL=no` is not needed without the NPU and is not changed.
+4. The CPU measurements below.

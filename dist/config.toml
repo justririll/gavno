@@ -99,6 +99,14 @@
 # width = 1.0
 # hide_on_focus_loss = true
 
+# Local AI in the launcher (type a request, press Enter on the Ask AI row).
+# Needs the llama-gavno unit from scripts/install-greeter.sh. Nothing runs and no
+# memory is used until you ask.
+# [ai]
+# enabled = false
+# idle_stop_minutes = 10
+# workspace_names = true
+
 # Local sun/season colors. These settings reload live.
 # [theme]
 # background = "living" # or "solid"

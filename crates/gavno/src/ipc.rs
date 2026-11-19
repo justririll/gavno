@@ -53,7 +53,7 @@ impl IpcState {
     }
 }
 
-fn window_id(window: &Window) -> Option<u64> {
+pub(crate) fn window_id(window: &Window) -> Option<u64> {
     window.user_data().get::<WindowId>().map(|id| id.0)
 }
 
@@ -173,7 +173,8 @@ fn screen(gv: &Gavno) -> Value {
             "w": geo.size.w, "h": geo.size.h, "scale": output.current_scale().fractional_scale(),
             "hdr": crate::backend::udev::hdr_status(&gv.backend, output),
             "workspace": gv.workspaces.get(output).map(|o| o.list.active).unwrap_or(0),
-            "workspaces": gv.workspaces.get(output).map(|o| o.list.items.len()).unwrap_or(1)}),
+            "workspaces": gv.workspaces.get(output).map(|o| o.list.items.len()).unwrap_or(1),
+            "workspace_names": gv.workspaces.get(output).map(|o| o.list.items.iter().map(|w| w.name.clone()).collect::<Vec<_>>()).unwrap_or_default()}),
             )
         })
         .collect();

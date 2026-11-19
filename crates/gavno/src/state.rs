@@ -111,6 +111,7 @@ pub struct Gavno {
     pub lock: crate::lock::Lock,
     pub power: crate::power::Power,
     pub launcher: crate::launcher::Launcher,
+    pub ai: crate::ai::Ai,
     pub(crate) launches: crate::launch::Launches,
     pub polkit: crate::polkit::Polkit,
     pub notifications: crate::notify::Shared,
@@ -240,6 +241,7 @@ impl Gavno {
             lock: Default::default(),
             power: Default::default(),
             launcher: Default::default(),
+            ai: Default::default(),
             launches: Default::default(),
             polkit: Default::default(),
         };

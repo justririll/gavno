@@ -49,6 +49,9 @@ default": see `terminal` and `launcher` below.
 | `[display] night_light_temperature` | u32 kelvin, clamped to 1900-6500 | `3400` | none |
 | `[clipboard] history` | boolean | `true` | none |
 | `[clipboard] history_size` | integer, 1-500 | `50` | none |
+| `[ai] enabled` | boolean | `false` | none |
+| `[ai] idle_stop_minutes` | integer, 1-1440 | `10` | none |
+| `[ai] workspace_names` | boolean | `true` | none |
 | `[display] brightness_control` | string, `"auto"`, `"backlight"` or `"software"` | `"auto"` | none |
 | `[output] internal_scale` | float | `1.75` | `GAVNO_SCALE` |
 | `[output] mode` | string, `WIDTHxHEIGHT[@HZ]` | preferred mode, highest refresh among preferred modes | `GAVNO_OUTPUT_MODE` |
@@ -312,6 +315,30 @@ minus the bar and dock), clamped to 0.2-0.9 and 0.3-1.0; a narrower terminal is 
 All four keys apply live; a shown terminal is resized at once, a hidden one on the next
 show. The window slides in 160 ms and costs no frames, timers or rendering while it is
 hidden or at rest.
+
+## Local AI
+
+`[ai] enabled = true` adds an "Ask AI" row to the launcher. It appears when the
+query has at least two words and no application matches strongly. Typing such a
+query starts the model in the background (`prewarm`); pressing Enter on the row
+sends the request, the launcher shows a preview such as "Move Firefox to
+workspace 2", and a second Enter runs it. Esc drops it. Nothing runs without that
+second Enter, and only a fixed list of actions exists (open an app, focus or move
+a window, switch or name a workspace, music controls, open a folder under your
+home, set brightness, night light or Do Not Disturb). Everything stays on the
+laptop.
+
+The model is Qwen3-4B-Instruct-2507 Q4_0 on the CPU, run by the system unit
+`llama-gavno.service` (installed by `scripts/install-greeter.sh`). The
+`gavno-ai` helper starts it on demand through systemd, stops it after
+`idle_stop_minutes` without a request and then exits, so an unused feature costs
+no memory and no CPU. The model runs on the CPU only; the NPU is not used.
+
+`workspace_names = true` shows a short name for each unnamed workspace in the
+bar, from its windows ("Firefox", "Code", "Chat"). The model only refines these
+names while it already runs, and only for a window set that has been stable for
+30 seconds. A name you set (for example through the AI) is never replaced. See
+[design/ai.md](../design/ai.md) and [debugging.md](debugging.md).
 
 ## Optional modules
 
@@ -720,6 +747,9 @@ name such as `eDP-1`. Numeric steps describe the editor increments.
 | `modules.media` | bool | `true` | yes |
 | `clipboard.history` | bool | `true` | yes |
 | `clipboard.history_size` | int (1–500, step 1) | `50` | yes |
+| `ai.enabled` | bool | `false` | yes |
+| `ai.idle_stop_minutes` | int (1–1440, step 1) | `10` | yes |
+| `ai.workspace_names` | bool | `true` | yes |
 | `dock.enabled` | bool | `true` | yes |
 | `dock.pinned` | string_list | `["foot", "firefox"]` | yes |
 | `dock.magnify` | bool | `true` | yes |

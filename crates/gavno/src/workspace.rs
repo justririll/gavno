@@ -17,6 +17,11 @@ pub struct Workspace<T> {
     pub windows: Vec<T>,
     pub tiling: bool,
     pub tree: crate::tiling::Tree<Window>,
+    /// Shown in the bar; see `ai::names`. `user_named` names are never replaced.
+    pub name: Option<String>,
+    pub user_named: bool,
+    /// Window-set signature an AI-refined `name` was made for.
+    pub name_sig: Option<u64>,
 }
 #[derive(Debug)]
 pub struct WorkspaceList<T> {
@@ -33,6 +38,9 @@ impl<T> Default for WorkspaceList<T> {
                 windows: Vec::new(),
                 tiling: false,
                 tree: Default::default(),
+                name: None,
+                user_named: false,
+                name_sig: None,
             }],
             active: 0,
             next_id: 1,
@@ -59,6 +67,9 @@ impl<T> WorkspaceList<T> {
                 windows: Vec::new(),
                 tiling: self.default_tiling,
                 tree: Default::default(),
+                name: None,
+                user_named: false,
+                name_sig: None,
             });
             self.next_id += 1;
         }
@@ -98,6 +109,9 @@ impl OutputWorkspaces {
                 windows: Vec::new(),
                 tiling: self.list.default_tiling,
                 tree: Default::default(),
+                name: None,
+                user_named: false,
+                name_sig: None,
             });
         }
     }

@@ -199,6 +199,7 @@ pub(crate) fn apply(gv: &mut Gavno, prepared: Prepared) -> Result<Value, String>
     if logo_changed { crate::classic::logo::spawn(gv); }
     gv.clipboard_config_changed();
     gv.dropdown_config_changed();
+    gv.ai_config_changed();
     if code_mode_changed { gv.set_code_mode(gv.config.code_mode); }
     gv.sync_bar_hints();
     if bar_hints_changed || !(old_hint_items.len() == gv.topbar.hint_items.len() && old_hint_items.iter().zip(&gv.topbar.hint_items).all(|(a, b)| std::ptr::eq(*a, *b))) { gv.queue_redraw_all(); }

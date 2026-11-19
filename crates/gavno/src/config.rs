@@ -55,6 +55,7 @@ pub struct Config {
     pub display: DisplayConfig,
     pub clipboard: ClipboardConfig,
     pub dropdown: DropdownConfig,
+    pub ai: AiConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -183,6 +184,7 @@ struct FileConfig {
     display: DisplayConfig,
     clipboard: ClipboardConfig,
     dropdown: DropdownConfig,
+    ai: AiConfig,
     #[serde(flatten)]
     unknown: toml::Table,
 }
@@ -276,7 +278,7 @@ impl Config {
             "file_manager":self.file_manager,"polkit_agent":self.polkit_agent,"autostart":self.autostart,"gap":self.gap,
             "output":{"internal_scale":self.internal_scale,"mode":mode,"hdr":self.output_hdr,"sdr_white_nits":self.sdr_white_nits},
             "keyboard":{"layout":self.xkb_layout,"variant":self.xkb_variant,"options":self.xkb_options,"repeat_delay":self.repeat_delay,"repeat_rate":self.repeat_rate,"code_mode":self.code_mode,"bar_hints":self.bar_hints},
-            "display":self.display,"media":self.media,"clipboard":self.clipboard,"dropdown":self.dropdown,"modules":self.modules,"classic":self.classic,"dock":self.dock,"bar":self.bar,"tiling":self.tiling,"lock":self.lock,"notifications":self.notifications,"outputs":self.outputs})
+            "display":self.display,"media":self.media,"clipboard":self.clipboard,"dropdown":self.dropdown,"ai":self.ai,"modules":self.modules,"classic":self.classic,"dock":self.dock,"bar":self.bar,"tiling":self.tiling,"lock":self.lock,"notifications":self.notifications,"outputs":self.outputs})
     }
 
     /// Pure merge: defaults < file < environment. Empty environment values are unset.
@@ -293,7 +295,7 @@ impl Config {
         // Capture unknown fields during deserialization, so this list cannot drift from the schema.
         let mut unknown = Vec::new();
         for (prefix, extra) in
-            [("display.", &file.display.unknown), ("", &file.unknown), ("output.", &file.output.unknown), ("keyboard.", &file.keyboard.unknown), ("classic.", &file.classic.unknown), ("dock.", &file.dock.unknown), ("bar.", &file.bar.unknown), ("tiling.", &file.tiling.unknown), ("media.", &file.media.unknown), ("clipboard.", &file.clipboard.unknown), ("dropdown.", &file.dropdown.unknown), ("notifications.", &file.notifications.unknown), ("lock.", &file.lock.unknown), ("modules.", &file.modules.unknown)]
+            [("display.", &file.display.unknown), ("", &file.unknown), ("output.", &file.output.unknown), ("keyboard.", &file.keyboard.unknown), ("classic.", &file.classic.unknown), ("dock.", &file.dock.unknown), ("bar.", &file.bar.unknown), ("tiling.", &file.tiling.unknown), ("media.", &file.media.unknown), ("clipboard.", &file.clipboard.unknown), ("dropdown.", &file.dropdown.unknown), ("ai.", &file.ai.unknown), ("notifications.", &file.notifications.unknown), ("lock.", &file.lock.unknown), ("modules.", &file.modules.unknown)]
         {
             unknown.extend(extra.keys().map(|key| format!("{prefix}{key}")));
         }
@@ -409,6 +411,7 @@ impl Config {
                 display: file.display,
                 clipboard: file.clipboard.clamped(),
                 dropdown: file.dropdown.clamped(),
+                ai: file.ai.clamped(),
             },
             warnings,
         )
@@ -555,6 +558,7 @@ options = "caps:escape"
             display: Default::default(),
             clipboard: Default::default(),
             dropdown: Default::default(),
+            ai: Default::default(),
         };
         assert_eq!(build(false, None, &[]), (expected.clone(), vec![]));
         let example = include_str!("../../../dist/config.toml");
@@ -626,6 +630,7 @@ options = "caps:escape"
             display: Default::default(),
             clipboard: Default::default(),
             dropdown: Default::default(),
+            ai: Default::default(),
         };
         assert_eq!(build(false, Some(FULL), &[]), (expected, vec![]));
         let mut partial = build(false, None, &[]).0;
@@ -1060,6 +1065,50 @@ impl DropdownConfig {
         self.width = clamp(self.width, 0.3, 1.0, 1.0);
         if self.command.trim().is_empty() { self.command = Self::default().command; }
         self
+    }
+}
+
+/// Local AI in the launcher, see `design/ai.md`.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct AiConfig {
+    /// Nothing starts, and the launcher shows no "Ask AI" row, until this is true.
+    pub enabled: bool,
+    /// Minutes without a request before gavno-ai stops the model and exits.
+    pub idle_stop_minutes: u32,
+    /// Name unnamed workspaces: a free heuristic always, AI refinement only while the model runs.
+    pub workspace_names: bool,
+    #[serde(flatten)]
+    unknown: toml::Table,
+}
+impl Default for AiConfig {
+    fn default() -> Self {
+        Self { enabled: false, idle_stop_minutes: 10, workspace_names: true, unknown: Default::default() }
+    }
+}
+impl AiConfig {
+    fn clamped(mut self) -> Self {
+        self.idle_stop_minutes = self.idle_stop_minutes.clamp(1, 1440);
+        self
+    }
+}
+
+#[cfg(test)]
+mod ai_config_tests {
+    use super::*;
+    #[test]
+    fn defaults_parse_clamp_and_report_unknown_keys() {
+        let config = Config::build(false, None, |_| None).0;
+        assert_eq!(config.ai, AiConfig::default());
+        assert!(!config.ai.enabled);
+        let text = "[ai]\nenabled = true\nidle_stop_minutes = 0\nworkspace_names = false\nwrong = 1";
+        let (config, warnings) = Config::build(false, Some(text), |_| None);
+        assert_eq!(warnings, ["unknown config keys ignored: ai.wrong"]);
+        assert!(config.ai.enabled && !config.ai.workspace_names);
+        assert_eq!(config.ai.idle_stop_minutes, 1);
+        let (config, _) = Config::build(false, Some("[ai]\nidle_stop_minutes = 99999"), |_| None);
+        assert_eq!(config.ai.idle_stop_minutes, 1440);
+        assert_eq!(config.values()["ai"]["idle_stop_minutes"], 1440);
     }
 }
 

@@ -1,0 +1,3 @@
+[D-BUS Service]
+Name=org.gavno.AI1
+Exec=/usr/local/bin/gavno-ai

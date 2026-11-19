@@ -55,6 +55,15 @@ pub struct Launcher {
     rows: Vec<(Rect, usize)>,
     /// Held key being repeated: keycode and its repeat timer.
     repeat: Option<(u32, RegistrationToken)>,
+    /// `ai.enabled`, copied when the launcher opens.
+    pub(crate) ai_enabled: bool,
+    pub(crate) ai_phase: crate::ai::Phase,
+    /// The query the AI row was asked about; editing it drops the answer.
+    ai_query: String,
+    /// Best application rank for the current query.
+    best_score: Option<u8>,
+    /// One prewarm per opening of the launcher.
+    pub(crate) prewarm_sent: bool,
 }
 
 impl Default for Launcher {
@@ -76,6 +85,11 @@ impl Default for Launcher {
             panel: None,
             rows: Vec::new(),
             repeat: None,
+            ai_enabled: false,
+            ai_phase: Default::default(),
+            ai_query: String::new(),
+            best_score: None,
+            prewarm_sent: false,
         }
     }
 }
@@ -95,6 +109,20 @@ pub(crate) fn score(name: &str, words: &str, query: &str) -> Option<u8> {
         Some(3)
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+impl Launcher {
+    pub(crate) fn test_apps(&mut self, entries: Vec<DesktopEntry>) {
+        self.install_entries(entries);
+    }
+    pub(crate) fn test_query(&mut self, query: &str) {
+        self.query = query.into();
+        self.refilter();
+    }
+    pub(crate) fn test_results(&self) -> usize {
+        self.results.len()
     }
 }
 
@@ -147,8 +175,64 @@ impl Launcher {
         // Apps are already sorted by name, so a stable sort keeps that order
         // within each rank.
         ranked.sort_by_key(|(s, _)| *s);
+        self.best_score = ranked.first().map(|(s, _)| *s);
         self.results = ranked.into_iter().map(|(_, i)| i).collect();
-        self.selected = 0;
+        if query != self.ai_query {
+            self.ai_phase = crate::ai::Phase::Idle;
+        }
+        // A command nothing matches strongly starts on the Ask AI row.
+        self.selected = if self.ask_visible() && self.best_score.is_none_or(|s| s >= 2) { self.results.len() } else { 0 };
+    }
+
+    /// Whether the "Ask AI" row is the last row.
+    pub(crate) fn ask_visible(&self) -> bool {
+        self.ai_enabled && !self.run_style && crate::ai::is_candidate(&self.query, self.best_score)
+    }
+
+    pub(crate) fn ask_selected(&self) -> bool {
+        self.open && self.ask_visible() && self.selected == self.results.len()
+    }
+
+    /// Records the query the AI row is asked about and returns it.
+    pub(crate) fn begin_ask(&mut self) -> String {
+        self.ai_query = self.query.trim().to_lowercase();
+        self.query.trim().to_owned()
+    }
+
+    fn total_rows(&self) -> usize {
+        self.results.len() + usize::from(self.ask_visible())
+    }
+
+    /// Called after the AI phase changed from outside, so the selection stays valid.
+    pub(crate) fn refresh_ai_row(&mut self) {
+        self.selected = self.selected.min(self.total_rows().saturating_sub(1));
+    }
+
+    /// Installed apps for the model: pinned ones first, then by name.
+    pub(crate) fn app_choices(&self, pinned: &[String], max: usize) -> Vec<(String, String)> {
+        let apps = self.apps.as_deref().unwrap_or_default();
+        let is_pinned = |a: &App| pinned.iter().any(|p| p.eq_ignore_ascii_case(&a.entry.id));
+        apps.iter()
+            .filter(|a| is_pinned(a))
+            .chain(apps.iter().filter(|a| !is_pinned(a)))
+            .take(max)
+            .map(|a| (a.entry.id.clone(), a.entry.name.clone()))
+            .collect()
+    }
+
+    pub(crate) fn launch_command(&self, id: &str, terminal: &str) -> Option<String> {
+        self.apps.as_deref()?.iter().find(|a| a.entry.id == id)?.entry.command(terminal)
+    }
+
+    /// Title and detail of the AI row, and whether it reports an error.
+    pub(crate) fn ask_texts(&self) -> (String, String, bool) {
+        use crate::ai::Phase;
+        match &self.ai_phase {
+            Phase::Idle => ("Ask AI".into(), format!("\"{}\", press Enter", self.query.trim()), false),
+            Phase::Asking(_) => ("Thinking…".into(), "The first answer can take a few seconds".into(), false),
+            Phase::Preview(i) => (i.summary.join(" · "), "Enter to run, Esc to cancel".into(), false),
+            Phase::Error(e) => (e.clone(), "Enter to try again".into(), true),
+        }
     }
 
     fn show(&mut self, output: Option<Output>) {
@@ -157,6 +241,9 @@ impl Launcher {
         self.launch_after_load = false;
         self.launch_action = None;
         self.query.clear();
+        self.ai_query.clear();
+        self.ai_phase = Default::default();
+        self.prewarm_sent = false;
         self.refilter();
         self.output = output;
         self.fade.set(1.0);
@@ -164,6 +251,7 @@ impl Launcher {
 
     fn hide(&mut self) {
         self.open = false;
+        self.ai_phase = Default::default();
         self.launch_after_load = false;
         self.launch_action = None;
         self.fade.set(0.0);
@@ -181,10 +269,10 @@ impl Launcher {
     }
 
     fn move_selection(&mut self, down: bool) {
-        if self.results.is_empty() {
+        if self.total_rows() == 0 {
             return;
         }
-        let n = self.results.len();
+        let n = self.total_rows();
         self.selected = if down { (self.selected + 1) % n } else { (self.selected + n - 1) % n };
     }
 
@@ -196,7 +284,7 @@ impl Launcher {
     /// Panel rectangle for an output of `size` logical pixels.
     fn panel_rect(&self, size: Size<i32, Logical>) -> Rect {
         let w = 640.min(size.w - 32).max(200);
-        let rows = if self.run_style { 0 } else { self.results.len().clamp(1, ROWS) as i32 };
+        let rows = if self.run_style { 0 } else { self.total_rows().clamp(1, ROWS) as i32 };
         let h = SEARCH_H + PAD + rows * ROW_H + PAD;
         rect((size.w - w) / 2, (size.h as f64 * 0.16) as i32, w, h)
     }
@@ -220,6 +308,8 @@ impl Launcher {
         self.rows.clear();
         let fade = self.fade.value.clamp(0.0, 1.0);
         let first = self.scroll();
+        let ask = self.ask_visible();
+        let (ask_title, ask_detail, ask_error) = self.ask_texts();
         let c = &mut self.canvas;
         c.begin(renderer, scale);
         c.alpha = fade as f32;
@@ -253,7 +343,7 @@ impl Launcher {
 
         // Results.
         let apps = self.apps.as_deref().unwrap_or_default();
-        if self.results.is_empty() && !self.run_style {
+        if self.results.is_empty() && !self.run_style && !ask {
             let mut dim = label_style(13.5);
             dim.color = [0.96, 0.95, 0.98, 0.5];
             c.styled_label(renderer, if self.loading { "Loading applications…" } else { "No applications found" }, x + 20, y + SEARCH_H + PAD + 14, panel.size.w - 40, dim);
@@ -283,6 +373,29 @@ impl Launcher {
             }
             self.rows.push((r, row));
         }
+        if ask && !self.run_style {
+            let row = self.results.len();
+            if row >= first && row < first + ROWS {
+                let ry = y + SEARCH_H + PAD + (row - first) as i32 * ROW_H;
+                let r = rect(x + PAD, ry, panel.size.w - 2 * PAD, ROW_H);
+                if row == self.selected {
+                    let [a, b, d, _] = accent;
+                    c.rect(r, 12.0, [a, b, d, 0.22], 0.0, LINE);
+                }
+                c.icon(renderer, &mut self.icons, &["starred-symbolic", "emblem-favorite-symbolic"], icon_theme, rect(r.loc.x + 16, ry + 14, 20, 20));
+                let (title, detail, error) = (&ask_title, &ask_detail, ask_error);
+                let mut name = label_style(14.0);
+                name.weight = Weight::SemiBold;
+                if error {
+                    name.color = [1.0, 0.62, 0.58, 1.0];
+                }
+                c.styled_label(renderer, title, r.loc.x + 52, ry + 6, r.size.w - 64, name);
+                let mut sub = label_style(11.5);
+                sub.color = [0.96, 0.95, 0.98, 0.55];
+                c.styled_label(renderer, detail, r.loc.x + 52, ry + 26, r.size.w - 64, sub);
+                self.rows.push((r, row));
+            }
+        }
         c.finish()
     }
 }
@@ -308,6 +421,7 @@ impl Gavno {
                 gv.launcher.hide();
             } else {
                 let output = gv.active_output();
+                gv.launcher.ai_enabled = gv.config.ai.enabled;
                 gv.launcher.show(output);
                 if !gv.launcher.loading && gv.launcher.apps.as_ref().is_none_or(|apps| apps.is_empty()) {
                     gv.launcher.loading = true;
@@ -339,6 +453,9 @@ impl Gavno {
     }
 
     fn launch_selected(&mut self) {
+        if self.launcher.ask_selected() {
+            return self.ai_enter();
+        }
         let action = *self.launcher.launch_action.get_or_insert_with(Instant::now);
         if !self.launcher.run_style && self.launcher.loading && self.launcher.results.is_empty() {
             self.launcher.launch_after_load=true;
@@ -359,6 +476,7 @@ impl Gavno {
     pub fn launcher_key(&mut self, sym: Keysym, ch: Option<char>, mods: &ModifiersState) {
         let mods = *mods;
         self.guard(crate::module::Feature::Launcher, (), |gv| {
+            gv.launcher.ai_enabled = gv.config.ai.enabled;
             let l = &mut gv.launcher;
             if !matches!(sym.raw(), keysyms::KEY_Return | keysyms::KEY_KP_Enter) { l.launch_after_load=false; l.launch_action=None; }
             match sym.raw() {
@@ -389,6 +507,7 @@ impl Gavno {
                     _ => {}
                 },
             }
+            gv.ai_after_query_change();
             gv.queue_redraw_all();
         });
     }
