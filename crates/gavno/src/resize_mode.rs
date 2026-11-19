@@ -216,12 +216,12 @@ impl Gavno {
                     .map(|(_, e, _)| e)
             });
         if let Some(edge) = edge {
-            self.cursor_status = CursorImageStatus::Named(cursor(edge));
+            self.set_cursor_status(CursorImageStatus::Named(cursor(edge)));
             self.overlay.resize_mode.band_hover = true;
         } else if self.overlay.resize_mode.band_hover {
             self.overlay.resize_mode.band_hover = false;
             if self.workspaces.splitter_hover.is_none() {
-                self.cursor_status = CursorImageStatus::default_named();
+                self.set_cursor_status(CursorImageStatus::default_named());
                 self.queue_redraw_all();
             }
         }
@@ -530,6 +530,6 @@ impl Gavno {
             self.finish_interactive_resize(&session.window);
         }
         self.overlay.resize_mode = Default::default();
-        self.cursor_status = smithay::input::pointer::CursorImageStatus::default_named();
+        self.set_cursor_status(smithay::input::pointer::CursorImageStatus::default_named());
     }
 }

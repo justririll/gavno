@@ -7,10 +7,12 @@ use smithay::input::pointer::CursorImageStatus;
 use crate::{hints::HintContext, Gavno};
 
 impl Gavno {
-    /// Turns code mode on or off. Enabling is a no-op in Classic, which keeps
-    /// its own behaviour.
+    /// Turns code mode on or off. In Classic the request is only remembered
+    /// and applied when the shell returns, so Classic keeps its own behaviour.
     pub fn set_code_mode(&mut self, enable: bool) {
-        if enable && self.classic_mode() {
+        if !self.code_mode && (self.classic_mode() || self.classic.windows.in_classic()) {
+            self.classic.windows.set_code_resume(enable);
+            self.sync_bar_hints();
             return;
         }
         if self.code_mode == enable {
@@ -129,6 +131,17 @@ impl Gavno {
             crate::config::ModKey::Super => "Super",
             crate::config::ModKey::Alt => "Alt",
         };
+    }
+
+    /// Every compositor-side cursor image change goes through here: while the
+    /// pointer is hidden the image is only remembered, so showing it later
+    /// restores the latest one instead of a stale one.
+    pub(crate) fn set_cursor_status(&mut self, status: CursorImageStatus) {
+        if self.pointer_hidden {
+            self.pointer_image = status;
+        } else {
+            self.cursor_status = status;
+        }
     }
 
     /// Hides the pointer without changing pointer focus. Nothing is drawn on

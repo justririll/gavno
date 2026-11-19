@@ -113,20 +113,59 @@ fn open_socket() -> Option<RawFd> {
     Some(std::os::fd::IntoRawFd::into_raw_fd(owned))
 }
 
-/// Returns false when the peer is gone. A full socket drops motion only.
+/// Longest a button, scroll or hand message waits for a full socket.
+const SEND_WAIT: Duration = Duration::from_millis(250);
+
+/// Returns false when the peer is gone. Only motion is dropped on a full
+/// socket; every other message is delivered, waiting briefly for room.
 fn send(fd: RawFd, messages: &[Message]) -> bool {
     let mut text = String::new();
     for message in messages {
         text.clear();
         message.encode(&mut text);
+        let droppable = matches!(message, Message::Motion { .. });
+        if !write_line(fd, text.as_bytes(), droppable, SEND_WAIT) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Writes one whole line. A droppable line is skipped when nothing could be
+/// written at once; a started line is always completed so framing holds.
+/// Returns false only when the peer is gone.
+fn write_line(fd: RawFd, line: &[u8], droppable: bool, wait: Duration) -> bool {
+    let deadline = Instant::now() + wait;
+    let mut done = 0;
+    while done < line.len() {
+        let rest = &line[done..];
         // SAFETY: valid buffer and descriptor.
-        let n = unsafe { libc::send(fd, text.as_ptr().cast(), text.len(), libc::MSG_NOSIGNAL | libc::MSG_DONTWAIT) };
-        if n < 0 {
-            let error = std::io::Error::last_os_error();
-            match error.kind() {
-                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted => {}
-                _ => return false,
+        let n = unsafe { libc::send(fd, rest.as_ptr().cast(), rest.len(), libc::MSG_NOSIGNAL | libc::MSG_DONTWAIT) };
+        if n >= 0 {
+            done += n as usize;
+            continue;
+        }
+        match std::io::Error::last_os_error().kind() {
+            std::io::ErrorKind::Interrupted => {}
+            std::io::ErrorKind::WouldBlock => {
+                if done == 0 && droppable {
+                    return true;
+                }
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() && done == 0 {
+                    // The compositor is not reading; losing this one is better than hanging.
+                    return true;
+                }
+                // A half-written line must be finished, so allow it extra time.
+                let left = if left.is_zero() { SEND_WAIT } else { left };
+                let mut pfd = libc::pollfd { fd, events: libc::POLLOUT, revents: 0 };
+                // SAFETY: one valid pollfd.
+                unsafe { libc::poll(&mut pfd, 1, left.as_millis().min(i32::MAX as u128) as i32) };
+                if pfd.revents & (libc::POLLERR | libc::POLLHUP) != 0 {
+                    return false;
+                }
             }
+            _ => return false,
         }
     }
     true
@@ -308,5 +347,52 @@ fn main() {
     if let Err(error) = run(probe) {
         eprintln!("gavno-cam: {error}");
         std::process::exit(2);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::{fd::AsRawFd, unix::net::UnixStream};
+
+    fn fill(stream: &UnixStream) {
+        let chunk = [b'x'; 4096];
+        loop {
+            // SAFETY: valid buffer and descriptor.
+            let n = unsafe { libc::send(stream.as_raw_fd(), chunk.as_ptr().cast(), chunk.len(), libc::MSG_DONTWAIT) };
+            if n < 0 { break; }
+        }
+    }
+
+    #[test]
+    fn a_full_socket_drops_motion_but_delivers_buttons() {
+        let (tx, rx) = UnixStream::pair().unwrap();
+        fill(&tx);
+        let fd = tx.as_raw_fd();
+        assert!(send(fd, &[Message::Motion { x: 0.5, y: 0.5 }]));
+        let reader = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(60));
+            let mut rx = rx;
+            let mut all = Vec::new();
+            let mut buf = [0u8; 8192];
+            rx.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+            while let Ok(n) = std::io::Read::read(&mut rx, &mut buf) {
+                if n == 0 { break; }
+                all.extend_from_slice(&buf[..n]);
+            }
+            all
+        });
+        assert!(send(fd, &[Message::Button { right: false, pressed: true }]));
+        let all = reader.join().unwrap();
+        let text = String::from_utf8_lossy(&all);
+        assert!(text.contains("B l 1\n"), "button must arrive");
+        assert!(!text.contains("M 0.50000"), "dropped motion must not arrive");
+    }
+
+    #[test]
+    fn a_closed_peer_is_reported() {
+        let (tx, rx) = UnixStream::pair().unwrap();
+        drop(rx);
+        assert!(!send(tx.as_raw_fd(), &[Message::Hand { present: true }]));
     }
 }

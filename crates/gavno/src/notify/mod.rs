@@ -353,6 +353,7 @@ impl Notifications {
 /// get near these, and the registry does not know them, so their close and
 /// action signals are dropped.
 const BATTERY_ID: u32 = u32::MAX - 1;
+const CAMERA_ID: u32 = u32::MAX - 2;
 
 /// Battery thresholds: the warning to show when a discharging battery drops
 /// to `percent` or below, as (threshold, urgency).
@@ -486,6 +487,27 @@ impl Gavno {
         if changed || moved {
             self.queue_redraw_all();
         }
+    }
+    /// A short notice from the finger pointer helper.
+    pub fn camera_notification(&mut self, summary: &str, body: &str) {
+        self.guard(Feature::Notifications, (), |gv| {
+            let now = gv.start_time.elapsed();
+            let notice = Notice {
+                id: CAMERA_ID,
+                gen: 0,
+                app: "Camera".into(),
+                icon: "camera-web-symbolic".into(),
+                desktop: String::new(),
+                summary: summary.into(),
+                body: body.into(),
+                actions: Vec::new(),
+                urgency: 1,
+                timeout: -1,
+            };
+            gv.notifications.borrow_mut().receive(notice, now, gv.config.notifications.timeout_ms);
+            gv.refresh_notifications();
+            gv.queue_redraw_all();
+        });
     }
     /// Warns once per threshold while the battery discharges, and takes the
     /// warning down when a charger is plugged in.

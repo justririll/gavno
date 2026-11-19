@@ -818,7 +818,7 @@ impl Gavno {
             }
         });
         drop(pointer);
-        self.cursor_status = smithay::input::pointer::CursorImageStatus::default_named();
+        self.set_cursor_status(smithay::input::pointer::CursorImageStatus::default_named());
     }
 }
 

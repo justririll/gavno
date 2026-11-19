@@ -1053,7 +1053,7 @@ dependencies = [
  "drm-ffi",
  "fontdue",
  "futures-lite",
- "gavno-cam",
+ "gavno-cam-proto",
  "libc",
  "png",
  "resvg",
@@ -1083,11 +1083,16 @@ dependencies = [
 name = "gavno-cam"
 version = "0.1.0"
 dependencies = [
+ "gavno-cam-proto",
  "gstreamer",
  "gstreamer-app",
  "libc",
  "tract-onnx",
 ]
+
+[[package]]
+name = "gavno-cam-proto"
+version = "0.1.0"
 
 [[package]]
 name = "gavno-files"

@@ -40,7 +40,7 @@ fn info() -> Info {
 fn probe<const N: usize>(s: &mut State, kinds: [usize; N]) -> [mpsc::Receiver<worker::Command>; N] {
     kinds.map(|i| {
         let (tx, rx) = mpsc::channel();
-        s.workers[i] = Some(worker::Worker { sender: tx });
+        s.workers[i] = Some(worker::Worker::new(tx));
         rx
     })
 }
@@ -331,7 +331,7 @@ fn detail_pages_group_networks_and_devices_into_sections() {
     );
     // The connected network offers Disconnect; no row repeats the power state.
     let (tx, rx) = mpsc::channel();
-    s.workers[0] = Some(worker::Worker { sender: tx });
+    s.workers[0] = Some(worker::Worker::new(tx));
     s.selected = 1;
     s.key(keysyms::KEY_Return, None, &info());
     assert!(matches!(rx.try_recv(), Ok(worker::Command::Disconnect)));
@@ -526,7 +526,7 @@ fn wifi_worker_scans_only_on_open_transitions_and_sleeps_when_idle() {
             .count(),
         1
     );
-    // Each query requires one command; there is no timeout or periodic refresh path.
+    // The queued burst ends in Shutdown, so only the initial snapshot is taken.
     assert_eq!(
         calls
             .lock()
@@ -534,7 +534,61 @@ fn wifi_worker_scans_only_on_open_transitions_and_sleeps_when_idle() {
             .iter()
             .filter(|c| **c == "snapshot")
             .count(),
-        8
+        1
+    );
+}
+#[test]
+fn closed_wifi_refreshes_are_coalesced_and_rate_limited() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let (tx, rx) = mpsc::channel();
+    let (events, _source) = channel::channel();
+    let fake = WifiFake {
+        calls: calls.clone(),
+    };
+    let thread = std::thread::spawn(move || worker::wifi_loop(Box::new(fake), rx, events));
+    let count = |calls: &Arc<Mutex<Vec<&'static str>>>| {
+        calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|c| **c == "snapshot")
+            .count()
+    };
+    // Initial snapshot, then a burst inside the 500 ms window: at most one more,
+    // delivered by the one-shot deadline rather than immediately.
+    for _ in 0..50 {
+        tx.send(worker::Command::Refresh).unwrap();
+    }
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(count(&calls), 1);
+    std::thread::sleep(Duration::from_millis(700));
+    assert_eq!(count(&calls), 2);
+    // Fully idle afterwards: no periodic snapshots.
+    std::thread::sleep(Duration::from_millis(700));
+    assert_eq!(count(&calls), 2);
+    tx.send(worker::Command::Shutdown).unwrap();
+    thread.join().unwrap();
+}
+#[test]
+fn open_wifi_refresh_burst_costs_one_snapshot() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let (tx, rx) = mpsc::channel();
+    let (events, _source) = channel::channel();
+    tx.send(worker::Command::Visible(true)).unwrap();
+    for _ in 0..20 {
+        tx.send(worker::Command::Refresh).unwrap();
+    }
+    let fake = WifiFake {
+        calls: calls.clone(),
+    };
+    let thread = std::thread::spawn(move || worker::wifi_loop(Box::new(fake), rx, events));
+    std::thread::sleep(Duration::from_millis(200));
+    tx.send(worker::Command::Shutdown).unwrap();
+    thread.join().unwrap();
+    // Initial snapshot plus one for the whole queued burst.
+    assert_eq!(
+        calls.lock().unwrap().iter().filter(|c| **c == "snapshot").count(),
+        2
     );
 }
 struct BluetoothFake {
@@ -840,7 +894,7 @@ fn rfkill_fixture_distinguishes_bluetooth_from_other_radios() {
 fn bar_volume_steps_use_the_same_fake_provider() {
     let mut s = state(Page::Wifi);
     let (tx, rx) = mpsc::channel();
-    s.workers[2] = Some(worker::Worker { sender: tx });
+    s.workers[2] = Some(worker::Worker::new(tx));
     assert!(s.master_step(-15.0));
     assert!(matches!(
         rx.try_recv(),
