@@ -65,17 +65,71 @@ fn config(width: usize, height: usize) -> Config {
     cfg
 }
 
+/// Gray-world white balance and exposure. The laptop's uncalibrated software
+/// ISP delivers a dark, blue frame in which the models do not see skin.
+struct Balance {
+    gains: [f32; 3],
+    frames: u32,
+}
+
+impl Balance {
+    const TARGET: f32 = 118.0;
+    fn new() -> Self { Self { gains: [1.0; 3], frames: 0 } }
+
+    /// Channel gains that bring every channel's mean to the target gray.
+    fn measure(rgb: &[u8]) -> [f32; 3] {
+        let mut sum = [0u64; 3];
+        let mut n = 0u64;
+        for px in rgb.chunks_exact(3).step_by(17) {
+            for c in 0..3 { sum[c] += px[c] as u64; }
+            n += 1;
+        }
+        let mut gains = [1.0; 3];
+        if n > 0 {
+            for c in 0..3 {
+                let mean = (sum[c] as f32 / n as f32).max(1.0);
+                gains[c] = (Self::TARGET / mean).clamp(0.5, 4.0);
+            }
+        }
+        gains
+    }
+
+    fn apply(&mut self, rgb: &[u8], out: &mut Vec<u8>) {
+        if self.frames % 8 == 0 {
+            let target = Self::measure(rgb);
+            for c in 0..3 {
+                // Smooth so the image does not pump when a hand enters.
+                self.gains[c] += (target[c] - self.gains[c]) * if self.frames == 0 { 1.0 } else { 0.5 };
+            }
+        }
+        self.frames = self.frames.wrapping_add(1);
+        let lut: [[u8; 256]; 3] = std::array::from_fn(|c| std::array::from_fn(|v| (v as f32 * self.gains[c]).min(255.0) as u8));
+        out.clear();
+        out.extend(rgb.chunks_exact(3).flat_map(|px| [lut[0][px[0] as usize], lut[1][px[1] as usize], lut[2][px[2] as usize]]));
+    }
+}
+
 /// Palm detection while nothing is tracked, then the landmark network on the
 /// region predicted from the previous frame.
 struct Tracker {
     models: Models,
+    balance: Balance,
+    corrected: Vec<u8>,
     roi: Option<vision::Roi>,
     palm_ms: f32,
     hand_ms: f32,
 }
 
 impl Tracker {
-    fn step(&mut self, rgb: &[u8], width: usize, height: usize) -> Result<Option<Hand>, String> {
+    fn step(&mut self, raw: &[u8], width: usize, height: usize) -> Result<Option<Hand>, String> {
+        self.balance.apply(raw, &mut self.corrected);
+        let rgb = std::mem::take(&mut self.corrected);
+        let result = self.track(&rgb, width, height);
+        self.corrected = rgb;
+        result
+    }
+
+    fn track(&mut self, rgb: &[u8], width: usize, height: usize) -> Result<Option<Hand>, String> {
         let mut palm_ms = 0.0f32;
         if self.roi.is_none() {
             let started = Instant::now();
@@ -173,7 +227,7 @@ fn write_line(fd: RawFd, line: &[u8], droppable: bool, wait: Duration) -> bool {
 
 fn run(probe: Option<Duration>) -> Result<(), String> {
     let dir = models::model_dir().ok_or("models not found (set GAVNO_CAM_MODELS)")?;
-    let mut tracker = Tracker { models: Models::load(&dir)?, roi: None, palm_ms: 0.0, hand_ms: 0.0 };
+    let mut tracker = Tracker { models: Models::load(&dir)?, balance: Balance::new(), corrected: Vec::new(), roi: None, palm_ms: 0.0, hand_ms: 0.0 };
     let socket = if probe.is_none() { Some(open_socket().ok_or("GAVNO_CAM_FD is not a socket")?) } else { None };
     let camera = Camera::open()?;
     let started = Instant::now();
@@ -291,7 +345,7 @@ fn probe_raw(args: &[String]) -> Result<(), String> {
     let rgb = std::fs::read(file).map_err(|e| e.to_string())?;
     if rgb.len() != w * h * 3 { return Err("file size does not match WIDTH x HEIGHT x 3".into()); }
     let dir = models::model_dir().ok_or("models not found (set GAVNO_CAM_MODELS)")?;
-    let mut tracker = Tracker { models: Models::load(&dir)?, roi: None, palm_ms: 0.0, hand_ms: 0.0 };
+    let mut tracker = Tracker { models: Models::load(&dir)?, balance: Balance::new(), corrected: Vec::new(), roi: None, palm_ms: 0.0, hand_ms: 0.0 };
     if let Some(seconds) = bench {
         // Tracked-hand cost: the same frame at 30 fps, landmarks every frame.
         let (start, cpu) = (Instant::now(), cpu_seconds());
@@ -352,6 +406,17 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn balance_neutralises_a_dark_blue_frame() {
+        let frame: Vec<u8> = (0..640 * 360).flat_map(|_| [44u8, 55, 100]).collect();
+        let mut balance = super::Balance::new();
+        let mut out = Vec::new();
+        balance.apply(&frame, &mut out);
+        let px = &out[..3];
+        assert!(px.iter().all(|&v| (110..=125).contains(&v)), "{px:?}");
+        assert_eq!(out.len(), frame.len());
+    }
+
     use super::*;
     use std::os::{fd::AsRawFd, unix::net::UnixStream};
 

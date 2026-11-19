@@ -109,6 +109,34 @@ pub(super) fn resolve_icons(
         };
     }
 }
+/// pactl's JSON writer cannot encode non-ASCII text and prints "(null)" for it,
+/// which hits every localized PipeWire description ("Встроенное аудио ...").
+fn readable(text: String) -> String {
+    if text == "(null)" { String::new() } else { text }
+}
+
+/// A device label that survives pactl's JSON: the description, else the ASCII
+/// nick or profile ("Speaker playback" -> "Speaker"), else the node name.
+fn device_name(v: &Value, props: &Value) -> String {
+    let description = readable(field(v, "description"));
+    if !description.is_empty() {
+        return description;
+    }
+    for key in ["node.nick", "device.profile.description"] {
+        let text = readable(field(props, key));
+        let text = text.trim_end_matches(" playback").trim_end_matches(" capture").trim();
+        if !text.is_empty() {
+            return text.to_string();
+        }
+    }
+    let node = field(v, "name");
+    let part = node.split("__").nth(1).unwrap_or(&node);
+    match part.strip_prefix("HDMI") {
+        Some(n) if !n.is_empty() => format!("HDMI {n}"),
+        _ => part.to_string(),
+    }
+}
+
 pub fn parse_list(text: &str, streams: bool) -> Result<Vec<Endpoint>, String> {
     parse_devices(text, streams, false)
 }
@@ -122,14 +150,13 @@ pub fn parse_devices(text: &str, streams: bool, source: bool) -> Result<Vec<Endp
             let index = v["index"].as_u64()?;
             let props = &v["properties"];
             let name = if streams {
-                let app = field(props, "application.name");
-                if app.is_empty() {
-                    field(props, "media.name")
-                } else {
-                    app
-                }
+                ["application.name", "media.name", "application.process.binary"]
+                    .iter()
+                    .map(|key| readable(field(props, key)))
+                    .find(|n| !n.is_empty())
+                    .unwrap_or_default()
             } else {
-                field(v, "description")
+                device_name(v, props)
             };
             let levels: Vec<_> = v["volume"]
                 .as_object()
@@ -342,6 +369,19 @@ impl Provider for Pactl {
             query(&["move-sink-input", &stream.id, id])?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod null_name_tests {
+    use super::*;
+    #[test]
+    fn localized_descriptions_fall_back_to_ascii_names() {
+        let text = r#"[{"index":67,"name":"alsa_output.platform-sound.HiFi__HDMI2__sink","description":"(null)","properties":{"node.nick":"HDMI playback"},"volume":{}},
+            {"index":68,"name":"alsa_output.platform-sound.HiFi__Speaker__sink","description":"(null)","properties":{},"volume":{}},
+            {"index":69,"name":"alsa_output.x.HiFi__HDMI2__sink","description":"(null)","properties":{},"volume":{}}]"#;
+        let names: Vec<_> = parse_devices(text, false, false).unwrap().into_iter().map(|e| e.name).collect();
+        assert_eq!(names, ["HDMI", "Speaker", "HDMI 2"]);
     }
 }
 
