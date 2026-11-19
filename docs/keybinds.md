@@ -421,17 +421,21 @@ it). The clock dot marks unread history. These controls belong to the optional
 The configured Mod key acts as Win. Its unaccompanied tap opens Start in
 Classic. Unlisted chords retain their normal GAVNO action.
 
-Classic leaves code mode and makes every workspace float. Tiles, including
-those forced by code mode, and windows snapped to halves or quarters become
-maximized within the work area above the taskbar and outside panels; focus
-and stacking order stay intact. Returning restores each workspace's mode and
-tiling tree, including split axes and ratios, and puts snapped windows back
-into their exact snaps. Code mode comes back on if it was on before Classic and
-stays off otherwise. Closed windows drop out; moved windows and windows opened
-in Classic join their current workspace as new tiles. Fullscreen windows stay
-fullscreen. Existing floating and minimized windows retain their placement and
-state across the switch; maximized windows are refitted to the work area of the
-shell they enter.
+Classic leaves code mode and makes every workspace float. Former tiles,
+including those forced by code mode, keep their tiling arrangement as floating
+windows: the same tree, order and ratios, laid out over the work area above the
+taskbar with the configured gap. With server-side decorations the title bar is
+part of each tile's rect. Three tiled terminals stay three terminals side by
+side. Windows snapped to halves or quarters stay snapped, refitted to the
+Classic work area. Focus and stacking order stay intact. Returning restores
+each workspace's mode and tiling tree, including split axes and ratios, and puts
+snapped windows back into their exact snaps. Tiles that were moved or resized in
+Classic rejoin their tiles. Code mode comes back on if it was on before Classic
+and stays off otherwise. Closed windows drop out; moved windows and windows
+opened in Classic join their current workspace as new tiles. Fullscreen windows
+stay fullscreen. Existing floating and minimized windows retain their placement
+and state across the switch; maximized windows are refitted to the work area of
+the shell they enter.
 
 Normal new windows open maximized by default. Parented dialogs and fixed-size
 windows keep client sizing. Classic remembers the last maximized state or
