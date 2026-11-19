@@ -45,6 +45,9 @@ impl XdgShellHandler for Gavno {
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         self.unmapped
             .retain(|w| w.toplevel().is_some_and(|t| t.wl_surface() != surface.wl_surface()));
+        if self.overlay.dropdown.window().and_then(|w| w.toplevel()).is_some_and(|t| t.wl_surface() == surface.wl_surface()) {
+            self.dropdown_closed();
+        }
         if let Some(window) = self.window_for_surface(surface.wl_surface()) {
             self.unmap_window(&window);
         }
@@ -293,11 +296,14 @@ pub fn handle_commit(gv: &mut Gavno, surface: &WlSurface) {
                 .initial_configure_sent
         });
 
-        if !initial_configure_sent && !gv.delay_classic_configure(&window) {
+        if !initial_configure_sent && gv.is_dropdown_window(&window) {
+            gv.prepare_dropdown_configure(&window);
+            window.toplevel().unwrap().send_configure();
+        } else if !initial_configure_sent && !gv.delay_classic_configure(&window) {
             prepare_initial_configure(gv, &window);
             window.toplevel().unwrap().send_configure();
         }
-        gv.finish_natural_float(&window, surface);
+        if !gv.is_dropdown_window(&window) { gv.finish_natural_float(&window, surface); }
     }
 
     // Handle popup commits.

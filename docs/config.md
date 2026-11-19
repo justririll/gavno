@@ -65,6 +65,10 @@ default": see `terminal` and `launcher` below.
 | `[keyboard] options` | string | `"grp:alt_shift_toggle"` | `GAVNO_XKB_OPTIONS` |
 | `[keyboard] code_mode` | boolean | `false` | none |
 | `[keyboard] bar_hints` | boolean | `true` | none |
+| `[dropdown] command` | string | `"foot --app-id gavno-dropdown"` | none |
+| `[dropdown] height` | float, 0.2-0.9 | `0.45` | none |
+| `[dropdown] width` | float, 0.3-1.0 | `1.0` | none |
+| `[dropdown] hide_on_focus_loss` | boolean | `true` | none |
 
 `mod_key` is the modifier for every bind listed in [keybinds.md](keybinds.md).
 Nested mode defaults to Alt because the host compositor keeps Super for itself.
@@ -308,6 +312,19 @@ Nothing runs while the mode is off. See [finger-pointer.md](finger-pointer.md).
 `history_size` text and image copies, in memory only, and enables Mod+V. Setting
 it to `false` clears the history and frees the chord. See
 [screenshots.md](screenshots.md).
+
+## Dropdown terminal
+
+Mod+` (the physical key left of 1) toggles a quake-style terminal; see
+[keybinds.md](keybinds.md#dropdown-terminal). `[dropdown] command` is run through `sh -c`
+on the first press and must give its window the app id `gavno-dropdown`, which is how
+GAVNO recognises it (for foot: `--app-id gavno-dropdown`; for other terminals use their
+app-id or class option). `height` and `width` are fractions of the work area (the output
+minus the bar and dock), clamped to 0.2-0.9 and 0.3-1.0; a narrower terminal is centred.
+`hide_on_focus_loss = false` keeps the terminal on screen when another window gets focus.
+All four keys apply live; a shown terminal is resized at once, a hidden one on the next
+show. The window slides in 160 ms and costs no frames, timers or rendering while it is
+hidden or at rest.
 
 ## Optional modules
 

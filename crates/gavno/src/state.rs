@@ -305,6 +305,7 @@ impl Gavno {
         self.refresh_constraints(focus.as_ref());
         self.refresh_lock();
         self.refresh_internal_lock();
+        self.refresh_dropdown();
         self.settle_classic();
         if self.sync_classic_decorations() { self.refit_fixed_windows(); }
         self.refresh_shell();
@@ -347,7 +348,7 @@ impl Gavno {
         // Animated named cursors (wait, progress) need frames while shown.
         let cursor = !self.pointer_hidden && matches!(&self.cursor_status, smithay::input::pointer::CursorImageStatus::Named(icon) if self.cursor.animated(icon.name()));
         theme || classic || cursor || animations || overlay || self.workspaces.active() || overview || dock || bar || launcher || notifications || self.media.osd.is_animating()
-            || self.overlay.screenshot.is_animating() || self.overlay.clipboard.picker.is_animating()
+            || self.overlay.screenshot.is_animating() || self.overlay.clipboard.picker.is_animating() || self.overlay.dropdown.is_animating()
     }
 
     pub fn pointer_location(&self) -> Point<f64, Logical> {
@@ -362,6 +363,7 @@ impl Gavno {
         if self.features.read(Feature::Classic, false, || self.classic.desktop.drag.is_some()) { return None; }
         if self.classic_decor_hit(pos).is_some() { return None; }
         if self.greeter.is_none() && self.shell_contains(pos) { return None; }
+        if let Some(hit) = self.dropdown_surface_under(pos) { return Some(hit); }
         use smithay::wayland::shell::wlr_layer::Layer;
         if let Some(hit) = self.layer_hit(pos, &[Layer::Overlay, Layer::Top]) {
             return Some((hit.surface, hit.surface_loc));
@@ -576,6 +578,7 @@ impl Gavno {
     pub(crate) fn output_settings_changed(&mut self, output: &Output) {
         self.space.refresh();
         self.arrange_layers_all();
+        self.dropdown_config_changed();
         let area = self.work_area(output);
         let mut windows: Vec<_> = self.space.elements().filter(|w| self.output_for_window(w).as_ref() == Some(output)).cloned().collect();
         for owned in self.workspaces.all() {

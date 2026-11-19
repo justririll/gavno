@@ -22,6 +22,8 @@ use crate::{
     Gavno,
 };
 
+/// Linux `KEY_GRAVE` (41) as an XKB keycode.
+const KEY_GRAVE_XKB: u32 = 41 + 8;
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
 
@@ -60,6 +62,8 @@ pub enum Action {
     Screenshot(crate::screenshot::ScreenshotMode),
     /// Clipboard history picker (Mod+V).
     ClipboardHistory,
+    /// Quake-style dropdown terminal (Mod+` by physical key).
+    ToggleDropdown,
     /// Keyboard-only shell mode; applies to the GAVNO shell only.
     ToggleCodeMode,
     WindowHints,
@@ -368,6 +372,12 @@ impl Gavno {
                     return FilterResult::Forward;
                 }
 
+                // The dropdown terminal is bound by the physical key (evdev KEY_GRAVE
+                // plus the XKB offset of 8), so it is "ё" on the Russian layout too.
+                if raw_code == KEY_GRAVE_XKB && gv.config.mod_key.is_held(mods) && !mods.shift && !mods.ctrl {
+                    gv.suppressed_keys.push(raw_code);
+                    return FilterResult::Intercept(Some(Action::ToggleDropdown));
+                }
                 if gv.resize_mode_key_with_ctrl(handle.raw_latin_sym_or_raw_current_sym().map(|s| s.raw()).unwrap_or(sym), mods.shift, mods.ctrl) {
                     if gv.code_mode { gv.hide_pointer(); }
                     gv.suppressed_keys.push(raw_code);
@@ -575,6 +585,7 @@ impl Gavno {
             keysyms::KEY_F3 if mods.shift && !mods.ctrl => Some(Action::SdrWhite(10)),
             keysyms::KEY_Return | keysyms::KEY_KP_Enter => Some(Action::Spawn(self.config.terminal.clone())),
             keysyms::KEY_v | keysyms::KEY_V if !mods.shift && !mods.ctrl => Some(Action::ClipboardHistory),
+            keysyms::KEY_grave if !mods.shift && !mods.ctrl => Some(Action::ToggleDropdown),
             keysyms::KEY_q if !mods.shift => Some(Action::CloseWindow),
             keysyms::KEY_e | keysyms::KEY_E if !mods.shift && !mods.ctrl => Some(Action::Spawn(self.config.file_manager.clone())),
             keysyms::KEY_m | keysyms::KEY_M if !mods.shift => Some(Action::Minimize),
@@ -611,6 +622,7 @@ impl Gavno {
             Action::ToggleLauncher => self.toggle_launcher(),
             Action::Screenshot(mode) => self.run_screenshot(mode),
             Action::ClipboardHistory => self.toggle_clipboard_picker(),
+            Action::ToggleDropdown => self.toggle_dropdown(),
             Action::ToggleTiling => { if let Some(o) = self.active_output() { self.toggle_workspace_tiling(&o); } }
             Action::ToggleFloating => { if let Some(w) = self.focused_window() { self.toggle_floating(&w); } }
             Action::RotateSplit => self.rotate_tile(),
@@ -903,7 +915,10 @@ impl Gavno {
             let pos = pointer.current_location();
             // A launcher holding exclusive keyboard focus keeps it on clicks elsewhere.
             let keep_focus = self.exclusive_layer_focused();
-            if let Some(hit) = self.layer_hit(pos, &[Layer::Overlay, Layer::Top]) {
+            if self.dropdown_surface_under(pos).is_some() {
+                // A click into the dropdown gives it keyboard focus.
+                if !self.dropdown_focused() && !keep_focus { self.focus_dropdown(); }
+            } else if let Some(hit) = self.layer_hit(pos, &[Layer::Overlay, Layer::Top]) {
                 self.focus_layer(&hit.layer);
             } else {
                 let hit = self.window_input_at(pos).map(|(w, l, _, _)| (w, l));

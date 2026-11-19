@@ -384,6 +384,7 @@ pub struct WindowDecor {
     shaders: Option<Shaders>,
     failed: bool,
     caches: Vec<WindowCache>,
+    dropdown_caches: Vec<(Output, Cache)>,
     stack: Vec<Window>,
     focused: Option<Window>,
     pub classic: bool,
@@ -599,6 +600,104 @@ impl WindowDecor {
         draw_warm_window_elements(renderer, fb, size, &elements)?;
         Ok(true)
     }
+    fn ensure_programs(&mut self, renderer: &mut GlesRenderer) {
+        if self.programs.is_none() && !self.failed {
+            match Programs::compile(renderer)
+                .and_then(|p| Shaders::compile(renderer).map(|s| (p, s)))
+            {
+                Ok((p, s)) => {
+                    if !self.warm_on_output {
+                        if let Err(error) = warm_window_programs(renderer, &p, &s) {
+                            tracing::debug!(?error, "window shader warmup unavailable");
+                        }
+                    }
+                    self.programs = Some(p);
+                    self.shaders = Some(s);
+                }
+                Err(err) => {
+                    tracing::warn!(?err, "window decoration shaders unavailable");
+                    self.failed = true;
+                }
+            }
+        }
+    }
+    /// The dropdown terminal: `rect` (output-local logical px) is where its
+    /// window geometry is drawn. Only the bottom corners are rounded, the top
+    /// edge is flush with the work area, and one soft shadow falls below it.
+    pub(crate) fn dropdown_elements(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        output: &Output,
+        window: &Window,
+        rect: Rectangle<i32, smithay::utils::Logical>,
+    ) -> Vec<GavnoRenderElement> {
+        self.ensure_programs(renderer);
+        let scale = Scale::from(output.current_scale().fractional_scale());
+        let Some(toplevel) = window.toplevel() else { return Vec::new() };
+        let origin = (rect.loc - window.geometry().loc).to_f64().to_physical(scale).to_i32_round();
+        let (Some(programs), Some(shaders)) = (&self.programs, &self.shaders) else {
+            return window
+                .render_elements::<WaylandSurfaceRenderElement<GlesRenderer>>(renderer, origin, scale, 1.0)
+                .into_iter()
+                .map(GavnoRenderElement::Surface)
+                .collect();
+        };
+        let index = match self.dropdown_caches.iter().position(|(o, _)| o == output) {
+            Some(i) => i,
+            None => {
+                self.dropdown_caches.push((output.clone(), Cache::default()));
+                self.dropdown_caches.len() - 1
+            }
+        };
+        let cache = &mut self.dropdown_caches[index].1;
+        let target = rect.to_f64().to_physical(scale).to_i32_round::<i32>();
+        // Rounding is centred on a rectangle that reaches one radius above the
+        // top edge, so only the bottom corners show it.
+        let radius = CORNER_RADIUS * scale.x as f32;
+        let lift = radius.ceil() as i32 + 1;
+        let clip = Rectangle::new((target.loc.x, target.loc.y - lift).into(), (target.size.w, target.size.h + lift).into());
+        let mut content = Vec::new();
+        let mut popups = Vec::new();
+        for (popup, offset) in PopupManager::popups_for_surface(toplevel.wl_surface()) {
+            let offset = (window.geometry().loc + offset - popup.geometry().loc).to_physical_precise_round(scale);
+            for e in render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<_>>(
+                renderer, popup.wl_surface(), origin + offset, scale, 1.0, Kind::Unspecified,
+            ) {
+                let geometry = e.geometry(scale);
+                popups.push(wrap(cache, programs, Content::Surface(Arc::new(e)),
+                    Appearance { geometry, clip: target, radius: 0.0, opacity: 1.0 }, scale));
+            }
+        }
+        let root_id = Id::from(toplevel.wl_surface());
+        for e in render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<_>>(
+            renderer, toplevel.wl_surface(), origin, scale, 1.0, Kind::Unspecified,
+        ) {
+            let geometry = e.geometry(scale);
+            let round = e.id() == &root_id || target.contains_rect(geometry);
+            content.push(wrap(cache, programs, Content::Surface(Arc::new(e)),
+                Appearance { geometry, clip, radius: if round { radius } else { 0.0 }, opacity: 1.0 }, scale));
+        }
+        cache.trackers.retain(|id, _| content.iter().chain(&popups).any(|e| e.id() == id));
+        let mut result: Vec<GavnoRenderElement> = popups.into_iter().chain(content).map(GavnoRenderElement::Window).collect();
+        // Shadow rectangle reaches above the work area so its top corners stay hidden.
+        let above = 2 * CORNER_RADIUS as i32;
+        let shadow_rect: Rectangle<i32, smithay::utils::Logical> = Rectangle::new((rect.loc.x, rect.loc.y - above).into(), (rect.size.w, rect.size.h + above).into());
+        for (sb, (blur, offset, spread, alpha)) in cache.shadows.iter_mut().zip([(80, 34, 18, 0.50), (26, 10, 8, 0.36)]) {
+            let inset = spread.min((shadow_rect.size.w.min(shadow_rect.size.h) - 1).max(0) / 2);
+            let smaller: Rectangle<i32, smithay::utils::Logical> = Rectangle::new(
+                (shadow_rect.loc.x + inset, shadow_rect.loc.y).into(),
+                (shadow_rect.size.w - 2 * inset, shadow_rect.size.h - inset).into(),
+            );
+            result.push(GavnoRenderElement::Shader(shader::shadow(
+                sb, shaders, smaller, CORNER_RADIUS, blur, offset, [0.0, 0.0, 0.0, alpha], 1.0, scale.x,
+            )));
+        }
+        result
+    }
+    /// The dropdown is not drawn on `output`: drop its retained elements.
+    pub(crate) fn forget_dropdown(&mut self, output: &Output) {
+        if !self.dropdown_caches.is_empty() { self.dropdown_caches.retain(|(o, _)| o != output); }
+    }
     pub fn focus(&mut self, window: Option<&Window>) {
         self.focused = window.cloned();
     }
@@ -619,25 +718,7 @@ impl WindowDecor {
             (features.read(crate::module::Feature::Animations, None, || animations.motion(&c.window)).is_some() || space.element_location(&c.window).is_some())
                 && space.outputs().any(|o| o == &c.output)
         });
-        if self.programs.is_none() && !self.failed {
-            match Programs::compile(renderer)
-                .and_then(|p| Shaders::compile(renderer).map(|s| (p, s)))
-            {
-                Ok((p, s)) => {
-                    if !self.warm_on_output {
-                        if let Err(error) = warm_window_programs(renderer, &p, &s) {
-                            tracing::debug!(?error, "window shader warmup unavailable");
-                        }
-                    }
-                    self.programs = Some(p);
-                    self.shaders = Some(s);
-                }
-                Err(err) => {
-                    tracing::warn!(?err, "window decoration shaders unavailable");
-                    self.failed = true;
-                }
-            }
-        }
+        self.ensure_programs(renderer);
         let (Some(programs), Some(shaders)) = (&self.programs, &self.shaders) else {
             return crate::render::plain_elements(renderer, space, output, scene, stall);
         };

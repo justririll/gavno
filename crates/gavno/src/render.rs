@@ -401,6 +401,8 @@ fn output_elements_inner(
     features.call(Feature::Classic, (), || classic.start.append(renderer, output, output_geo.size, time, config.classic.align, accent, &config.dock.icon_theme, &mut elements));
     features.call(Feature::Classic, (), || classic.taskbar.append(renderer, output, output_geo.size, p, config.classic.align, focused.as_ref(), topbar.status(), accent, &config.dock.icon_theme, shell_visible, &mut elements));
     elements.extend(features.read(Feature::Bar, Vec::new(), || topbar.elements(renderer, output, output_geo.size.w, workspaces.get(output), time, shell_visible || (p > 0.0 && topbar.menu.as_ref() == Some(output)), features)));
+    // Above the dock and every window, beneath the bar and its popovers.
+    elements.extend(overlay.dropdown.elements(renderer, window_decor, output, output_geo, work_area, &config.dropdown, time));
     elements.extend(features.call(Feature::Dock, Vec::new(), || dock.elements(renderer, output, output_geo.size, pointer_pos - output_geo.loc.to_f64(), time, shell_visible)));
     // Workspace ownership and transitions are core; overview only adds its zoom.
     let mut scene = if features.on(Feature::Overview) {
@@ -562,6 +564,22 @@ pub fn post_render(
                     select_dmabuf_feedback(surface, states, &feedback.render, &feedback.scanout)
                 });
             }
+        }
+    }
+
+    if let Some(window) = gv.overlay.dropdown.rendered(output) {
+        window.with_surfaces(|surface, surface_states| {
+            update_surface_primary_scanout_output(surface, output, surface_states, states, default_primary_scanout_output_compare);
+            if let Some(primary) = surface_primary_scanout_output(surface, surface_states) {
+                let scale = primary.current_scale().fractional_scale();
+                with_fractional_scale(surface_states, |fs| fs.set_preferred_scale(scale));
+            }
+        });
+        window.send_frame(output, time, throttle, surface_primary_scanout_output);
+        if let Some(feedback) = feedback {
+            window.send_dmabuf_feedback(output, surface_primary_scanout_output, |surface, _| {
+                select_dmabuf_feedback(surface, states, &feedback.render, &feedback.scanout)
+            });
         }
     }
 
