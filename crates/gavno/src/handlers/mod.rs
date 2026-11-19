@@ -66,7 +66,17 @@ impl SeatHandler for Gavno {
             self.record_activation_serial(focused.cloned(), serial);
         }
         self.update_shortcut_inhibitors(focused);
-        self.refresh_constraints(focused);
+        // Keyboard focus can change while smithay holds the pointer lock (a
+        // popup pointer grab dismissing its popup inside motion). Touching the
+        // pointer here would deadlock, so recheck constraints once idle.
+        if !self.constraints_refresh_queued {
+            self.constraints_refresh_queued = true;
+            self.loop_handle.insert_idle(|gv| {
+                gv.constraints_refresh_queued = false;
+                let focus = gv.seat.get_keyboard().and_then(|k| k.current_focus());
+                gv.refresh_constraints(focus.as_ref());
+            });
+        }
         let dh = &self.display_handle;
         let client = focused.and_then(|s| dh.get_client(s.id()).ok());
         set_data_device_focus(dh, seat, client.clone());

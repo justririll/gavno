@@ -39,6 +39,8 @@ pub struct Gavno {
     pub socket_name: OsString,
     pub display_handle: DisplayHandle,
     pub loop_handle: LoopHandle<'static, Gavno>,
+    /// One idle pointer-constraint recheck is pending after a focus change.
+    pub constraints_refresh_queued: bool,
     pub loop_signal: LoopSignal,
     pub config: Config,
     pub ipc: crate::ipc::IpcState,
@@ -182,6 +184,7 @@ impl Gavno {
             socket_name,
             display_handle: dh.clone(),
             loop_handle: event_loop.handle(),
+            constraints_refresh_queued: false,
             loop_signal: event_loop.get_signal(),
             classic: crate::classic::Classic::new(config.modules.classic && config.classic.start_in_classic),
             config,
