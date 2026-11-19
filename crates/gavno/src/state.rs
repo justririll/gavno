@@ -114,6 +114,8 @@ pub struct Gavno {
     pub notifications: crate::notify::Shared,
     pub now_playing: crate::media::Shared,
     pub(crate) media_generation: u64,
+    /// The webcam finger pointer; `None` while the mode is off.
+    pub finger: Option<crate::finger::Finger>,
 }
 
 impl Gavno {
@@ -199,6 +201,7 @@ impl Gavno {
             notifications,
             now_playing,
             media_generation: 0,
+            finger: None,
             media: crate::topbar::control::MediaState { brightness, ..Default::default() },
             gestures: Default::default(),
             window_gestures: Default::default(),

@@ -36,6 +36,15 @@ set -eu
 cd "$DIR"
 install -D -m 755 target/release/gavno /usr/local/bin/gavno
 install -D -m 755 dist/gavno-session /usr/local/bin/gavno-session
+# Finger pointer helper and its hand models (crates/gavno-cam/MODELS.md). The
+# weights are repo-ignored: put them in dist/models/ on the PC; the sync copies them.
+install -D -m 755 target/release/gavno-cam /usr/local/bin/gavno-cam
+if [ -f dist/models/palm_detection_mediapipe_2023feb.onnx ] && [ -f dist/models/handpose_estimation_mediapipe_2023feb.onnx ]; then
+    install -d -m 755 /usr/local/share/gavno/models
+    install -m 644 dist/models/*.onnx /usr/local/share/gavno/models/
+else
+    echo "dist/models/*.onnx missing: the finger pointer (Mod+Shift+M) will not start; see crates/gavno-cam/MODELS.md" >&2
+fi
 install -D -m 644 dist/wayland-sessions/gavno.desktop /usr/share/wayland-sessions/gavno.desktop
 # xdg-desktop-portal reads these when it starts, i.e. at the next login.
 install -D -m 644 dist/xdg-desktop-portal/gavno-portals.conf /usr/share/xdg-desktop-portal/gavno-portals.conf

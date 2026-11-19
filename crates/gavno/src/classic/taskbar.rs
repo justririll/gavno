@@ -81,7 +81,7 @@ struct View {
     hits: Vec<(Rect, Hit)>,
     visible: bool,
     cached: Vec<CachedElement>,
-    key: Option<(u64, u64, u64, (i32, i32), usize, usize, u8, u64, [u32; 4])>,
+    key: Option<(u64, u64, u64, (i32, i32), usize, usize, u8, u64, [u32; 4], Option<bool>)>,
     status: crate::topbar::status::Snapshot,
 }
 #[derive(Default)]
@@ -98,6 +98,8 @@ pub struct Taskbar {
     offset: usize,
     revision: u64,
     model_key: Option<u64>,
+    /// Finger pointer camera indicator: `Some(hand_present)` while it runs.
+    pub camera: Option<bool>,
 }
 impl Taskbar {
     /// Drop per-output render caches and icons after leaving Classic.
@@ -297,6 +299,7 @@ impl Taskbar {
             align as u8,
             minute,
             accent.map(f32::to_bits),
+            self.camera,
         );
         let v = &mut self.views[index];
         if v.key == Some(key) && v.status == *status {
@@ -387,24 +390,26 @@ impl Taskbar {
             .battery
             .as_ref()
             .map(crate::topbar::status::battery_icons);
-        for (i, name) in [
-            status.network.icon(),
-            crate::topbar::status::volume_icon(status.volume),
-            battery
-                .as_ref()
-                .map(|n| n[0].as_str())
-                .unwrap_or("battery-missing-symbolic"),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            c.icon(
-                renderer,
-                &mut self.icons,
-                &[name],
-                theme,
-                rect(tray.loc.x + 10 + i as i32 * 32, tray.loc.y + 12, 16, 16),
-            );
+        // The camera indicator takes the first tray slot, the others tighten up.
+        let camera = self.camera;
+        let (pitch, first) = if camera.is_some() { (24, 8) } else { (32, 10) };
+        let mut slots: Vec<(&str, Option<[u8; 3]>)> = Vec::new();
+        if let Some(hand) = camera {
+            let rgb = [accent[0], accent[1], accent[2]].map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8);
+            slots.push(("camera-web-symbolic", Some(if hand { rgb } else { [150, 150, 160] })));
+        }
+        slots.push((status.network.icon(), None));
+        slots.push((crate::topbar::status::volume_icon(status.volume), None));
+        slots.push((
+            battery.as_ref().map(|n| n[0].as_str()).unwrap_or("battery-missing-symbolic"),
+            None,
+        ));
+        for (i, (name, color)) in slots.into_iter().enumerate() {
+            let r = rect(tray.loc.x + first + i as i32 * pitch, tray.loc.y + 12, 16, 16);
+            match color {
+                Some(color) => { c.colored_icon(renderer, &mut self.icons, &[name], theme, r, Some(color)); }
+                None => { c.icon(renderer, &mut self.icons, &[name], theme, r); }
+            }
         }
         let clock = button(c, l.clock, Hit::Clock);
         let time = crate::ui::theme::LocalTime::now();

@@ -402,6 +402,8 @@ struct BarView {
 }
 pub struct TopBar {
     pub controls: crate::panel_controls::State,
+    /// Finger pointer camera indicator: `Some(hand_present)` while it runs.
+    pub camera: Option<bool>,
     music_panel: bool,
     pub shell_progress: f64,
     pub shell_height: i32,
@@ -442,6 +444,7 @@ impl Default for TopBar {
         let today = theme::LocalTime::now();
         Self {
             controls: Default::default(),
+            camera: None,
             shell_progress: 0.0,
             shell_height: 0,
             notifications: Default::default(),
@@ -570,7 +573,12 @@ impl TopBar {
         c.alpha = (1.0 - self.shell_progress) as f32;
         v.hits.clear();
         let count = owner.map(|o| o.list.items.len()).unwrap_or(1);
-        let (l, media) = media_layout(&self.now_playing, width, count as i32 * 12 + 31, self.multiple_layouts, self.music_panel, features);
+        let (mut l, media) = media_layout(&self.now_playing, width, count as i32 * 12 + 31, self.multiple_layouts, self.music_panel, features);
+        // The camera indicator wins over the media capsule on a narrow bar.
+        let camera = self.camera.map(|hand| (hand, rect(l.status.loc.x - 32, 4, 24, 24)));
+        if let (Some((_, area)), Some(m)) = (camera, l.media) {
+            if m.loc.x + m.size.w > area.loc.x - 4 { l.media = None; }
+        }
         if self.shell_progress < 0.999 {
         c.rect(rect(0, 0, width, PANEL), 0.0, GLASS, 0.0, LINE);
         c.rect(
@@ -695,6 +703,12 @@ impl TopBar {
             c.rect(rect(l.clock.loc.x + l.clock.size.w - 12, 13, 5, 5), 2.5, self.accent, 0.0, LINE);
         }
         v.hits.push((l.clock.to_f64(), BarAction::Calendar));
+        if let Some((hand, area)) = camera {
+            capsule(c, area, false);
+            // Dim while no hand is in view, accent colour once it tracks.
+            let color = if hand { Some(accent_rgb(self.accent)) } else { Some([150, 150, 160]) };
+            c.colored_icon(renderer, &mut self.icons, &["camera-web-symbolic"], &self.icon_theme, rect(area.loc.x + 4, area.loc.y + 4, 16, 16), color);
+        }
         capsule(
             c,
             l.status,
@@ -810,6 +824,9 @@ impl TopBar {
         }
         c.finish()
     }
+}
+fn accent_rgb(accent: [f32; 4]) -> [u8; 3] {
+    [0, 1, 2].map(|i| (accent[i].clamp(0.0, 1.0) * 255.0).round() as u8)
 }
 fn media_layout(
     media: &crate::media::Shared, width: i32, workspace_width: i32, layouts: bool, music_panel: bool,
