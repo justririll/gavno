@@ -65,8 +65,6 @@ pub(crate) struct Windows {
     dirty: bool,
     writer: Option<Writer>,
     waiting: Vec<Window>,
-    /// Windows that were snapped before Classic maximized them.
-    snaps: Vec<(Window, crate::snap::Zone)>,
     /// Code mode was on when Classic was entered; returning turns it back on.
     code_resume: bool,
     code_saved: Vec<(Output, u64, bool)>,
@@ -82,7 +80,6 @@ impl Windows {
             dirty: false,
             writer: None,
             waiting: Vec::new(),
-            snaps: Vec::new(),
             code_resume: false,
             code_saved: Vec::new(),
         }
@@ -357,21 +354,6 @@ impl Gavno {
                 .filter(|w| self.tiled(&w.window))
                 .map(|w| w.window.clone())
                 .collect();
-            let snaps: Vec<_> = self
-                .workspaces
-                .all()
-                .filter_map(|w| {
-                    let s = mode_state(&w.window);
-                    match s.mode {
-                        WindowMode::Snapped(zone)
-                            if !s.minimized && normal_window(&w.window) =>
-                        {
-                            Some((w.window.clone(), zone))
-                        }
-                        _ => None,
-                    }
-                })
-                .collect();
             self.classic.windows.active = true;
             self.enforce_classic_floating();
             if self.code_mode {
@@ -382,16 +364,10 @@ impl Gavno {
                 self.show_pointer();
                 self.sync_bar_hints();
             }
-            for (w, _) in &snaps {
-                with_mode_state(w, |s| s.mode = WindowMode::Maximized);
-            }
-            self.classic.windows.snaps = snaps;
             for w in &tiles {
-                with_mode_state(w, |s| {
-                    s.mode = WindowMode::Maximized;
-                    s.restore = s.tile_restore;
-                    s.natural_float = None;
-                });
+                // Former tiles float in their tiling arrangement; the refit
+                // gives each one its slot of the saved layout.
+                with_mode_state(w, |s| s.natural_float = None);
             }
             self.classic.windows.tiles = tiles;
         } else {
@@ -415,14 +391,6 @@ impl Gavno {
                 self.dock.code_mode = true;
                 self.code_mode_saved = std::mem::take(&mut self.classic.windows.code_saved);
                 self.sync_bar_hints();
-            }
-            for (w, zone) in std::mem::take(&mut self.classic.windows.snaps) {
-                if w.alive()
-                    && self.workspaces.membership(&w).is_some()
-                    && mode_state(&w).mode == WindowMode::Maximized
-                {
-                    with_mode_state(&w, |s| s.mode = WindowMode::Snapped(zone));
-                }
             }
             let mut leaving = std::mem::take(&mut self.classic.windows.tiles);
             // Windows that got their Classic maximize in the initial configure
@@ -478,9 +446,42 @@ impl Gavno {
     pub(crate) fn refit_classic_transition(&mut self) {
         let order: Vec<_> = self.space.elements().cloned().collect();
         let windows: Vec<_> = self.workspaces.all().map(|v| v.window.clone()).collect();
+        // Former tiles keep their tiling arrangement over this shell's work
+        // area. Only the windows converted on entry get a slot; the saved
+        // layouts hold the exact tree.
+        let mut slots: Vec<(Window, Rect)> = Vec::new();
+        if self.classic_windows_active() {
+            for layout in &self.classic.windows.layouts {
+                let area = self.work_area(&layout.output);
+                slots.extend(
+                    layout
+                        .tree
+                        .layout(area, self.config.gap)
+                        .0
+                        .into_iter()
+                        .filter(|(w, _)| self.classic.windows.tiles.contains(w)),
+                );
+            }
+        }
         for w in windows {
             let s = mode_state(&w);
-            if s.mode == WindowMode::Floating || s.minimized {
+            if s.minimized {
+                continue;
+            }
+            if let Some((_, slot)) = slots.iter().find(|(t, _)| t == &w).filter(|_| s.mode == WindowMode::Floating) {
+                let rect = self.classic_client_rect(&w, *slot);
+                configure_mode(&w, WindowMode::Floating, Some(rect.size));
+                self.save_workspace_location(&w, rect.loc);
+                if self.space.element_location(&w).is_some() {
+                    self.window_animations.cancel(&w);
+                    self.space.map_element(w.clone(), rect.loc, false);
+                }
+                if let Some(t) = w.toplevel() {
+                    t.send_pending_configure();
+                }
+                continue;
+            }
+            if s.mode == WindowMode::Floating {
                 continue;
             }
             let Some(output) = self.workspaces.membership(&w).map(|(o, _)| o) else {
@@ -755,16 +756,7 @@ mod tests {
             .outputs
             .iter()
             .all(|o| o.list.items.iter().all(|w| !w.tiling)));
-        for w in [&a, &b, &c] {
-            assert_eq!(mode_state(w).mode, WindowMode::Maximized);
-            assert_eq!(geometry(w), Some(h.gv.work_area(&o).size));
-            assert!(w
-                .toplevel()
-                .unwrap()
-                .with_pending_state(
-                    |s| s.states.contains(State::Maximized) && !s.states.contains(State::TiledLeft)
-                ));
-        }
+        assert_tile_slots(&h, &o, &before, &[a.clone(), b.clone(), c.clone()]);
         assert_eq!(h.gv.space.elements().cloned().collect::<Vec<_>>(), order);
         assert_eq!(h.gv.focused_window(), Some(b.clone()));
         // Unrelated reflows in Classic must not consume floating restores.
@@ -792,17 +784,23 @@ mod tests {
         }
     }
 
-    fn assert_maximized(h: &Harness, o: &Output, w: &Window) {
-        assert_eq!(mode_state(w).mode, WindowMode::Maximized);
-        let slot = h.gv.classic_client_rect(w, h.gv.work_area(o));
-        assert_eq!(geometry(w), Some(slot.size));
-        assert_eq!(h.gv.space.element_location(w), Some(slot.loc));
-        assert!(w.toplevel().unwrap().with_pending_state(|s| {
-            s.states.contains(State::Maximized) && !s.states.contains(State::TiledLeft)
-        }));
+    /// Every former tile floats in the tiling arrangement over the Classic work area.
+    fn assert_tile_slots(h: &Harness, o: &Output, before: &Tree<Window>, tiles: &[Window]) {
+        let layout = before.layout(h.gv.work_area(o), h.gv.config.gap).0;
+        assert_eq!(layout.len(), tiles.len());
+        for (w, rect) in layout {
+            assert!(tiles.contains(&w));
+            let slot = h.gv.classic_client_rect(&w, rect);
+            assert_eq!(mode_state(&w).mode, WindowMode::Floating);
+            assert_eq!(geometry(&w), Some(slot.size));
+            assert_eq!(h.gv.space.element_location(&w), Some(slot.loc));
+            assert!(w.toplevel().unwrap().with_pending_state(|s| {
+                !s.states.contains(State::Maximized) && !s.states.contains(State::TiledLeft)
+            }));
+        }
     }
 
-    fn same_app_tiles_all_maximize_and_return_to_tiles(count: usize, remembered: bool) {
+    fn same_app_tiles_keep_arrangement_and_return_to_tiles(count: usize, remembered: bool) {
         let mut h = Harness::new();
         let o = output(&mut h, "first", 0);
         h.gv.workspaces.ensure(&o).list.items[0].tiling = true;
@@ -851,9 +849,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert_eq!(h.gv.classic.settled, ShellMode::Classic);
-        for w in &tiles {
-            assert_maximized(&h, &o, w);
-        }
+        assert_tile_slots(&h, &o, &before, &tiles);
         // The client re-requests server-side mode; the handler answers client-side
         // and the next idle pass must refit it again.
         for w in &tiles {
@@ -869,9 +865,9 @@ mod tests {
             h.commit_size(w, size.w, size.h);
         }
         h.gv.on_loop_idle();
+        assert_tile_slots(&h, &o, &before, &tiles);
         for w in &tiles {
-            assert_maximized(&h, &o, w);
-            // The state the client actually acknowledged must be maximized too.
+            // The state the client actually acknowledged must be floating too.
             let acked = with_states(w.toplevel().unwrap().wl_surface(), |states| {
                 states
                     .data_map
@@ -882,7 +878,7 @@ mod tests {
                     .current_server_state()
                     .clone()
             });
-            assert!(acked.states.contains(State::Maximized));
+            assert!(!acked.states.contains(State::Maximized));
             assert_eq!(acked.size, geometry(w));
         }
         assert_eq!(h.gv.space.elements().cloned().collect::<Vec<_>>(), order);
@@ -934,7 +930,7 @@ mod tests {
         assert_eq!(geometry(&classic), Some(size(&h, gap)));
     }
 
-    fn code_mode_tiles_maximize_in_classic_and_return(count: usize, code_on: bool) {
+    fn code_mode_tiles_float_in_classic_and_return(count: usize, code_on: bool) {
         let mut h = Harness::new();
         let o = output(&mut h, "first", 0);
         // The workspace itself floats; code mode forces the tiling.
@@ -956,9 +952,7 @@ mod tests {
         h.gv.classic.progress.jump(1.0);
         h.gv.settle_classic();
         assert!(!h.gv.code_mode);
-        for w in &tiles {
-            assert_maximized(&h, &o, w);
-        }
+        assert_tile_slots(&h, &o, &before, &tiles);
         assert_eq!(h.gv.space.elements().cloned().collect::<Vec<_>>(), order);
         settle(&mut h, ShellMode::Gavno);
         assert_eq!(h.gv.code_mode, code_on);
@@ -974,15 +968,15 @@ mod tests {
     }
 
     #[test]
-    fn code_mode_tiles_all_maximize_in_classic_and_code_mode_resumes() {
+    fn code_mode_tiles_keep_their_arrangement_in_classic_and_code_mode_resumes() {
         for count in [2, 3] {
-            code_mode_tiles_maximize_in_classic_and_return(count, true);
-            code_mode_tiles_maximize_in_classic_and_return(count, false);
+            code_mode_tiles_float_in_classic_and_return(count, true);
+            code_mode_tiles_float_in_classic_and_return(count, false);
         }
     }
 
     #[test]
-    fn snapped_windows_maximize_in_classic_and_return_to_their_snaps() {
+    fn snapped_windows_stay_snapped_in_classic_and_return_to_their_snaps() {
         use crate::snap::Zone;
         let mut h = Harness::new();
         let o = output(&mut h, "first", 0);
@@ -997,8 +991,11 @@ mod tests {
             .collect();
         let rects: Vec<_> = windows.iter().map(geometry).collect();
         settle(&mut h, ShellMode::Classic);
-        for w in &windows {
-            assert_maximized(&h, &o, w);
+        for (w, zone) in windows.iter().zip(zones) {
+            let slot = h.gv.classic_client_rect(w, zone.rect(h.gv.work_area(&o), h.gv.config.gap));
+            assert_eq!(mode_state(w).mode, WindowMode::Snapped(zone));
+            assert_eq!(geometry(w), Some(slot.size));
+            assert_eq!(h.gv.space.element_location(w), Some(slot.loc));
         }
         settle(&mut h, ShellMode::Gavno);
         for ((w, zone), size) in windows.iter().zip(zones).zip(rects) {
@@ -1008,15 +1005,15 @@ mod tests {
     }
 
     #[test]
-    fn same_app_tiles_all_maximize_with_remembered_state() {
-        same_app_tiles_all_maximize_and_return_to_tiles(2, true);
-        same_app_tiles_all_maximize_and_return_to_tiles(3, true);
+    fn same_app_tiles_keep_arrangement_with_remembered_state() {
+        same_app_tiles_keep_arrangement_and_return_to_tiles(2, true);
+        same_app_tiles_keep_arrangement_and_return_to_tiles(3, true);
     }
 
     #[test]
-    fn same_app_tiles_all_maximize_without_remembered_state() {
-        same_app_tiles_all_maximize_and_return_to_tiles(2, false);
-        same_app_tiles_all_maximize_and_return_to_tiles(3, false);
+    fn same_app_tiles_keep_arrangement_without_remembered_state() {
+        same_app_tiles_keep_arrangement_and_return_to_tiles(2, false);
+        same_app_tiles_keep_arrangement_and_return_to_tiles(3, false);
     }
 
     #[test]
@@ -1051,7 +1048,7 @@ mod tests {
             .collect();
         let order: Vec<_> = h.gv.space.elements().cloned().collect();
         settle(&mut h, ShellMode::Classic);
-        assert_eq!(mode_state(&tile).mode, WindowMode::Maximized);
+        assert_eq!(mode_state(&tile).mode, WindowMode::Floating);
         for (w, state, location, size) in &preserved {
             assert_eq!(mode_state(w), *state);
             // Maximized windows follow the shell's work area and gap.
