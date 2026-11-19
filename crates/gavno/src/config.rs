@@ -1125,6 +1125,14 @@ mod classic_window_tests {
     use super::*;
 
     #[test]
+    fn classic_start_icon_defaults_empty_and_parses() {
+        assert_eq!(Config::build(false, None, |_| None).0.classic.start_icon, "");
+        let config = Config::parse_checked(false, "[classic]\nstart_icon = 'my-logo'", |_| None).unwrap();
+        assert_eq!(config.classic.start_icon, "my-logo");
+        assert_eq!(config.values()["classic"]["start_icon"], "my-logo");
+        assert!(Config::parse_checked(false, "[classic]\nstart_icon = 3", |_| None).is_err());
+    }
+    #[test]
     fn classic_open_maximized_defaults_parses_and_validates() {
         assert!(Config::build(false, None, |_| None).0.classic.open_maximized);
         for enabled in [true, false] {

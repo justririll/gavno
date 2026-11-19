@@ -197,6 +197,11 @@ fn cached_lookup(name: &str, theme: &str, checkpoint: bool) -> Option<PathBuf> {
     path
 }
 
+/// Whether the icon theme can resolve `name`; blocking, for worker threads.
+pub(crate) fn exists(name: &str, theme: &str) -> bool {
+    cached_lookup(name, theme, false).is_some()
+}
+
 /// Resolve every installed app's icon on a background thread, so the first
 /// launcher or Start menu page finds its icon paths cached.
 pub fn warm_app_icons(theme: String) {

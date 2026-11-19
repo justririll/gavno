@@ -107,6 +107,7 @@ pub(crate) fn spawn(
 pub(crate) fn init(gv: &mut Gavno) {
     init_spawner();
     crate::icons::app_worker::init(gv);
+    crate::classic::logo::spawn(gv);
     let (tx, rx) = channel::channel();
     match gv.loop_handle.insert_source(rx, |event, _, gv| {
         let _stall = crate::perf::Stall::new("launch.spawn_reply");

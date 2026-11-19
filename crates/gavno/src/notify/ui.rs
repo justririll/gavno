@@ -3,9 +3,12 @@ use crate::{
     render::GavnoRenderElement,
     topbar::{
         geometry::{rect, Rect},
-        label_style, FULL_COLOR, LINE,
+        FULL_COLOR, LINE,
     },
-    ui::text::Weight,
+    ui::{
+        style::{self as look, radius, size, text, TEXT},
+        text::Weight,
+    },
 };
 use smithay::{
     backend::renderer::gles::GlesRenderer,
@@ -16,9 +19,9 @@ use std::time::Duration;
 
 const BODY_Y: i32 = 58;
 const LINE_H: i32 = 19;
-const BUTTONS_H: i32 = 34;
+const BUTTONS_H: i32 = 40;
 pub(super) fn close_rect(r: Rect) -> Rect {
-    rect(r.loc.x + r.size.w - 32, r.loc.y + 6, 26, 26)
+    rect(r.loc.x + r.size.w - 34, r.loc.y + 8, 26, 26)
 }
 
 impl Notifications {
@@ -31,7 +34,7 @@ impl Notifications {
                 continue;
             }
             if c.lines.as_ref().is_none_or(|(w, _)| *w != width) {
-                let lines = wrap(&mut self.canvas.text, &c.notice.body, label_style(12.0), width - 24);
+                let lines = wrap(&mut self.canvas.text, &c.notice.body, text(size::BODY - 1.0, Weight::Medium, TEXT), width - 32);
                 c.lines = Some((width, lines));
             }
             let lines = c.lines.as_ref().map_or(0, |(_, l)| l.len()) as i32;
@@ -42,17 +45,18 @@ impl Notifications {
                 .filter(|(k, _)| k != "default")
                 .take(3)
                 .collect();
-            let buttons_y = BODY_Y + lines * LINE_H + 4;
+            let buttons_y = BODY_Y + lines * LINE_H + look::space::XS;
             let height = buttons_y + if actions.is_empty() { 6 } else { BUTTONS_H };
             let x = size.w - width - 8
                 + ((1.0 - c.spring.value.clamp(0.0, 1.0)) * (width + 8) as f64) as i32;
             let panel = rect(x, y, width, height);
             c.rect = Some(panel);
             c.buttons.clear();
-            let w = (width - 24) / actions.len().max(1) as i32;
+            let pad = look::space::LG;
+            let w = (width - 2 * pad) / actions.len().max(1) as i32;
             for (i, (key, _)) in actions.into_iter().enumerate() {
                 c.buttons
-                    .push((rect(x + 12 + i as i32 * w, y + buttons_y, w - 4, 26), key.clone()));
+                    .push((rect(x + pad + i as i32 * w, y + buttons_y, w - look::space::SM, 28), key.clone()));
             }
             y += height + 8;
         }
@@ -75,6 +79,7 @@ impl Notifications {
         now: Duration,
         theme: &str,
         shell_progress: f64,
+        accent: [f32; 4],
     ) -> Vec<GavnoRenderElement> {
         if !self.active || self.blocked || self.output.as_ref() != Some(output) {
             return Vec::new();
@@ -86,17 +91,28 @@ impl Notifications {
         }
         self.layout(size);
         self.anchor_classic(size, shell_progress);
+        // Several cards from one app share a count badge on the first of them.
+        let counts: Vec<Option<usize>> = {
+            let mut seen: Vec<&str> = Vec::new();
+            self.cards
+                .iter()
+                .map(|c| {
+                    if !c.visible || c.closing || seen.contains(&c.notice.app.as_str()) {
+                        return None;
+                    }
+                    seen.push(c.notice.app.as_str());
+                    let n = self.cards.iter().filter(|o| !o.closing && o.notice.app == c.notice.app).count();
+                    (n > 1).then_some(n)
+                })
+                .collect()
+        };
         let canvas = &mut self.canvas;
         canvas.begin(renderer, scale);
-        for c in &mut self.cards {
+        for (c, count) in self.cards.iter_mut().zip(counts) {
             let Some(panel) = c.rect else { continue };
-            canvas.alpha = if c.closing {
-                c.spring.value.clamp(0.0, 1.0) as f32
-            } else {
-                1.0
-            };
-            canvas.shadow(panel, 14.0);
-            canvas.rect(panel, 14.0, [0.065, 0.075, 0.10, 0.98], 1.0, LINE);
+            // Fade with the slide, in and out.
+            canvas.alpha = (c.spring.value * 2.0).clamp(0.0, 1.0) as f32;
+            look::card(canvas, panel, radius::TILE);
             let x = panel.loc.x;
             let y = panel.loc.y;
             let entry = self
@@ -112,80 +128,64 @@ impl Notifications {
                 .into_iter()
                 .filter(|n| !n.is_empty())
                 .collect();
-            if !canvas.colored_icon(
-                renderer,
-                &mut self.icons,
-                &names,
-                theme,
-                rect(x + 12, y + 14, 32, 32),
-                Some(FULL_COLOR),
-            ) {
-                canvas.rect(
-                    rect(x + 12, y + 14, 32, 32),
-                    9.0,
-                    [0.25, 0.29, 0.36, 1.0],
-                    0.0,
-                    LINE,
-                );
-                canvas.label(
-                    renderer,
-                    &c.notice
-                        .app
-                        .chars()
-                        .next()
-                        .unwrap_or('?')
-                        .to_uppercase()
-                        .to_string(),
-                    x + 22,
-                    y + 20,
-                    20,
-                    16.0,
-                );
+            let icon = rect(x + 16, y + 14, 32, 32);
+            if !canvas.colored_icon(renderer, &mut self.icons, &names, theme, icon, Some(FULL_COLOR)) {
+                canvas.rect(icon, radius::ROW, look::SURFACE_RAISED, 0.0, LINE);
+                let initial = c.notice.app.chars().next().unwrap_or('?').to_uppercase().to_string();
+                let st = text(size::HEADING, Weight::SemiBold, TEXT);
+                let w = canvas.text.measure(&initial, st).ceil() as i32;
+                canvas.styled_label(renderer, &initial, icon.loc.x + (32 - w) / 2, icon.loc.y + 7, w + 2, st);
             }
-            let mut app = label_style(11.0);
-            app.color[3] = 0.55;
-            canvas.styled_label(
-                renderer,
-                &c.notice.app,
-                x + 56,
-                y + 12,
-                panel.size.w - 96,
-                app,
-            );
-            let mut summary = label_style(13.5);
-            summary.weight = Weight::SemiBold;
+            let app = text(size::CAPTION, Weight::SemiBold, look::dim(TEXT, 0.55));
+            let mut app_w = panel.size.w - 104;
+            if let Some(n) = count {
+                // "3" on an accent-washed pill after the app name.
+                let name_w = (canvas.text.measure(&c.notice.app, app).ceil() as i32).min(app_w - 32);
+                let label = n.to_string();
+                let st = text(size::CAPTION, Weight::SemiBold, look::on_accent(accent));
+                let w = look::tabular_width(canvas, &label, st);
+                let pill = rect(x + 60 + name_w + 8, y + 11, w + 12, 16);
+                canvas.rect(pill, 8.0, look::wash(accent, 0.94), 0.0, LINE);
+                look::tabular_label(canvas, renderer, &label, pill.loc.x + 6, pill.loc.y + 1, st);
+                app_w = name_w;
+            }
+            canvas.styled_label(renderer, &c.notice.app, x + 60, y + 12, app_w, app);
             canvas.styled_label(
                 renderer,
                 &c.notice.summary,
-                x + 56,
+                x + 60,
                 y + 30,
-                panel.size.w - 72,
-                summary,
+                panel.size.w - 92,
+                text(size::BODY + 0.5, Weight::SemiBold, TEXT),
             );
-            canvas.label(renderer, "×", x + panel.size.w - 25, y + 8, 20, 18.0);
-            let style = label_style(12.0);
+            let close = close_rect(panel);
+            canvas.icon(renderer, &mut self.icons, &["window-close-symbolic"], theme, rect(close.loc.x + 5, close.loc.y + 5, 16, 16));
+            let style = text(size::BODY - 1.0, Weight::Medium, look::dim(TEXT, 0.85));
             let lines = c.lines.as_ref().map(|(_, l)| l.as_slice()).unwrap_or_default();
             for (i, line) in lines.iter().enumerate() {
                 canvas.styled_label(
                     renderer,
                     line,
-                    x + 12,
+                    x + 16,
                     y + BODY_Y + i as i32 * LINE_H,
-                    panel.size.w - 24,
+                    panel.size.w - 32,
                     style,
                 );
             }
-            for (r, key) in &c.buttons {
-                canvas.rect(*r, 7.0, [1.0, 1.0, 1.0, 0.08], 0.0, LINE);
+            for (n, (r, key)) in c.buttons.iter().enumerate() {
+                // The first action is the primary one and takes the accent.
+                let primary = n == 0;
+                canvas.rect(
+                    *r,
+                    radius::FIELD,
+                    if primary { look::wash(accent, 0.94) } else { look::SURFACE_RAISED },
+                    0.0,
+                    LINE,
+                );
                 if let Some((_, label)) = c.notice.actions.iter().find(|(k, _)| k == key) {
-                    canvas.label(
-                        renderer,
-                        label,
-                        r.loc.x + 6,
-                        r.loc.y + 5,
-                        r.size.w - 12,
-                        11.0,
-                    );
+                    let st = text(size::SMALL, Weight::SemiBold, if primary { look::on_accent(accent) } else { TEXT });
+                    let w = (canvas.text.measure(label, st).ceil() as i32).min(r.size.w - 12);
+                    canvas.styled_label(renderer, label, r.loc.x + (r.size.w - w) / 2, r.loc.y + 5, r.size.w - 12, st);
                 }
             }
         }

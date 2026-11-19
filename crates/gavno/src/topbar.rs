@@ -760,13 +760,13 @@ impl TopBar {
         }
         let mut clock_style = label_style(12.5);
         clock_style.weight = Weight::SemiBold;
-        let clock_width = c.text.measure(&self.clock, clock_style).ceil() as i32;
-        c.styled_label(
+        let clock_width = crate::ui::style::tabular_width(c, &self.clock, clock_style);
+        crate::ui::style::tabular_label(
+            c,
             renderer,
             &self.clock,
             l.clock.loc.x + (l.clock.size.w - clock_width) / 2,
             7,
-            l.clock.size.w,
             clock_style,
         );
         if self.notification_unread && self.notifications_active {
@@ -839,17 +839,16 @@ impl TopBar {
             }
             c.offset = (0.0, 0.0).into();
             c.alpha = self.opening.value.clamp(0.0, 1.0) as f32;
-            c.zoom = 0.94 + 0.06 * self.opening.value;
+            c.zoom = 0.96 + 0.04 * self.opening.value;
             c.anchor = (
                 p.panel.loc.x as f64 + p.panel.size.w as f64 / 2.0,
                 p.panel.loc.y as f64,
             )
                 .into();
-            c.shadow(p.panel, 20.0);
-            c.rect(p.panel, 20.0, [0.065, 0.075, 0.10, 0.98], 1.0, LINE);
+            crate::ui::style::card(c, p.panel, crate::ui::style::radius::PANEL);
             push_hit(c, &mut v.hits, p.panel, BarAction::Consume);
-            draw_calendar(c, renderer, &p, self.month, self.accent, v.hover.as_ref());
-            calendar::draw_notifications(c, renderer, &p, &self.notification_history, v.hover.as_ref());
+            draw_calendar(c, renderer, &mut self.icons, &self.icon_theme, &p, self.month, self.accent, v.hover.as_ref());
+            calendar::draw_notifications(c, renderer, &mut self.icons, &self.icon_theme, &p, &self.notification_history, v.hover.as_ref());
             for (item, r) in &p.items {
                 let action = if let Item::Notification(i) = *item {
                     let Some(h) = self.notification_history.get(i) else { continue };
@@ -1066,64 +1065,64 @@ fn plug_glyph(c: &mut Canvas, area: Rect, color: [f32; 4]) {
     c.rect(rect(x + 3, y + 5, 10, 6), 2.5, color, 0.0, LINE);
     c.rect(rect(x + 7, y + 10, 2, 5), 1.0, color, 0.0, LINE);
 }
+#[allow(clippy::too_many_arguments)]
 fn draw_calendar(
     c: &mut Canvas,
     r: &mut GlesRenderer,
+    icons: &mut Icons,
+    theme_name: &str,
     p: &PopoverLayout,
     month: (i32, u32),
     accent: [f32; 4],
     hover: Option<&BarAction>,
 ) {
+    use crate::ui::style::{self as look, radius, size, text, TEXT};
     let x = p.panel.loc.x;
     let y = p.panel.loc.y;
+    let today = theme::LocalTime::now();
+    // Today header: the date in words and the day number on an accent tile,
+    // the same "on" look as a quick settings tile.
+    let on = look::on_accent(accent);
+    c.styled_label(r, "Today", x + 20, y + 14, 160, text(size::CAPTION, Weight::SemiBold, look::dim(accent, 0.95)));
+    let date = format!("{}, {} {}", today.weekday_name(), today.day, today.month_name());
+    c.styled_label(r, &date, x + 20, y + 30, 230, text(size::TITLE, Weight::SemiBold, TEXT));
+    let tile = rect(x + 320 - 20 - 40, y + 12, 40, 40);
+    c.rect(tile, radius::TILE, look::wash(accent, 0.94), 0.0, LINE);
+    let day = today.day.to_string();
+    let st = text(size::BODY, Weight::SemiBold, on);
+    let w = look::tabular_width(c, &day, st);
+    look::tabular_label(c, r, &day, tile.loc.x + (40 - w) / 2, tile.loc.y + 11, st);
+    let y = y + geometry::TODAY_H;
     let header = format!("{} {}", calendar::MONTHS[month.1 as usize - 1], month.0);
-    let w = c.text.measure(&header, label_style(14.0)).ceil() as i32;
-    c.label(r, &header, x + (320 - w) / 2, y + 20, w, 14.0);
+    let hs = text(size::HEADING, Weight::SemiBold, TEXT);
+    let w = c.text.measure(&header, hs).ceil() as i32;
+    c.styled_label(r, &header, x + (320 - w) / 2, y + 20, w, hs);
     for (item, a) in &p.items {
         if !matches!(item, Item::Previous | Item::Next) { continue; }
-        if hover == Some(&item_action(*item)) {
-            capsule(c, *a, true);
-        }
-        c.label(
-            r,
-            if *item == Item::Previous {
-                "‹"
-            } else {
-                "›"
-            },
-            a.loc.x + 10,
-            a.loc.y + 5,
-            20,
-            18.0,
-        );
+        look::row_bg(c, *a, hover == Some(&item_action(*item)));
+        let name = if *item == Item::Previous { "go-previous-symbolic" } else { "go-next-symbolic" };
+        c.icon(r, icons, &[name], theme_name, rect(a.loc.x + 8, a.loc.y + 8, 16, 16));
     }
+    // Monday first, to match `month_grid`.
     for (i, day) in ["M", "T", "W", "T", "F", "S", "S"].iter().enumerate() {
-        let mut st = label_style(11.0);
-        st.color[3] = 0.5;
+        let st = text(size::CAPTION, Weight::SemiBold, look::dim(TEXT, if i >= 5 { 0.38 } else { 0.55 }));
         let w = c.text.measure(day, st).ceil() as i32;
         c.styled_label(r, day, x + 36 + i as i32 * 40 - w / 2, y + 64, 24, st);
     }
-    let today = theme::LocalTime::now();
     for (i, date) in calendar::month_grid(month.0, month.1).iter().enumerate() {
-        let a = rect(
-            x + 20 + (i % 7) as i32 * 40,
-            y + 88 + (i / 7) as i32 * 34,
-            32,
-            30,
-        );
-        if (date.year, date.month, date.day) == (today.year, today.month, today.day) {
-            c.rect(a, 10.0, accent, 0.0, LINE);
+        let a = rect(x + 20 + (i % 7) as i32 * 40, y + 88 + (i / 7) as i32 * 34, 32, 30);
+        let is_today = (date.year, date.month, date.day) == (today.year, today.month, today.day);
+        let mut color = if is_today { on } else { TEXT };
+        if date.month != month.1 && !is_today {
+            color = look::dim(color, 0.3);
         }
-        let mut st = label_style(12.5);
-        if date.month != month.1 {
-            st.color[3] = 0.3;
+        if is_today {
+            c.rect(a, radius::ROW, look::wash(accent, 0.94), 0.0, LINE);
         }
-        if (date.year, date.month, date.day) == (today.year, today.month, today.day) {
-            st.color = [0.08, 0.10, 0.14, 1.0];
-        }
+        let st = text(size::LABEL, if is_today { Weight::SemiBold } else { Weight::Medium }, color);
         let value = date.day.to_string();
-        let w = c.text.measure(&value, st).ceil() as i32;
-        c.styled_label(r, &value, a.loc.x + (32 - w) / 2, a.loc.y + 6, 32, st);
+        let w = look::tabular_width(c, &value, st);
+        look::tabular_label(c, r, &value, a.loc.x + (32 - w) / 2, a.loc.y + 6, st);
     }
 }
 

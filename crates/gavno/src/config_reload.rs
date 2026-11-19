@@ -178,6 +178,7 @@ pub(crate) fn apply(gv: &mut Gavno, prepared: Prepared) -> Result<Value, String>
     let pins_changed = gv.config.dock.pinned != config.dock.pinned;
     let scheme_changed = gv.config.theme.app_color_scheme != config.theme.app_color_scheme;
     let classic_changed = gv.config.classic != config.classic;
+    let logo_changed = gv.config.classic.start_icon != config.classic.start_icon || icons_changed;
     let code_mode_changed = gv.config.code_mode != config.code_mode;
     let bar_hints_changed = gv.config.bar_hints != config.bar_hints;
     // These startup-only settings are not considered effective before re-login.
@@ -195,6 +196,7 @@ pub(crate) fn apply(gv: &mut Gavno, prepared: Prepared) -> Result<Value, String>
     let old_hint_items = gv.topbar.hint_items.clone();
     gv.config = config;
     gv.reload_features();
+    if logo_changed { crate::classic::logo::spawn(gv); }
     gv.clipboard_config_changed();
     gv.dropdown_config_changed();
     if code_mode_changed { gv.set_code_mode(gv.config.code_mode); }

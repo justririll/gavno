@@ -9,6 +9,10 @@ use crate::{
         geometry::{rect, Rect},
         Canvas, FULL_COLOR, GLASS, LINE,
     },
+    ui::{
+        style::{self as look, radius, size as tsize, text as tstyle, TEXT},
+        text::Weight,
+    },
     Gavno,
 };
 use smithay::{
@@ -98,6 +102,9 @@ pub struct Taskbar {
     offset: usize,
     revision: u64,
     model_key: Option<u64>,
+    /// The distribution logo icon and whether it is symbolic; None draws the
+    /// built-in four panes.
+    pub(crate) logo: Option<(String, bool)>,
 }
 impl Taskbar {
     /// Drop per-output render caches and icons after leaving Classic.
@@ -337,15 +344,24 @@ impl Taskbar {
             r
         };
         let s = button(c, l.start, Hit::Start);
-        // Four panes form the GAVNO Start glyph without a font dependency.
-        for (dx, dy) in [(0, 0), (11, 0), (0, 11), (11, 11)] {
-            c.rect(
-                rect(s.loc.x + 10 + dx, s.loc.y + 10 + dy, 9, 9),
-                1.0,
-                accent,
-                0.0,
-                LINE,
-            );
+        let logo_rect = rect(s.loc.x + 8, s.loc.y + 8, 24, 24);
+        let drawn = match &self.logo {
+            Some((name, true)) => c.icon(renderer, &mut self.icons, &[name], theme, logo_rect),
+            Some((name, false)) => c.colored_icon(renderer, &mut self.icons, &[name], theme, logo_rect, Some(FULL_COLOR)),
+            None => false,
+        };
+        // Four panes form the GAVNO Start glyph without a font dependency;
+        // they stand in until the distribution logo is resolved and decoded.
+        if !drawn {
+            for (dx, dy) in [(0, 0), (11, 0), (0, 11), (11, 11)] {
+                c.rect(
+                    rect(s.loc.x + 10 + dx, s.loc.y + 10 + dy, 9, 9),
+                    1.0,
+                    accent,
+                    0.0,
+                    LINE,
+                );
+            }
         }
         self.icons.nonblocking_apps();
         for (app, r) in self.apps.iter().skip(self.offset).zip(&l.apps) {
@@ -398,22 +414,14 @@ impl Taskbar {
         }
         let clock = button(c, l.clock, Hit::Clock);
         let time = crate::ui::theme::LocalTime::now();
-        c.label(
-            renderer,
-            &format!("{:02}:{:02}", time.hour, time.minute),
-            clock.loc.x + 12,
-            clock.loc.y + 3,
-            88,
-            12.0,
-        );
-        c.label(
-            renderer,
-            &format!("{:02}.{:02}.{}", time.day, time.month, time.year),
-            clock.loc.x + 5,
-            clock.loc.y + 22,
-            94,
-            10.5,
-        );
+        let hhmm = format!("{:02}:{:02}", time.hour, time.minute);
+        let st = tstyle(tsize::LABEL, Weight::SemiBold, TEXT);
+        let w = look::tabular_width(c, &hhmm, st);
+        look::tabular_label(c, renderer, &hhmm, clock.loc.x + (clock.size.w - w) / 2, clock.loc.y + 3, st);
+        let date = format!("{:02}.{:02}.{}", time.day, time.month, time.year);
+        let st = tstyle(tsize::CAPTION, Weight::Medium, look::dim(TEXT, 0.7));
+        let w = look::tabular_width(c, &date, st);
+        look::tabular_label(c, renderer, &date, clock.loc.x + (clock.size.w - w) / 2, clock.loc.y + 22, st);
         let r = button(c, l.desktop, Hit::Desktop);
         c.rect(rect(r.loc.x, r.loc.y + 8, 1, 32), 0.0, LINE, 0.0, LINE);
         if let Some((o, id)) = &self.menu {
@@ -428,12 +436,11 @@ impl Taskbar {
                         .min((size.w - 308).max(8));
                     let panel = rect(
                         x,
-                        (size.h - 56 - rows as i32 * 30 - 12).max(8),
+                        (size.h - 56 - rows as i32 * 32 - 16).max(8),
                         300,
-                        rows as i32 * 30 + 12,
+                        rows as i32 * 32 + 16,
                     );
-                    c.shadow(panel, 8.0);
-                    c.rect(panel, 8.0, [0.065, 0.075, 0.10, 0.98], 1.0, LINE);
+                    look::card(c, panel, radius::TILE);
                     v.hits.push((panel, Hit::Consume));
                     let mut actions: Vec<(String, Hit)> = app
                         .windows
@@ -461,8 +468,20 @@ impl Taskbar {
                         Hit::Close(id.clone()),
                     ));
                     for (i, (title, hit)) in actions.into_iter().enumerate() {
-                        let r = rect(x + 6, panel.loc.y + 6 + i as i32 * 30, 288, 30);
-                        c.label(renderer, &title, r.loc.x + 8, r.loc.y + 7, 272, 12.0);
+                        let r = rect(x + 8, panel.loc.y + 8 + i as i32 * 32, 284, 32);
+                        let hot = self.hover.as_ref().is_some_and(|(o, h)| o == output && *h == hit);
+                        if hot {
+                            look::row_bg(c, r, true);
+                        }
+                        let danger = matches!(hit, Hit::Close(_));
+                        c.styled_label(
+                            renderer,
+                            &title,
+                            r.loc.x + 12,
+                            r.loc.y + 8,
+                            260,
+                            tstyle(tsize::LABEL, Weight::Medium, if danger { look::DANGER } else { TEXT }),
+                        );
                         v.hits.push((r, hit));
                     }
                 }
@@ -483,8 +502,8 @@ impl Taskbar {
                             .map_or(8, |(r, _)| r.loc.x)
                             .min((size.w - 288).max(8));
                         let r = rect(x, size.h - 90, 280, 30);
-                        c.rect(r, 6.0, [0.065, 0.075, 0.10, 0.98], 1.0, LINE);
-                        c.label(renderer, &title, x + 8, r.loc.y + 7, 264, 12.0);
+                        look::card(c, r, radius::ROW);
+                        c.styled_label(renderer, &title, x + 12, r.loc.y + 7, 256, tstyle(tsize::LABEL, Weight::Medium, TEXT));
                     }
                 }
             }

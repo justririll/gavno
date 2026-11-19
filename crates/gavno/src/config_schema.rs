@@ -415,6 +415,14 @@ pub const SCHEMA: &[Key] = &[
         live: true,
     },
     Key {
+        path: "classic.start_icon",
+        kind: Kind::String,
+        default: Default::String(""),
+        description: "Icon name of the Classic Start button; empty uses the distribution logo (LOGO= in os-release).",
+        section: "Classic",
+        live: true,
+    },
+    Key {
         path: "classic.settings_command",
         kind: Kind::String,
         default: Default::String("gavno-settings"),

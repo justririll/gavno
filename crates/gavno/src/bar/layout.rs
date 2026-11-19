@@ -130,25 +130,37 @@ impl PopoverLayout {
     pub fn calendar_notifications(width: i32, count: usize) -> Self {
         let mut layout = Self::calendar(width);
         let x = layout.panel.loc.x;
-        let y = layout.panel.loc.y + 316;
-        layout.items.push((Item::ClearNotifications, rect(x + 244, y, 60, 28)));
-        for i in 0..count.min(4) {
-            layout.items.push((Item::Notification(i), rect(x + 12, y + 36 + i as i32 * 52, 296, 48)));
+        let y = layout.panel.loc.y + CALENDAR_H;
+        let shown = count.min(4);
+        if shown == 0 {
+            layout.panel.size.h += EMPTY_H;
+            return layout;
         }
-        layout.panel.size.h += 44 + count.min(4) as i32 * 52;
+        layout.items.push((Item::ClearNotifications, rect(x + 244, y, 60, 28)));
+        for i in 0..shown {
+            layout.items.push((Item::Notification(i), rect(x + 16, y + 36 + i as i32 * 56, 288, 48)));
+        }
+        layout.panel.size.h += 44 + shown as i32 * 56;
         layout
     }
     pub fn calendar(width: i32) -> Self {
-        let panel = rect((width - 320) / 2, 40, 320, 316);
+        let panel = rect((width - 320) / 2, 40, 320, CALENDAR_H);
+        let nav = panel.loc.y + TODAY_H + 12;
         Self {
             panel,
             items: vec![
-                (Item::Previous, rect(panel.loc.x + 16, 52, 32, 32)),
-                (Item::Next, rect(panel.loc.x + 272, 52, 32, 32)),
+                (Item::Previous, rect(panel.loc.x + 16, nav, 32, 32)),
+                (Item::Next, rect(panel.loc.x + 272, nav, 32, 32)),
             ],
         }
     }
 }
+/// Height of the "Today" header above the month grid.
+pub const TODAY_H: i32 = 64;
+/// The calendar card: Today header plus the month grid.
+pub const CALENDAR_H: i32 = TODAY_H + 316;
+/// Extra height of the empty notifications state.
+pub const EMPTY_H: i32 = 136;
 #[cfg(test)]
 mod tests {
     use super::*;
