@@ -6,9 +6,10 @@ pub fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
 }
 /// One slot of the status cluster at the right end of the bar. Adding an
 /// indicator (for example a camera dot) means adding a variant, one entry in
-/// `Layout::status_slots` and one arm where the slot is drawn.
+/// `Layout::with_battery` and one arm where the slot is drawn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StatusItem {
+    Camera,
     Layout,
     Wifi,
     Volume,
@@ -55,12 +56,15 @@ pub struct Layout {
 impl Layout {
     #[cfg(test)]
     pub fn new(width: i32, workspace_width: i32, layouts: bool) -> Self {
-        Self::with_battery(width, workspace_width, layouts, BATTERY_SLOT)
+        Self::with_battery(width, workspace_width, layouts, BATTERY_SLOT, false)
     }
     /// `battery` is the width of the battery slot: `BATTERY_SLOT` for a
     /// battery, `CLUSTER_ICON` for the plug shown on machines without one.
-    pub fn with_battery(width: i32, workspace_width: i32, layouts: bool, battery: i32) -> Self {
+    pub fn with_battery(width: i32, workspace_width: i32, layouts: bool, battery: i32, camera: bool) -> Self {
         let mut slots = Vec::new();
+        if camera {
+            slots.push((StatusItem::Camera, CLUSTER_ICON));
+        }
         if layouts {
             slots.push((StatusItem::Layout, LAYOUT_SLOT));
         }
@@ -204,7 +208,7 @@ mod tests {
         for width in [800, 1280, 1646, 2560] {
             for layouts in [false, true] {
                 for battery in [CLUSTER_ICON, BATTERY_SLOT] {
-                    let l = Layout::with_battery(width, 88, layouts, battery);
+                    let l = Layout::with_battery(width, 88, layouts, battery, layouts);
                     assert_eq!(l.status.loc.x + l.status.size.w, width - 8);
                     assert_eq!(l.slot(StatusItem::Layout).is_some(), layouts);
                     let mut previous_end = l.status.loc.x + CLUSTER_PAD;

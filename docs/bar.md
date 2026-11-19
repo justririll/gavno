@@ -9,6 +9,8 @@ level, the percentage and a bolt while charging; on a machine without a
 battery (a desktop, a nested session) it shows only a plug. Bluetooth device
 batteries are not in the bar; they appear in the Bluetooth page.
 
+While the webcam finger pointer runs (Mod+Shift+M), a camera icon leads the cluster: dim until a hand is in view, accent coloured while it tracks. The Classic taskbar keeps its own indicator.
+
 In the Classic shell the quick settings entry of the tray opens the same panel.
 
 ## Quick settings
@@ -58,6 +60,11 @@ the Wi-Fi, Bluetooth or sound page. Up/Down or j/k selects, Left/Right or h/l
 adjusts a slider, Enter toggles or activates, Space opens the page behind a
 tile or the volume slider. The key hint footer is shown in code mode, or after
 the panel was operated with the keyboard.
+
+A small camera icon left of the status capsule (in the Classic tray, the first
+icon) shows while the [finger pointer](finger-pointer.md) camera is on: dim
+while no hand is in view, accent-coloured while one is tracked. It has no
+action; Mod+Shift+M turns the mode off.
 
 NetworkManager and BlueZ run on system D-Bus. Audio uses pipewire-pulse through
 `pactl` JSON queries and one long-lived `pactl subscribe` child. All queries,

@@ -196,6 +196,8 @@ impl Gavno {
             crate::handlers::session_lock::Locks::internal(self.space.outputs().cloned());
         self.refresh_lock_idle(false, false);
         self.lock.internal = true;
+        // The camera never runs behind the lock screen.
+        self.stop_finger_pointer();
         self.lock.authenticated = false;
         self.lock.failed = false;
         self.lock.ui_panics = 0;

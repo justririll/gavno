@@ -1,1 +1,3 @@
 /target
+# Model weights for the finger pointer, see crates/gavno-cam/MODELS.md.
+/dist/models/*.onnx
