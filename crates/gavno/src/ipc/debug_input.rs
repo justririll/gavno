@@ -1,5 +1,5 @@
 //! Opt-in live-test input. No sources or recurring work exist until a request.
-mod events;
+pub(crate) mod events;
 #[cfg(test)]
 mod tests;
 
@@ -167,6 +167,9 @@ fn state(gv: &Gavno) -> Value {
         "overview_selected": gv.overview.selected.as_ref().map(|w| crate::overlay::window_labels(w).0), "outputs": outputs, "focused": focused,
         "code_mode": gv.code_mode, "finger_pointer": gv.finger.is_some(), "pointer_hidden": gv.pointer_hidden,
         "launcher_open": gv.launcher.open, "start_open": gv.classic.start.open,
+        "screenshot_open": gv.screenshot_active(), "screenshot_selection": gv.overlay.screenshot.selection().map(|r| json!([r.loc.x, r.loc.y, r.size.w, r.size.h])),
+        "toast_visible": gv.overlay.screenshot.toast_visible(),
+        "clipboard_open": gv.clipboard_picker_open(), "clipboard_entries": gv.overlay.clipboard.history.len(),
         "panel_controls_open": gv.panel_controls_open(),
         "music_open": gv.music_open(), "polkit_open": gv.polkit_visible(),
         "pointer": {"x": pos.x, "y": pos.y},

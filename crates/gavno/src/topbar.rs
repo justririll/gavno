@@ -309,6 +309,21 @@ impl Canvas {
         }
         true
     }
+    /// Draws `buffer` (`pixels` large) scaled into `r`.
+    pub fn image(&mut self, renderer: &mut GlesRenderer, buffer: &smithay::backend::renderer::element::memory::MemoryRenderBuffer, pixels: (u32, u32), r: Rect) {
+        let r = self.mapped(r);
+        if let Ok(e) = MemoryRenderBufferRenderElement::from_buffer(
+            renderer,
+            ((r.loc.x as f64 * self.scale).round(), (r.loc.y as f64 * self.scale).round()),
+            buffer,
+            Some(self.alpha),
+            Some(Rectangle::from_size((pixels.0 as f64, pixels.1 as f64).into())),
+            Some(r.size),
+            Kind::Unspecified,
+        ) {
+            self.elements.push(GavnoRenderElement::Memory(e));
+        }
+    }
     pub fn finish(&mut self) -> Vec<GavnoRenderElement> {
         std::mem::take(&mut self.elements)
             .into_iter()

@@ -169,6 +169,12 @@ impl Launcher {
         self.fade.set(0.0);
     }
 
+    /// Closes without a fade, e.g. before a capture.
+    pub(crate) fn dismiss(&mut self) {
+        self.hide();
+        self.fade.jump(0.0);
+    }
+
     fn selected_entry(&self) -> Option<&DesktopEntry> {
         let i = *self.results.get(self.selected)?;
         Some(&self.apps.as_ref()?.get(i)?.entry)
