@@ -275,3 +275,28 @@ in the private compositor's environment. This replaces all three providers
 with in-memory fixtures and disables the legacy status worker, so opening,
 connecting, toggling and dragging controls cannot change the host system.
 Use Mod+Shift+N/B/V through `inject_key`, then capture with `screenshot`.
+
+## Local AI (gavno-ai)
+
+The launcher's "Ask AI" row talks to the `gavno-ai` helper on the session bus
+(`org.gavno.AI1`, D-Bus activated by `dist/dbus-1/services/org.gavno.AI1.service`),
+which starts the `llama-gavno.service` system unit on demand.
+
+```sh
+# Is the helper up, and is the model loaded? (Status: running, last_latency_ms)
+busctl --user call org.gavno.AI1 /org/gavno/AI1 org.gavno.AI1 Status
+# What would it do for a request? Context is JSON (see crates/gavno-ai/src/action.rs).
+busctl --user call org.gavno.AI1 /org/gavno/AI1 org.gavno.AI1 Interpret ss \
+  "open the downloads folder" '{"workspaces":[{"index":1}],"home":"'$HOME'"}'
+systemctl status llama-gavno      # the model server; journalctl -u llama-gavno
+```
+
+Failures show as a row in the launcher (the text of the helper's
+`{"error": "..."}` answer). The helper and the unit stop after `ai.idle_stop_minutes`
+without a request, so a running process means a recent request. For a model
+server started by hand, run the helper with `GAVNO_AI_UNIT=` (no unit control)
+and `GAVNO_AI_PORT=<port>`; `GAVNO_CONFIG` selects the config file it reads.
+Workspace names are listed as `workspace_names` per output in `gavno msg state`.
+`journalctl -b _COMM=gavno | grep stall` shows whether a request ever stalled
+the compositor (the AI path has the `ai.reply` and `timer.ai_refine` watches).
+Run the tests with `cargo test -p gavno-ai` (fake llama-server, no model needed).

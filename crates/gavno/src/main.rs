@@ -31,6 +31,7 @@ mod debug;
 mod greeter;
 mod lock;
 mod power;
+mod ai;
 mod launcher;
 mod clipboard;
 mod clipboard_picker;

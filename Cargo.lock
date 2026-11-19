@@ -1053,6 +1053,7 @@ dependencies = [
  "drm-ffi",
  "fontdue",
  "futures-lite",
+ "gavno-ai",
  "gavno-cam-proto",
  "libc",
  "png",
@@ -1077,6 +1078,17 @@ name = "gavno-agent"
 version = "0.1.0"
 dependencies = [
  "serde_json",
+]
+
+[[package]]
+name = "gavno-ai"
+version = "0.1.0"
+dependencies = [
+ "async-channel",
+ "serde",
+ "serde_json",
+ "toml 0.9.12+spec-1.1.0",
+ "zbus",
 ]
 
 [[package]]

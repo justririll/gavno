@@ -26,6 +26,8 @@ smithay-drm-extras = { git = "https://github.com/Smithay/smithay", tag = "v0.7.0
 drm-ffi = "0.9"
 # Wire protocol only; the camera and inference runtime stay in the helper binary.
 gavno-cam-proto = { path = "../gavno-cam-proto" }
+# Action and context types of the local AI helper; the model, HTTP and systemd code stays in that binary.
+gavno-ai = { path = "../gavno-ai" }
 
 wayland-protocols = { version = "0.32", features = ["server", "staging"] }
 

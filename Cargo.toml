@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/gavno", "crates/gavno-agent", "crates/gavno-cam", "crates/gavno-cam-proto", "crates/gavno-files", "crates/gavno-polkit", "crates/gavno-settings"]
+members = ["crates/gavno", "crates/gavno-agent", "crates/gavno-ai", "crates/gavno-cam", "crates/gavno-cam-proto", "crates/gavno-files", "crates/gavno-polkit", "crates/gavno-settings"]
 resolver = "2"
 
 [workspace.package]

@@ -45,6 +45,13 @@ if [ -f dist/models/palm_detection_mediapipe_2023feb.onnx ] && [ -f dist/models/
 else
     echo "dist/models/*.onnx missing: the finger pointer (Mod+Shift+M) will not start; see crates/gavno-cam/MODELS.md" >&2
 fi
+# Local AI helper (design/ai.md): the session-bus service, the CPU-only model unit
+# (inactive until gavno-ai starts it) and the polkit rule that lets wheel start it.
+install -D -m 755 target/release/gavno-ai /usr/local/bin/gavno-ai
+install -D -m 644 dist/dbus-1/services/org.gavno.AI1.service /usr/share/dbus-1/services/org.gavno.AI1.service
+install -D -m 644 dist/systemd/llama-gavno.service /etc/systemd/system/llama-gavno.service
+install -D -m 644 dist/polkit-1/rules.d/50-local-llm.rules /etc/polkit-1/rules.d/50-local-llm.rules
+systemctl daemon-reload
 install -D -m 644 dist/wayland-sessions/gavno.desktop /usr/share/wayland-sessions/gavno.desktop
 # xdg-desktop-portal reads these when it starts, i.e. at the next login.
 install -D -m 644 dist/xdg-desktop-portal/gavno-portals.conf /usr/share/xdg-desktop-portal/gavno-portals.conf

@@ -421,6 +421,20 @@ impl Gavno {
             gv.queue_redraw_all();
         });
     }
+    /// Opens the music panel on `output` with `query` typed into its search.
+    pub(crate) fn music_search_for(&mut self, output: &Output, query: &str) {
+        if !self.music_open() {
+            self.toggle_music_at(output, None);
+        }
+        {
+            let mut media = self.now_playing.borrow_mut();
+            let Some(s) = media.music.session.as_mut() else { return };
+            s.query = query.chars().filter(|c| !c.is_control()).take(120).collect();
+            s.dirty = true;
+        }
+        self.guard(Feature::Media, (), |gv| gv.music_debounce());
+        self.queue_redraw_all();
+    }
     pub fn close_music(&mut self) {
         let session = self.now_playing.borrow_mut().music.session.take();
         if let Some(mut session) = session {

@@ -1,0 +1,20 @@
+[package]
+name = "gavno-ai"
+description = "Local AI helper for the GAVNO launcher: D-Bus service in front of a llama-server unit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "gavno-ai"
+path = "src/main.rs"
+
+[dependencies]
+zbus = "5.19"
+async-channel = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"

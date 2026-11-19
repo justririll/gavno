@@ -458,7 +458,7 @@ pub struct TopBar {
     pub title: String,
     pub layout: String,
     app_icon: String,
-    entries: crate::desktop_entry::DesktopEntries,
+    pub(crate) entries: crate::desktop_entry::DesktopEntries,
     multiple_layouts: bool,
     clock: String,
     accent: [f32; 4],
@@ -1173,10 +1173,17 @@ impl Gavno {
         self.guard(crate::module::Feature::Bar, (), |gv| gv.refresh_bar(&outputs));
     }
     fn refresh_bar(&mut self, outputs: &[Output]) {
+        self.refresh_workspace_names();
         let (title, app) = self
             .focused_window()
             .map(|w| crate::overlay::window_labels(&w))
             .unwrap_or_default();
+        // The active workspace's name leads the title when it has one.
+        let title = match self.active_workspace_name() {
+            Some(name) if !title.is_empty() => format!("{name} · {title}"),
+            Some(name) => name,
+            None => title,
+        };
         self.topbar.app_icon = self
             .topbar
             .entries
