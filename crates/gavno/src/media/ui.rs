@@ -253,6 +253,7 @@ pub fn same_cover(a: &Option<std::sync::Arc<Cover>>, b: &Option<std::sync::Arc<C
     }
 }
 pub fn cover(c: &mut Canvas, renderer: &mut GlesRenderer, image: &Cover, area: Rect) {
+    let hero = super::music::worker::CoverKind::Hero.size();
     let area = c.mapped(area);
     if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
         renderer,
@@ -262,7 +263,7 @@ pub fn cover(c: &mut Canvas, renderer: &mut GlesRenderer, image: &Cover, area: R
         ),
         &image.buffer,
         Some(c.alpha),
-        Some(Rectangle::from_size((160.0, 160.0).into())),
+        Some(Rectangle::from_size((hero as f64, hero as f64).into())),
         Some(area.size),
         Kind::Unspecified,
     ) {
@@ -373,7 +374,7 @@ pub fn layer_transport(
         alpha,
     );
 }
-pub(super) fn capsule_styles(
+pub(crate) fn capsule_styles(
     playback: Playback,
 ) -> (
     crate::ui::text::TextStyleSpec,

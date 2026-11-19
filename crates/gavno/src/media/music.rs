@@ -26,7 +26,7 @@ mod tests;
 #[path = "music_ui.rs"]
 mod ui;
 #[path = "music_worker.rs"]
-pub(super) mod worker;
+pub(crate) mod worker;
 
 #[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
@@ -39,6 +39,31 @@ pub struct Item {
     pub cover_url: Option<String>,
     pub cover_path: Option<String>,
 }
+/// MPRIS `LoopStatus` as the daemon reports it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub enum RepeatMode {
+    #[default]
+    None,
+    Playlist,
+    Track,
+}
+impl RepeatMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "None",
+            Self::Playlist => "Playlist",
+            Self::Track => "Track",
+        }
+    }
+    /// The button cycle: off, playlist, track, off.
+    pub fn next(self) -> Self {
+        match self {
+            Self::None => Self::Playlist,
+            Self::Playlist => Self::Track,
+            Self::Track => Self::None,
+        }
+    }
+}
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct State {
@@ -50,6 +75,9 @@ pub struct State {
     pub position_ms: u32,
     pub position_at_ms: u64,
     pub volume: f64,
+    /// None when the daemon predates the property: the button stays hidden.
+    pub shuffle: Option<bool>,
+    pub repeat: Option<RepeatMode>,
     pub message: String,
     pub upcoming: Vec<Item>,
 }
@@ -91,6 +119,8 @@ pub enum Hit {
     Control(&'static str),
     Seek,
     Volume,
+    Shuffle,
+    Repeat,
 }
 
 #[derive(Default)]
@@ -518,6 +548,8 @@ impl Gavno {
                     || s.state.playing != state.playing
                     || s.state.item != state.item
                     || s.state.volume != state.volume
+                    || s.state.shuffle != state.shuffle
+                    || s.state.repeat != state.repeat
                     || s.state.message != state.message
                     || s.state.upcoming != state.upcoming;
                 if !same_item {
@@ -790,6 +822,18 @@ impl Gavno {
                     }
                 }
                 Some((_, Hit::Login)) => s.send(worker::Command::Login),
+                Some((_, Hit::Shuffle)) => {
+                    if let Some(on) = s.state.shuffle {
+                        s.send(worker::Command::Shuffle(!on));
+                        s.state.shuffle = Some(!on);
+                    }
+                }
+                Some((_, Hit::Repeat)) => {
+                    if let Some(mode) = s.state.repeat {
+                        s.send(worker::Command::Repeat(mode.next()));
+                        s.state.repeat = Some(mode.next());
+                    }
+                }
                 Some((_, Hit::Control(command))) => {
                     s.send(worker::Command::Control(command.into()))
                 }

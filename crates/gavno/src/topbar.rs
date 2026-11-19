@@ -242,6 +242,48 @@ impl Canvas {
         }
         self.used += 1;
     }
+    /// Soft coloured halo around `rect`: a shadow without offset.
+    pub fn glow(&mut self, rect: Rectangle<i32, Logical>, radius: f32, blur: i32, color: [f32; 4]) {
+        let rect = self.mapped(rect);
+        if self.used == self.boxes.len() {
+            self.boxes.push(ShaderBox::default());
+        }
+        if let Some(shaders) = &self.shaders {
+            self.elements.push(GavnoRenderElement::Shader(shader::shadow(
+                &mut self.boxes[self.used],
+                shaders,
+                rect,
+                radius * self.zoom as f32,
+                blur,
+                0,
+                color,
+                self.alpha,
+                self.scale,
+            )));
+        }
+        self.used += 1;
+    }
+    /// Logical width of `value` drawn by `tabular_label`.
+    pub fn tabular_width(&mut self, value: &str, style: TextStyleSpec) -> i32 {
+        self.text.tabular_cells(value, style).1.ceil() as i32
+    }
+    /// Draws digits in fixed-width cells; returns the logical width used.
+    pub fn tabular_label(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        value: &str,
+        x: i32,
+        y: i32,
+        style: TextStyleSpec,
+    ) -> i32 {
+        let (cells, width) = self.text.tabular_cells(value, style);
+        for (ch, dx) in cells {
+            if !ch.is_whitespace() {
+                self.styled_label(renderer, ch.encode_utf8(&mut [0; 4]), x + dx.round() as i32, y, 512, style);
+            }
+        }
+        width.ceil() as i32
+    }
     pub fn label(
         &mut self,
         renderer: &mut GlesRenderer,
@@ -1525,7 +1567,7 @@ mod capsule_render_tests {
             let elements=draw(&mut bar,&mut renderer,100);
             let area=bar.views[0].layout.as_ref().unwrap().media.unwrap();
             let cover_rect=rect(area.loc.x+5,area.loc.y+3,18,18);
-            let has_cover=elements.iter().any(|e| {let g=e.geometry(1.0.into());g.loc.x==cover_rect.loc.x && g.loc.y==cover_rect.loc.y && g.size.w==18 && g.size.h==18 && e.src().size.w==160.0});
+            let has_cover=elements.iter().any(|e| {let g=e.geometry(1.0.into());g.loc.x==cover_rect.loc.x && g.loc.y==cover_rect.loc.y && g.size.w==18 && g.size.h==18 && e.src().size.w==f64::from(crate::media::music::worker::CoverKind::Hero.size())});
             assert_eq!(has_cover,spotify && loaded);
             assert!(!bar.views[0].canvas.drawn.contains(&cover_rect));
             bar.views[0].hover=Some(BarAction::MusicPanel);draw(&mut bar,&mut renderer,101);

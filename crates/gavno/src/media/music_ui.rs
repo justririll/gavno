@@ -48,11 +48,77 @@ impl View {
             .copied()
     }
 }
+pub const PANEL_HEIGHT: i32 = 760;
+/// Every rectangle of the now-playing block, shared by the static painter,
+/// the progress painter and the hit targets.
+pub(super) struct Layout {
+    pub cover: Rect,
+    pub title: Rect,
+    pub artist: Rect,
+    pub device: Rect,
+    pub track: Rect,
+    pub seek_hit: Rect,
+    pub times_y: i32,
+    pub buttons: Vec<(Hit, Rect)>,
+    pub volume: Rect,
+    pub search: Rect,
+    pub tabs: Rect,
+    pub status_y: i32,
+    pub list_top: i32,
+}
+impl Layout {
+    pub fn new(p: Rect, options: bool) -> Self {
+        let w = p.size.w;
+        // The cover shrinks on short outputs; everything below follows it.
+        let side = (88 + (p.size.h - 300) * 96 / 340).clamp(88, 184).min(w - 48);
+        let cover = rect(p.loc.x + (w - side) / 2, p.loc.y + 18, side, side);
+        let title = rect(p.loc.x + 24, cover.loc.y + side + 14, w - 48, 24);
+        let artist = rect(title.loc.x, title.loc.y + 25, title.size.w, 20);
+        let device = rect(title.loc.x, artist.loc.y + 22, title.size.w, 16);
+        let track = rect(p.loc.x + 24, device.loc.y + device.size.h + 16, w - 48, 4);
+        let seek_hit = rect(track.loc.x, track.loc.y - 8, track.size.w, 20);
+        let times_y = track.loc.y + 10;
+        let row = times_y + 16 + 10;
+        let cx = p.loc.x + w / 2;
+        let mid = row + 26;
+        let spot = |dx: i32, d: i32| rect(cx + dx - d / 2, mid - d / 2, d, d);
+        let mut buttons = Vec::new();
+        if options {
+            buttons.push((Hit::Shuffle, spot(-132, 36)));
+            buttons.push((Hit::Control("previous"), spot(-72, 40)));
+            buttons.push((Hit::Control("toggle"), spot(0, 52)));
+            buttons.push((Hit::Control("next"), spot(72, 40)));
+            buttons.push((Hit::Repeat, spot(132, 36)));
+        } else {
+            buttons.push((Hit::Control("previous"), spot(-66, 40)));
+            buttons.push((Hit::Control("toggle"), spot(0, 52)));
+            buttons.push((Hit::Control("next"), spot(66, 40)));
+        }
+        let volume = rect(p.loc.x + 52, row + 52 + 12, w - 76, 24);
+        let search = rect(p.loc.x + 12, volume.loc.y + 24 + 14, w - 24, 36);
+        let tabs = rect(p.loc.x + 12, search.loc.y + 36 + 8, w - 24, 32);
+        Self {
+            cover,
+            title,
+            artist,
+            device,
+            track,
+            seek_hit,
+            times_y,
+            buttons,
+            volume,
+            search,
+            tabs,
+            status_y: tabs.loc.y + 32 + 6,
+            list_top: tabs.loc.y + 32 + 8,
+        }
+    }
+}
 pub fn panel_rect(size: Size<i32, Logical>, anchor: Option<Rect>) -> Rect {
     if let Some(anchor) = anchor {
         let available_h = (size.h - crate::classic::TASKBAR_HEIGHT).max(1);
         let width = 420.min(size.w.max(1));
-        let height = 660.min(available_h);
+        let height = PANEL_HEIGHT.min(available_h);
         let left = anchor.loc.x - width - 12;
         let x = if left >= 0 {
             left
@@ -67,7 +133,7 @@ pub fn panel_rect(size: Size<i32, Logical>, anchor: Option<Rect>) -> Rect {
         );
     }
     let width = 420.min((size.w - 16).max(1));
-    let height = 660.min((size.h - 48).max(1));
+    let height = PANEL_HEIGHT.min((size.h - 48).max(1));
     let x = (size.w / 2 + 64).min(size.w - width - 8).max(0);
     rect(x, 40.min((size.h - height).max(0)), width, height)
 }
@@ -238,106 +304,125 @@ impl Session {
         view.canvas.rect(p, 16.0, GLASS, 1.0, LINE);
         view.hits.push((p, Hit::Panel));
         if w >= 240 && p.size.h >= 300 {
-            let card = rect(x + 12, y + 12, w - 24, 176);
-            let tint = self
-                .state
-                .item
-                .as_ref()
+            let lay = Layout::new(p, self.state.shuffle.is_some() && self.state.repeat.is_some());
+            let item = self.state.item.as_ref();
+            let tint = item
                 .and_then(|i| i.cover_path.as_ref())
                 .and_then(|p| view.covers.variant(p, CoverKind::Hero))
-                .map_or(white(0.05), |c| [c.tint[0], c.tint[1], c.tint[2], 0.34]);
-            view.canvas.rect(card, 14.0, tint, 1.0, LINE);
-            image(
-                view,
-                renderer,
-                self.state.item.as_ref(),
-                rect(card.loc.x + 12, card.loc.y + 12, 112, 112),
-                CoverKind::Hero,
-            );
-            let tx = card.loc.x + 138;
-            let tw = card.size.w - 150;
-            let title = self
-                .state
-                .item
-                .as_ref()
-                .map_or("Nothing playing", |i| i.title.as_str());
-            let artist = self
-                .state
-                .item
-                .as_ref()
-                .map_or("Pick something below", |i| i.subtitle.as_str());
-            label(
+                .map_or([0.3, 0.3, 0.34], |c| c.tint);
+            if item.is_some() {
+                // A halo in the cover's own colour. Drawn once per static build.
+                view.canvas.glow(
+                    lay.cover,
+                    18.0,
+                    46,
+                    [tint[0], tint[1], tint[2], 0.62],
+                );
+            }
+            image(view, renderer, item, lay.cover, CoverKind::Hero);
+            let title = item.map_or("Nothing playing", |i| i.title.as_str());
+            let artist = item.map_or("Pick something below", |i| i.subtitle.as_str());
+            centered(
                 view,
                 renderer,
                 title,
-                rect(tx, card.loc.y + 16, tw, 22),
-                style(
-                    16.0,
-                    Weight::SemiBold,
-                    white(if self.state.item.is_some() { 0.97 } else { 0.9 }),
-                ),
+                lay.title,
+                style(18.0, Weight::SemiBold, white(if item.is_some() { 0.97 } else { 0.9 })),
             );
-            label(
+            centered(
                 view,
                 renderer,
                 artist,
-                rect(tx, card.loc.y + 40, tw, 20),
-                style(
-                    12.5,
-                    Weight::Medium,
-                    white(if self.state.item.is_some() {
-                        0.72
-                    } else {
-                        0.55
-                    }),
-                ),
+                lay.artist,
+                style(13.0, Weight::Medium, white(if item.is_some() { 0.70 } else { 0.55 })),
             );
-            if let Some(next) = self.state.upcoming.first() {
+            if item.is_some() {
+                let line = if self.state.message.is_empty() {
+                    "Spotify"
+                } else {
+                    self.state.message.as_str()
+                };
+                let st = style(11.0, Weight::Regular, white(0.50));
+                let text_w = (view.canvas.text.measure(line, st).ceil() as i32)
+                    .min(lay.device.size.w - 28);
+                let left = lay.device.loc.x + (lay.device.size.w - text_w - 20) / 2;
+                icon(
+                    view,
+                    renderer,
+                    "audio-speakers-symbolic",
+                    rect(left, lay.device.loc.y + 1, 14, 14),
+                    white(0.55),
+                );
                 label(
                     view,
                     renderer,
-                    &format!("Next: {}", next.title),
-                    rect(tx, card.loc.y + 62, tw, 18),
-                    style(11.0, Weight::Regular, white(0.50)),
+                    line,
+                    rect(left + 20, lay.device.loc.y, text_w, lay.device.size.h),
+                    st,
                 );
             }
-            view.canvas.alpha = if self.state.item.is_some() { 1.0 } else { 0.45 };
-            for (i, command) in ["previous", "toggle", "next"].into_iter().enumerate() {
-                let toggle = command == "toggle";
-                let diameter = if toggle { 44 } else { 36 };
-                let cx = tx + tw / 2 + (i as i32 - 1) * 54;
-                let area = rect(
-                    cx - diameter / 2,
-                    card.loc.y + 102 - diameter / 2,
-                    diameter,
-                    diameter,
-                );
-                let hit = Hit::Control(command);
-                crate::media::ui::transport(
-                    &mut view.canvas,
-                    renderer,
-                    &mut view.icons,
-                    "Adwaita",
-                    match command {
-                        "previous" => crate::media::Command::Previous,
-                        "next" => crate::media::Command::Next,
-                        _ => crate::media::Command::PlayPause,
-                    },
-                    self.state.playing,
-                    true,
-                    area,
-                    self.hovered == Some(hit),
-                );
-                view.hits.push((area, hit));
+            view.canvas
+                .rect(lay.track, 2.0, white(0.16), 0.0, LINE);
+            view.hits.push((lay.seek_hit, Hit::Seek));
+            view.canvas.alpha = if item.is_some() { 1.0 } else { 0.45 };
+            for (hit, area) in &lay.buttons {
+                let hover = self.hovered == Some(*hit);
+                match hit {
+                    Hit::Control(command) => crate::media::ui::transport(
+                        &mut view.canvas,
+                        renderer,
+                        &mut view.icons,
+                        "Adwaita",
+                        match *command {
+                            "previous" => crate::media::Command::Previous,
+                            "next" => crate::media::Command::Next,
+                            _ => crate::media::Command::PlayPause,
+                        },
+                        self.state.playing,
+                        true,
+                        *area,
+                        hover,
+                    ),
+                    Hit::Shuffle | Hit::Repeat => {
+                        let (name, active) = if *hit == Hit::Shuffle {
+                            ("media-playlist-shuffle-symbolic", self.state.shuffle == Some(true))
+                        } else {
+                            let mode = self.state.repeat.unwrap_or_default();
+                            (
+                                if mode == super::RepeatMode::Track {
+                                    "media-playlist-repeat-song-symbolic"
+                                } else {
+                                    "media-playlist-repeat-symbolic"
+                                },
+                                mode != super::RepeatMode::None,
+                            )
+                        };
+                        if hover {
+                            view.canvas
+                                .rect(*area, area.size.w as f32 / 2.0, white(0.10), 0.0, LINE);
+                        }
+                        icon(
+                            view,
+                            renderer,
+                            name,
+                            rect(area.loc.x + (area.size.w - 18) / 2, area.loc.y + (area.size.h - 18) / 2, 18, 18),
+                            if active { accent_text } else { white(0.60) },
+                        );
+                        if active {
+                            view.canvas.rect(
+                                rect(area.loc.x + area.size.w / 2 - 2, area.loc.y + area.size.h - 5, 4, 4),
+                                2.0,
+                                accent,
+                                0.0,
+                                LINE,
+                            );
+                        }
+                    }
+                    _ => (),
+                }
+                view.hits.push((*area, *hit));
             }
             view.canvas.alpha = 1.0;
-            let track = rect(card.loc.x + 12, card.loc.y + 140, card.size.w - 24, 4);
-            view.canvas.rect(track, 2.0, white(0.16), 0.0, LINE);
-            view.hits.push((
-                rect(track.loc.x, track.loc.y - 8, track.size.w, 20),
-                Hit::Seek,
-            ));
-            let row_y = card.loc.y + card.size.h + 14;
             let volume = self.state.volume.clamp(0.0, 1.0);
             let name = if volume == 0.0 {
                 "audio-volume-muted-symbolic"
@@ -348,6 +433,7 @@ impl Session {
             } else {
                 "audio-volume-high-symbolic"
             };
+            let row_y = lay.volume.loc.y;
             icon(
                 view,
                 renderer,
@@ -355,7 +441,7 @@ impl Session {
                 rect(x + 24, row_y + 4, 16, 16),
                 white(0.72),
             );
-            let slider = rect(x + 52, row_y, w - 76, 24);
+            let slider = lay.volume;
             view.canvas.rect(
                 rect(slider.loc.x, row_y + 10, slider.size.w, 4),
                 2.0,
@@ -379,7 +465,7 @@ impl Session {
                 LINE,
             );
             view.hits.push((slider, Hit::Volume));
-            let field = rect(x + 12, y + 240, w - 24, 36);
+            let field = lay.search;
             view.canvas.rect(
                 field,
                 18.0,
@@ -431,7 +517,7 @@ impl Session {
                     LINE,
                 );
             }
-            let tabs = rect(x + 12, y + 288, w - 24, 32);
+            let tabs = lay.tabs;
             view.canvas.rect(tabs, 10.0, white(0.05), 0.0, LINE);
             for (i, name) in ["Home", "Library", "Playlists"].into_iter().enumerate() {
                 let left = i as i32 * (tabs.size.w - 6) / 3;
@@ -465,15 +551,17 @@ impl Session {
             }
             let status = if !self.error.is_empty() {
                 &self.error
-            } else {
+            } else if self.state.item.is_none() || !self.state.logged_in {
                 &self.state.message
+            } else {
+                ""
             };
             if !status.is_empty() {
                 label(
                     view,
                     renderer,
                     status,
-                    rect(x + 16, y + 328, w - 32, 18),
+                    rect(x + 16, lay.status_y, w - 32, 18),
                     style(
                         11.0,
                         Weight::Regular,
@@ -485,7 +573,7 @@ impl Session {
                     ),
                 );
             }
-            let list_top = y + 330 + if status.is_empty() { 0 } else { 22 };
+            let list_top = lay.list_top + if status.is_empty() { 0 } else { 22 };
             let bottom = y + p.size.h - 12;
             if !self.state.logged_in {
                 let available = bottom - list_top;
@@ -711,9 +799,10 @@ impl Session {
             view.tick_cached.clear();
             return;
         }
+        let lay = Layout::new(p, self.state.shuffle.is_some() && self.state.repeat.is_some());
         let duration = self.state.item.as_ref().map_or(0, |i| i.duration_ms);
         let position = self.state.position().min(duration);
-        let width = p.size.w - 48;
+        let width = lay.track.size.w;
         let fill = if duration == 0 {
             0
         } else {
@@ -733,7 +822,7 @@ impl Session {
             view.tick_builds += 1;
         }
         view.tick.begin(renderer, scale);
-        let (x, y) = (p.loc.x + 24, p.loc.y + 152);
+        let (x, y) = (lay.track.loc.x, lay.track.loc.y);
         if self.state.item.is_some() {
             view.tick.rect(rect(x, y, fill, 4), 2.0, accent, 0.0, LINE);
             view.tick.rect(
@@ -745,12 +834,12 @@ impl Session {
             );
             let st = style(11.0, Weight::Medium, white(0.62));
             view.tick
-                .styled_label(renderer, &time(position), x, y + 10, width / 2, st);
+                .tabular_label(renderer, &time(position), x, lay.times_y, st);
             let remaining = format!("-{}", time(duration.saturating_sub(position)));
-            let text_width = view.tick.text.measure(&remaining, st).ceil() as i32;
+            let text_width = view.tick.tabular_width(&remaining, st);
             let label_x = x + width - text_width;
             view.tick
-                .styled_label(renderer, &remaining, label_x, y + 10, text_width, st);
+                .tabular_label(renderer, &remaining, label_x, lay.times_y, st);
             #[cfg(test)]
             {
                 view.remaining_right = label_x + text_width;

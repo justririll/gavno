@@ -68,6 +68,8 @@ pub struct User {
 
 const WHITE: [f32; 3] = [1.0, 1.0, 1.0];
 const MAX_DOTS: usize = 14;
+/// Share of the blurred desktop over the sky; the rest keeps the theme alive.
+const BACKDROP_ALPHA: f32 = 0.78;
 
 pub struct Greeter {
     clock_timer: Option<RegistrationToken>,
@@ -105,6 +107,11 @@ pub struct Greeter {
     cover: ShaderBox,
     dot_boxes: Vec<ShaderBox>,
     button_boxes: [ShaderBox; 3],
+    battery_boxes: [ShaderBox; 4],
+    /// Blurred, dimmed desktop shown over the sky of the lock screen.
+    backdrop: Option<(smithay::backend::renderer::element::memory::MemoryRenderBuffer, (i32, i32))>,
+    /// Percent and charging state, shown at the top right of the lock screen.
+    battery: Option<(u8, bool)>,
     hits: Vec<(Hit, Rectangle<f64, Logical>)>,
     configured_location: Option<(Option<f64>, Option<f64>)>,
     lat: f64,
@@ -193,6 +200,9 @@ impl Greeter {
             cover: ShaderBox::default(),
             dot_boxes: Vec::new(),
             button_boxes: Default::default(),
+            battery_boxes: Default::default(),
+            backdrop: None,
+            battery: None,
             hits: Vec::new(),
             configured_location: None,
             lat,
@@ -201,6 +211,15 @@ impl Greeter {
         }
     }
 
+    pub(crate) fn set_backdrop(
+        &mut self,
+        backdrop: Option<(smithay::backend::renderer::element::memory::MemoryRenderBuffer, (i32, i32))>,
+    ) {
+        self.backdrop = backdrop;
+    }
+    pub(crate) fn set_battery(&mut self, battery: Option<(u8, bool)>) {
+        self.battery = battery;
+    }
     pub(crate) fn lock_checking(&self) -> bool { self.phase == Phase::Checking }
 
     pub(crate) fn lock_failed(&mut self) {
@@ -236,7 +255,7 @@ impl Greeter {
                 self.phase = Phase::Input;
                 self.password.clear();
                 self.dots.clear();
-                self.shake.kick(-1500.0);
+                self.shake.kick(-520.0);
                 self.message = Some((msg, MsgKind::Error));
                 self.msg.set(1.0);
             }
@@ -313,7 +332,7 @@ impl Greeter {
 
     fn submit(&mut self) {
         if self.password.is_empty() {
-            self.shake.kick(-700.0);
+            self.shake.kick(-380.0);
             return;
         }
         let Some(user) = self.users.get(self.selected) else {
@@ -445,27 +464,43 @@ impl Greeter {
             scale,
             pal,
         )));
+        if let (Some((buffer, source)), true) = (&self.backdrop, self.lock_tx.is_some()) {
+            let alpha = (intro * (1.0 - fade)).clamp(0.0, 1.0) as f32 * BACKDROP_ALPHA;
+            if alpha > 0.002 {
+                if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
+                    renderer,
+                    (0.0, 0.0),
+                    buffer,
+                    Some(alpha),
+                    Some(Rectangle::from_size((source.0 as f64, source.1 as f64).into())),
+                    Some(size),
+                    Kind::Unspecified,
+                ) {
+                    back.push(GavnoRenderElement::Memory(element));
+                }
+            }
+        }
 
         // Clock and date.
         let clock_y = h * 0.12 - (1.0 - intro) * 12.0;
         let clock = format!("{:02}:{:02}", t.hour, t.minute);
-        let clock_h = self.push_text(
+        let clock_h = self.push_tabular(
             renderer,
             &mut back,
             &clock,
             style(112.0, Weight::Thin, WHITE, 0.96, -2.0),
-            Align::Center(cx),
+            cx,
             clock_y,
             ui_alpha,
             scale,
         );
         let date = format!("{}, {} {}", t.weekday_name(), t.month_name(), t.day);
-        self.push_text(
+        self.push_tabular(
             renderer,
             &mut back,
             &date,
             style(21.0, Weight::Light, WHITE, 0.78, 0.4),
-            Align::Center(cx),
+            cx,
             clock_y + clock_h - 6.0,
             ui_alpha,
             scale,
@@ -474,7 +509,7 @@ impl Greeter {
         // Card.
         let card_w = 380.0;
         let card_h = 284.0;
-        let card_x = cx - card_w / 2.0 + shake;
+        let card_x = cx - card_w / 2.0;
         let card_y = h * 0.43 + (1.0 - intro) * 36.0 - fade * 14.0;
         let card = rect(card_x, card_y, card_w, card_h);
         back.push(GavnoRenderElement::Shader(shader::shadow(
@@ -558,7 +593,8 @@ impl Greeter {
         // Password field.
         let fw = 300.0;
         let fh = 48.0;
-        let fx = card_x + (card_w - fw) / 2.0;
+        // Only the field answers a wrong password; the card stays put.
+        let fx = card_x + (card_w - fw) / 2.0 + shake;
         let fy = name_y + name_h + 16.0;
         let focused = self.phase == Phase::Input;
         let border = if focused {
@@ -676,6 +712,12 @@ impl Greeter {
             );
         }
 
+        if self.lock_tx.is_some() {
+            if let Some((percent, charging)) = self.battery {
+                self.push_battery(renderer, &mut back, &shaders, percent, charging, w - 30.0, 28.0, ui_alpha, scale);
+            }
+        }
+
         // Bottom: host on the left, power buttons on the right.
         let base = h - 30.0;
         let host = if self.hostname.is_empty() { "GAVNO".to_owned() } else { format!("GAVNO  ·  {}", self.hostname) };
@@ -730,6 +772,113 @@ impl Greeter {
         self.shaders = Some(shaders);
         back.reverse();
         back
+    }
+
+    /// Text with every digit in a fixed-width cell, centred on `cx`.
+    #[allow(clippy::too_many_arguments)]
+    fn push_tabular(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        out: &mut Vec<GavnoRenderElement>,
+        s: &str,
+        st: TextStyleSpec,
+        cx: f64,
+        y: f64,
+        alpha: f32,
+        scale: f64,
+    ) -> f64 {
+        // `measure` lays out at the scale of the last raster.
+        let _ = self.text.render("0", st, scale);
+        let (cells, width) = self.text.tabular_cells(s, st);
+        let left = cx - width as f64 / 2.0;
+        let mut height = 0.0f64;
+        for (ch, dx) in cells {
+            if ch.is_whitespace() {
+                continue;
+            }
+            let h = self.push_text(renderer, out, ch.encode_utf8(&mut [0; 4]), st, Align::Left(left + dx as f64), y, alpha, scale);
+            height = height.max(h);
+        }
+        height
+    }
+
+    /// Battery glyph and percentage in a pill whose right edge is at `right`.
+    #[allow(clippy::too_many_arguments)]
+    fn push_battery(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        out: &mut Vec<GavnoRenderElement>,
+        shaders: &Shaders,
+        percent: u8,
+        charging: bool,
+        right: f64,
+        top: f64,
+        alpha: f32,
+        scale: f64,
+    ) {
+        let percent = percent.min(100);
+        let label = format!("{percent}%");
+        let st = style(14.0, Weight::Medium, WHITE, 0.9, 0.2);
+        let _ = self.text.render("0", st, scale);
+        let (_, text_w) = self.text.tabular_cells(&label, st);
+        let (pad, glyph_w, gap, height) = (14.0, 24.0, 9.0, 32.0);
+        let width = pad * 2.0 + glyph_w + 3.0 + gap + text_w as f64;
+        let left = right - width;
+        out.push(GavnoRenderElement::Shader(shader::rrect(
+            &mut self.battery_boxes[0],
+            shaders,
+            rect(left, top, width, height),
+            (height / 2.0 * scale) as f32,
+            [1.0, 1.0, 1.0, 0.08],
+            1.0 * scale as f32,
+            [1.0, 1.0, 1.0, 0.10],
+            alpha,
+            scale,
+        )));
+        let tone = if charging {
+            [0.55, 0.95, 0.66]
+        } else if percent <= 20 {
+            [1.0, 0.50, 0.44]
+        } else {
+            [1.0, 1.0, 1.0]
+        };
+        let (gx, gy, gh) = (left + pad, top + (height - 12.0) / 2.0, 12.0);
+        out.push(GavnoRenderElement::Shader(shader::rrect(
+            &mut self.battery_boxes[1],
+            shaders,
+            rect(gx, gy, glyph_w, gh),
+            (3.5 * scale) as f32,
+            [0.0; 4],
+            1.3 * scale as f32,
+            [tone[0], tone[1], tone[2], 0.85],
+            alpha,
+            scale,
+        )));
+        let fill = ((glyph_w - 4.0) * f64::from(percent) / 100.0).max(2.0);
+        out.push(GavnoRenderElement::Shader(shader::rrect(
+            &mut self.battery_boxes[2],
+            shaders,
+            rect(gx + 2.0, gy + 2.0, fill, gh - 4.0),
+            (1.8 * scale) as f32,
+            [tone[0], tone[1], tone[2], 0.95],
+            0.0,
+            [0.0; 4],
+            alpha,
+            scale,
+        )));
+        out.push(GavnoRenderElement::Shader(shader::rrect(
+            &mut self.battery_boxes[3],
+            shaders,
+            rect(gx + glyph_w + 1.0, gy + 3.5, 2.0, gh - 7.0),
+            (1.0 * scale) as f32,
+            [tone[0], tone[1], tone[2], 0.8],
+            0.0,
+            [0.0; 4],
+            alpha,
+            scale,
+        )));
+        let th = self.text_height("0", st, scale);
+        self.push_tabular(renderer, out, &label, st, left + pad + glyph_w + 3.0 + gap + text_w as f64 / 2.0, top + (height - th) / 2.0, alpha, scale);
     }
 
     fn text_height(&mut self, s: &str, st: TextStyleSpec, scale: f64) -> f64 {

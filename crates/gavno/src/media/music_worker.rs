@@ -18,6 +18,8 @@ pub enum Command {
     Control(String),
     Seek(u32),
     Volume(f64),
+    Shuffle(bool),
+    Repeat(super::RepeatMode),
     Login,
 }
 pub enum Request {
@@ -201,6 +203,8 @@ fn run(
                         Command::Control(command) => proxy.call("Control", &(command,)).await,
                         Command::Seek(position) => proxy.call("Seek", &(position,)).await,
                         Command::Volume(volume) => proxy.call("SetVolume", &(volume,)).await,
+                        Command::Shuffle(on) => proxy.call("SetShuffle", &(on,)).await,
+                        Command::Repeat(mode) => proxy.call("SetRepeat", &(mode.as_str(),)).await,
                         Command::Login => proxy.call("Login", &()).await,
                     }
                 }));
@@ -306,7 +310,7 @@ pub enum CoverKind {
 impl CoverKind {
     pub fn size(self) -> u32 {
         if self == Self::Hero {
-            160
+            240
         } else {
             64
         }
