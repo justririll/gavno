@@ -25,7 +25,7 @@ active.
 Mod+` slides a terminal down from the top edge of the active output, under the bar,
 and gives it keyboard focus; pressing it again slides the terminal back up and
 returns focus to the window that had it. The first press starts `[dropdown] command`
-(default `foot --app-id gavno-dropdown`); the terminal then stays alive while hidden,
+(default `foot --app-id gavno-dropdown -o csd.preferred=none`); the terminal then stays alive while hidden,
 so the next press is instant. Closing it (exit) makes the next press start a new one.
 The terminal is not part of any workspace, tiling layout, window switcher, overview,
 dock or window-hints list. With `hide_on_focus_loss = true` (the default) it also

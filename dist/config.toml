@@ -94,7 +94,7 @@
 # Dropdown terminal (Mod+`, the key left of 1). The command must give its window the
 # app id gavno-dropdown; height and width are fractions of the work area.
 # [dropdown]
-# command = "foot --app-id gavno-dropdown"
+# command = "foot --app-id gavno-dropdown -o csd.preferred=none"
 # height = 0.45
 # width = 1.0
 # hide_on_focus_loss = true

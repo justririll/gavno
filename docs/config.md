@@ -61,7 +61,7 @@ default": see `terminal` and `launcher` below.
 | `[keyboard] options` | string | `"grp:alt_shift_toggle"` | `GAVNO_XKB_OPTIONS` |
 | `[keyboard] code_mode` | boolean | `false` | none |
 | `[keyboard] bar_hints` | boolean | `true` | none |
-| `[dropdown] command` | string | `"foot --app-id gavno-dropdown"` | none |
+| `[dropdown] command` | string | `"foot --app-id gavno-dropdown -o csd.preferred=none"` | none |
 | `[dropdown] height` | float, 0.2-0.9 | `0.45` | none |
 | `[dropdown] width` | float, 0.3-1.0 | `1.0` | none |
 | `[dropdown] hide_on_focus_loss` | boolean | `true` | none |

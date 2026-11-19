@@ -1050,7 +1050,7 @@ pub struct DropdownConfig {
 }
 impl Default for DropdownConfig {
     fn default() -> Self {
-        Self { command: "foot --app-id gavno-dropdown".into(), height: 0.45, width: 1.0, hide_on_focus_loss: true, unknown: Default::default() }
+        Self { command: "foot --app-id gavno-dropdown -o csd.preferred=none".into(), height: 0.45, width: 1.0, hide_on_focus_loss: true, unknown: Default::default() }
     }
 }
 impl DropdownConfig {
@@ -1070,7 +1070,7 @@ mod dropdown_config_tests {
     fn defaults_parse_clamp_and_report_unknown_keys() {
         let config = Config::build(false, None, |_| None).0;
         assert_eq!(config.dropdown, DropdownConfig::default());
-        assert_eq!(config.dropdown.command, "foot --app-id gavno-dropdown");
+        assert_eq!(config.dropdown.command, "foot --app-id gavno-dropdown -o csd.preferred=none");
         assert_eq!((config.dropdown.height, config.dropdown.width), (0.45, 1.0));
         assert!(config.dropdown.hide_on_focus_loss);
         let text = "[dropdown]\ncommand = \"kitty --class gavno-dropdown\"\nheight = 0.6\nwidth = 0.8\nhide_on_focus_loss = false\nwrong = 1";
