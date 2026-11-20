@@ -41,6 +41,7 @@ default": see `terminal` and `launcher` below.
 | `autostart` | string list | `["foot --server"]` | none |
 | `gap` | integer, logical px | `12` | none |
 | `[tiling] default` | boolean | `false` | none |
+| `[workspaces] fixed` | integer 0-20 | `10` | none |
 | `[lock] after_idle_secs` | integer, seconds | `300` | none |
 | `[display] off_after_idle_secs` | u32 seconds, `0` = never | `600` | none |
 | `[display] direct_scanout` | boolean | `true` | none |
@@ -100,6 +101,13 @@ used verbatim when non-empty.
 
 `gap` is the distance between a new window and the work area edge. There is no
 environment override.
+
+`[workspaces] fixed` is how many workspaces always exist on every output, so
+Mod+7 or Mod+Shift+7 work at once. `0` makes workspaces fully dynamic again:
+empty ones vanish and one trailing empty workspace is kept. With a fixed count a
+new empty workspace only appears after the last one is in use. Reload applies
+it live: growing creates workspaces now, shrinking lets the extra empty ones go
+when they are inactive; windows are never moved or closed.
 
 Set `[tiling] default = true` to create workspaces in tiling mode. Existing
 workspaces keep their mode when another workspace is toggled. Mod+T,
@@ -497,6 +505,9 @@ mod_key = "super"
 terminal = "foot"
 launcher = "fuzzel"
 gap = 12
+
+[workspaces]
+fixed = 10
 
 [tiling]
 default = false

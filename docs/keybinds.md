@@ -234,19 +234,19 @@ toggle it. `[tty] start = true` starts in it. Details are in [tty.md](tty.md).
 | Mod+Shift+T | Toggle TTY mode. |
 | Mod+Enter | Open a terminal as its own window, tiled next to the focused pane. |
 | Mod+H / J / K / L | Focus left / down / up / right (the code-mode aliases, with their Ctrl, Shift and Alt variants). |
-| Mod+Q | Close the focused pane (Mod+Shift+1 ... 9 moves it to another workspace). |
-| Alt+F1 ... Alt+F6 | TTY mode only: switch to workspace 1-6; a workspace that does not exist yet means the last one. |
-| Mod+1 ... Mod+9, Mod+Tab | As always, they switch workspaces too. |
+| Mod+Q | Close the focused pane (Mod+Shift+1 ... 9, 0 moves it to another workspace). |
+| Alt+F1 ... Alt+F10 | TTY mode only: switch to workspace 1-10; a workspace that does not exist means the last one. |
+| Mod+1 ... Mod+9, Mod+0, Mod+Tab | As always, they switch workspaces too. |
 
 Mod+L does **not** lock while TTY mode is on (it focuses right, as in code mode,
 and Mod+Shift+H resizes left instead of toggling HDR); lock with Ctrl+Alt+L, which
 works in every mode. The other code-mode alias collisions are listed
 [above](#alias-collisions).
 
-Alt+F1 ... F6 is bound only while TTY mode is on, so apps keep the key otherwise.
+Alt+F1 ... F10 is bound only while TTY mode is on, so apps keep the key otherwise.
 Ctrl+Alt+F1 ... F12 stay real virtual terminal switching, and Mod+F1 stays the
 shortcut overlay. With `mod_key = "alt"` (nested), Alt+F1 is Mod+F1 and therefore
-the shortcut overlay; Alt+F2 ... F6 switch workspaces. The overview and the quick
+the shortcut overlay; Alt+F2 ... F10 switch workspaces. The overview and the quick
 settings panel are not available in TTY mode; Mod+Shift+T, IPC and the gesture
 leave it.
 
@@ -288,16 +288,18 @@ counts them from 0.
 
 | Keys | Action |
 |---|---|
-| Mod+1 ... Mod+9 | Select workspace 1-9 on the active output. |
-| Mod+Shift+1 ... Mod+Shift+9 | Move the focused window to workspace 1-9. |
+| Mod+1 ... Mod+9, Mod+0 | Select workspace 1-9, and 10 with 0, on the active output. |
+| Mod+Shift+1 ... Mod+Shift+9, Mod+Shift+0 | Move the focused window to workspace 1-9, or 10 with 0. |
 | Mod+Tab, Mod+Ctrl+Page Down | Select the next workspace. |
 | Mod+Shift+Tab, Mod+Ctrl+Page Up | Select the previous workspace. |
 
-The number keys select an existing workspace, including the trailing empty one.
-Selecting or moving to an index that does not exist does nothing.
+Workspaces 1-10 always exist on every output (`[workspaces] fixed`, see
+[config.md](config.md)), so you can start something in the background on a far
+workspace. Selecting or moving to an index that does not exist does nothing.
 
-The list is dynamic: using the trailing empty workspace appends another empty
-one, and empty inactive workspaces are removed once the switch settles. Windows
+Beyond the fixed ones the list is dynamic: once the last workspace is in use an
+empty one is appended, and empty inactive extra workspaces are removed once the
+switch settles. With `fixed = 0` every workspace is dynamic. Windows
 on inactive workspaces keep their geometry, mode and place in their workspace's
 focus order; they receive no input and are only drawn as read-only content in
 the overview and in the switching strip.

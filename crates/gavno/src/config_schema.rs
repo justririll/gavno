@@ -527,6 +527,18 @@ pub const SCHEMA: &[Key] = &[
         live: true,
     },
     Key {
+        path: "workspaces.fixed",
+        kind: Kind::Int {
+            min: 0,
+            max: 20,
+            step: 1,
+        },
+        default: Default::Int(10),
+        description: "Workspaces that always exist, numbered 1 to this value; zero keeps workspaces fully dynamic.",
+        section: "Workspaces",
+        live: true,
+    },
+    Key {
         path: "lock.after_idle_secs",
         kind: Kind::Int {
             min: 0,

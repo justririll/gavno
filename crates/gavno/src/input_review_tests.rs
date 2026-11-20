@@ -73,7 +73,7 @@ impl InputBackend for TestBackend {
     type SpecialEvent = UnusedEvent;
 }
 fn setup() -> (crate::state::tests::Harness, Output) {
-    let mut h = crate::state::tests::Harness::new();
+    let mut h = crate::state::tests::Harness::with_fixed_workspaces(0);
     let output = Output::new("test".into(), PhysicalProperties {
         size: (0, 0).into(), subpixel: Subpixel::Unknown, make: "test".into(), model: "test".into(),
     });

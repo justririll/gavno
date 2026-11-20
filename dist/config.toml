@@ -72,6 +72,9 @@
 # [tiling]
 # default = false
 
+# [workspaces]
+# fixed = 10 # Workspaces that always exist, 0-20; 0 = fully dynamic.
+
 # [display]
 # off_after_idle_secs = 600 # 0 disables automatic output power-off, independently of locking.
 # night_light = true # Warm the HDR white point in the evening (follows the sun).

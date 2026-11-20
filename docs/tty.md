@@ -23,7 +23,7 @@ Leaving plays it backwards. The animation costs frames only while it runs.
 
 28 logical pixels on top, reserved from the work area, in the `[tty] font` family:
 
-- **Left:** workspace tabs, `1 fish  2 nvim  3`. The active tab is a pill in the
+- **Left:** workspace tabs, `1 fish  2 nvim  3 ... 10`; workspaces 1-10 always exist. The active tab is a pill in the
   accent colour with dark text and slides to the new tab on a switch (a spring that
   settles to zero cost). Other tabs are dim; an empty workspace shows only its
   number, fainter. The label is the workspace name when it has one (see the AI
@@ -41,8 +41,8 @@ Leaving plays it backwards. The animation costs frames only while it runs.
 Windows tile with no gaps except a 1 px divider; the focused pane has an accent
 frame, the others a faint one. No rounded corners, shadows or decorations.
 Mod+Enter opens a terminal as its own window next to the focused one, Mod+Q closes
-it, Mod+H/J/K/L move focus, Mod+Shift+1..9 sends it to a workspace.
-**Mod+L does not lock here**: use Ctrl+Alt+L. Alt+F1 ... Alt+F6 (and Mod+1 ... 9)
+it, Mod+H/J/K/L move focus, Mod+Shift+1..9 and 0 sends it to a workspace.
+**Mod+L does not lock here**: use Ctrl+Alt+L. Alt+F1 ... Alt+F10 (and Mod+1 ... 9, 0)
 switch workspaces, with a 120 ms dip through black instead of a slide.
 
 Terminals are bare: GAVNO draws no title bar, shadow, rounded corners or focus ring

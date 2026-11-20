@@ -9,6 +9,14 @@ level, the percentage and a bolt while charging; on a machine without a
 battery (a desktop, a nested session) it shows only a plug. Bluetooth device
 batteries are not in the bar; they appear in the Bluetooth page.
 
+## Workspace strip
+
+Workspaces 1-10 always exist (`[workspaces] fixed`), so the strip on the left
+always shows at least ten entries. An empty workspace is a small dim dot, an
+occupied one a brighter dot or a pill with the app icons of its windows, and
+the active one an accent bar or pill. The strip loses icons and then scrolls
+around the active workspace on narrow outputs rather than crowding the title.
+
 In the Classic shell the quick settings entry of the tray opens the same panel.
 
 ## Quick settings

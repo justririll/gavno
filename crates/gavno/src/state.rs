@@ -127,6 +127,7 @@ impl Gavno {
     pub fn new(event_loop: &mut EventLoop<'static, Self>, display: Display<Self>, config: Config) -> Self {
         let features = Features::new(&config);
         let tiling_default = config.tiling.default && features.on(Feature::Tiling);
+        let fixed_workspaces = config.workspaces.fixed as usize;
         let config_code_mode = config.code_mode;
         let restored = crate::session_mode::take_restore();
         let start = crate::session_mode::start_mode(
@@ -207,7 +208,7 @@ impl Gavno {
             window_decor: Default::default(),
             unmapped: Vec::new(),
             mru: Vec::new(),
-            workspaces: crate::workspace::Workspaces { default_tiling: tiling_default, ..Default::default() },
+            workspaces: crate::workspace::Workspaces { default_tiling: tiling_default, fixed: fixed_workspaces, ..Default::default() },
             overview: Default::default(),
             dock: Default::default(),
             topbar,
