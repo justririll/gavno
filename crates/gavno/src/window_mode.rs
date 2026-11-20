@@ -272,7 +272,7 @@ impl Gavno {
             WindowMode::Floating => None,
             WindowMode::Maximized => output
                 .as_ref()
-                .map(|o| Zone::Maximized.rect(self.work_area(o), if self.features.on(crate::module::Feature::Classic) && self.classic.settled == crate::classic::ShellMode::Classic { 0 } else { self.config.gap })),
+                .map(|o| Zone::Maximized.rect(self.work_area(o), if self.features.on(crate::module::Feature::Classic) && self.shell_of(o).0 == crate::classic::ShellMode::Classic { 0 } else { self.config.gap })),
             WindowMode::Snapped(zone) => output
                 .as_ref()
                 .map(|o| zone.rect(self.work_area(o), self.config.gap)),

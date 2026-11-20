@@ -673,7 +673,8 @@ impl Gavno {
         self.queue_redraw_all();
     }
     pub fn reflow_tiling(&mut self, animate: bool) {
-        self.guard(crate::module::Feature::Tiling, Default::default(), |gv| gv.reflow_tiling_feature(animate))
+        // Each output tiles, floats or consoles by its own shell.
+        self.for_each_shell(|gv| gv.guard(crate::module::Feature::Tiling, Default::default(), |gv| gv.reflow_tiling_feature(animate)))
     }
 
     fn reflow_tiling_feature(&mut self, animate: bool) {

@@ -96,6 +96,8 @@ pub struct Gavno {
     pub glass: crate::ui::glass::Glass,
     /// The mode last written by `session_mode`.
     pub(crate) persisted_mode: Option<crate::session_mode::Mode>,
+    /// Shell modes of the outputs that are not loaded; see `shell.rs`.
+    pub(crate) shells: crate::shell::Shells,
     /// The pointer is hidden until the next pointer activity.
     pub pointer_hidden: bool,
     pub(crate) pointer_image: CursorImageStatus,
@@ -243,6 +245,7 @@ impl Gavno {
             tty: crate::tty_mode::Tty::default(),
             glass: Default::default(),
             persisted_mode: None,
+            shells: Default::default(),
             pointer_hidden: false,
             pointer_image: CursorImageStatus::default_named(),
             #[cfg(test)]
@@ -263,7 +266,9 @@ impl Gavno {
             polkit: Default::default(),
         };
         state.tty.on = start_tty;
+        state.shells.restore = crate::session_mode::take_restore_outputs().into_iter().collect();
         state.persisted_mode = Some(state.current_mode());
+        state.shells.persisted = state.output_modes();
         state.sync_tty_flags();
         state.sync_bar_hints();
         #[cfg(not(test))]
@@ -346,6 +351,7 @@ impl Gavno {
         self.refresh_lock();
         self.refresh_internal_lock();
         self.refresh_dropdown();
+        self.follow_active_shell();
         self.settle_classic();
         if self.sync_classic_decorations() { self.refit_fixed_windows(); }
         self.refresh_shell();

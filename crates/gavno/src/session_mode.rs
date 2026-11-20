@@ -8,7 +8,7 @@ use std::{cell::RefCell, path::{Path, PathBuf}};
 
 use crate::{classic::ShellMode, Gavno};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Mode {
     Gavno,
     Classic,
@@ -16,7 +16,7 @@ pub enum Mode {
 }
 
 impl Mode {
-    fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Mode::Gavno => "gavno",
             Mode::Classic => "classic",
@@ -38,6 +38,8 @@ thread_local! {
     static PATH: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
     /// The mode read at startup, taken by `Gavno::new`.
     static RESTORE: RefCell<Option<Mode>> = const { RefCell::new(None) };
+    /// Per-connector modes read at startup.
+    static RESTORE_OUTPUTS: RefCell<Vec<(String, Mode)>> = const { RefCell::new(Vec::new()) };
 }
 
 /// `$XDG_STATE_HOME/gavno/mode`, falling back to `~/.local/state`.
@@ -50,17 +52,42 @@ pub fn state_path() -> Option<PathBuf> {
         .map(|p| p.join("gavno/mode"))
 }
 
+/// The first line is the mode of the last change; the old one-word file is
+/// the same format without output lines.
 pub fn load(path: &Path) -> Option<Mode> {
-    Mode::parse(&std::fs::read_to_string(path).ok()?)
+    Mode::parse(std::fs::read_to_string(path).ok()?.lines().next()?)
+}
+
+/// The `connector=mode` lines after the first.
+pub fn load_outputs(path: &Path) -> Vec<(String, Mode)> {
+    let Ok(text) = std::fs::read_to_string(path) else { return Vec::new() };
+    text.lines().skip(1).filter_map(|line| {
+        let (name, mode) = line.split_once('=')?;
+        let name = name.trim();
+        (!name.is_empty()).then(|| Some((name.to_owned(), Mode::parse(mode)?))).flatten()
+    }).collect()
+}
+
+fn format(mode: Mode, outputs: &[(String, Mode)]) -> String {
+    let mut text = format!("{}\n", mode.name());
+    for (name, mode) in outputs {
+        text.push_str(&format!("{name}={}\n", mode.name()));
+    }
+    text
 }
 
 /// Writes through a temporary file, so a crash never leaves half a file.
+#[cfg(test)]
 pub fn save(path: &Path, mode: Mode) -> std::io::Result<()> {
+    save_all(path, mode, &[])
+}
+
+pub fn save_all(path: &Path, mode: Mode, outputs: &[(String, Mode)]) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
     let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, format!("{}\n", mode.name()))?;
+    std::fs::write(&tmp, format(mode, outputs))?;
     std::fs::rename(&tmp, path)
 }
 
@@ -68,11 +95,17 @@ pub fn save(path: &Path, mode: Mode) -> std::io::Result<()> {
 pub fn enable(path: Option<PathBuf>) {
     let stored = path.as_deref().and_then(load);
     RESTORE.with(|r| *r.borrow_mut() = stored);
+    let outputs = path.as_deref().map(load_outputs).unwrap_or_default();
+    RESTORE_OUTPUTS.with(|r| *r.borrow_mut() = outputs);
     PATH.with(|p| *p.borrow_mut() = path);
 }
 
 pub(crate) fn take_restore() -> Option<Mode> {
     RESTORE.with(|r| r.borrow_mut().take())
+}
+
+pub(crate) fn take_restore_outputs() -> Vec<(String, Mode)> {
+    RESTORE_OUTPUTS.with(|r| std::mem::take(&mut *r.borrow_mut()))
 }
 
 /// The start mode: a forced one from the configuration, else the remembered one.
@@ -102,13 +135,15 @@ impl Gavno {
     /// what is stored.
     pub(crate) fn persist_mode(&mut self) {
         let mode = self.current_mode();
-        if self.persisted_mode == Some(mode) {
+        let outputs = self.output_modes();
+        if self.persisted_mode == Some(mode) && self.shells.persisted == outputs {
             return;
         }
         self.persisted_mode = Some(mode);
+        self.shells.persisted = outputs.clone();
         PATH.with(|path| {
             if let Some(path) = path.borrow().as_ref() {
-                if let Err(error) = save(path, mode) {
+                if let Err(error) = save_all(path, mode, &outputs) {
                     tracing::warn!(%error, "cannot save the shell mode");
                 }
             }

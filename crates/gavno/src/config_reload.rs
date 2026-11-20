@@ -259,7 +259,7 @@ pub(crate) fn apply(gv: &mut Gavno, prepared: Prepared) -> Result<Value, String>
         owner.list.append_empty();
     }
     gv.queue_redraw_all();
-    gv.enforce_classic_floating();
+    gv.for_each_shell(|gv| gv.enforce_classic_floating());
     if night_light_changed {
         gv.refresh_theme_clock();
     }

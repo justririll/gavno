@@ -1360,6 +1360,14 @@ pub(crate) fn reset_scanout_buffers(gv: &mut Gavno) {
 }
 
 fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
+    let output = udev(gv).and_then(|d| d.gpu.as_ref()).and_then(|g| g.surfaces.get(&crtc)).map(|s| s.output.clone());
+    match output {
+        Some(output) => gv.with_render_shell(&output, |gv| render_surface_inner(gv, crtc)),
+        None => render_surface_inner(gv, crtc),
+    }
+}
+
+fn render_surface_inner(gv: &mut Gavno, crtc: crtc::Handle) {
     if gv.power.is_off() { return; }
     let started = std::time::Instant::now();
     let session_active = udev(gv).is_some_and(|d| d.session.is_active());
@@ -1713,7 +1721,7 @@ pub fn capture_output(gv: &mut Gavno, output: &Output, cursor: bool) -> Option<(
     let saved = (!cursor).then(|| {
         std::mem::replace(&mut gv.cursor_status, smithay::input::pointer::CursorImageStatus::Hidden)
     });
-    let result = capture_output_with_cursor_state(gv, output);
+    let result = gv.with_render_shell(output, |gv| capture_output_with_cursor_state(gv, output));
     if let Some(status) = saved {
         gv.cursor_status = status;
     }

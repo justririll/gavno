@@ -150,6 +150,10 @@ impl Gavno {
     /// applied when the shell returns. The mode switches at once; the look
     /// follows on the `progress` spring.
     pub fn set_tty_mode(&mut self, enable: bool) {
+        self.with_loaded_shell(|gv| gv.set_tty_mode_here(enable));
+    }
+
+    fn set_tty_mode_here(&mut self, enable: bool) {
         if !self.tty.on && (self.classic_mode() || self.classic.windows.in_classic()) {
             self.classic.windows.set_tty_resume(enable);
             return;
@@ -183,6 +187,10 @@ impl Gavno {
 
     /// Ends the mode at once, without animation (Classic took over).
     pub(crate) fn finish_tty_leave(&mut self) {
+        self.with_loaded_shell(|gv| gv.finish_tty_leave_here());
+    }
+
+    fn finish_tty_leave_here(&mut self) {
         self.tty.held = false;
         self.tty.progress.jump(0.0);
         self.apply_tty_mode(false);
@@ -363,7 +371,7 @@ impl Gavno {
     /// Per refresh pass: the clock tick and the pointer focus, which stays on
     /// the focused window so that scrolling reaches it without a mouse.
     pub(crate) fn refresh_tty(&mut self) {
-        let wanted = self.tty.on && !self.power.is_off();
+        let wanted = (self.tty.on || self.shells_any_tty()) && !self.power.is_off();
         match (wanted, self.tty.clock_timer.is_some()) {
             (true, false) => {
                 let second = crate::ui::theme::LocalTime::now().second as u64;

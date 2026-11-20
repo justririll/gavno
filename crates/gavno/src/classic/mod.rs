@@ -116,7 +116,7 @@ pub struct Classic {
     pub desktop: desktop::Desktop,
     pub taskbar: taskbar::Taskbar,
     pub start: start::Start,
-    shown: Vec<Window>,
+    pub(crate) shown: Vec<Window>,
     pub title_click: Option<(Window, Duration, smithay::utils::Point<f64, Logical>)>,
 }
 impl Default for Classic {
@@ -271,7 +271,8 @@ impl Gavno {
             gv.queue_redraw_all();
         });
     }
-    pub fn settle_classic(&mut self) {
+    /// Settles the loaded shell; see `shell::settle_classic` for all outputs.
+    pub(crate) fn settle_classic_here(&mut self) {
         let changed = self.guard(Feature::Classic, false, |gv| {
             gv.classic.advance(gv.start_time.elapsed());
             if gv.classic.held
@@ -284,9 +285,12 @@ impl Gavno {
             true
         });
         if changed {
-            self.switch_classic_windows();
-            self.sync_classic_decorations();
-            self.refit_classic_transition();
+            // Only this output's windows change shell.
+            self.with_loaded_shell(|gv| {
+                gv.switch_classic_windows();
+                gv.sync_classic_decorations();
+                gv.refit_classic_transition();
+            });
             self.persist_mode();
             self.queue_redraw_all();
         }

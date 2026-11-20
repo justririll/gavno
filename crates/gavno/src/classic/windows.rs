@@ -24,7 +24,7 @@ use std::{
 
 const LIMIT: usize = 128;
 
-struct Layout {
+pub(crate) struct Layout {
     output: Output,
     workspace: u64,
     tiling: bool,
@@ -74,7 +74,45 @@ pub(crate) struct Windows {
     tty_resume: bool,
     tty_saved: Vec<(Output, u64, bool)>,
 }
+/// The part of `Windows` that belongs to one output's shell; the window
+/// store (entries, writer) stays shared.
+#[derive(Default)]
+pub(crate) struct WindowsShell {
+    active: bool,
+    layouts: Vec<Layout>,
+    tiles: Vec<Window>,
+    code_resume: bool,
+    code_saved: Vec<(Output, u64, bool)>,
+    tty_resume: bool,
+    tty_saved: Vec<(Output, u64, bool)>,
+}
+impl WindowsShell {
+    /// A shell that starts settled in Classic (true) or not.
+    pub(crate) fn settled(active: bool) -> Self {
+        Self { active, ..Default::default() }
+    }
+}
 impl Windows {
+    pub(crate) fn take_shell(&mut self) -> WindowsShell {
+        WindowsShell {
+            active: self.active,
+            layouts: std::mem::take(&mut self.layouts),
+            tiles: std::mem::take(&mut self.tiles),
+            code_resume: std::mem::take(&mut self.code_resume),
+            code_saved: std::mem::take(&mut self.code_saved),
+            tty_resume: std::mem::take(&mut self.tty_resume),
+            tty_saved: std::mem::take(&mut self.tty_saved),
+        }
+    }
+    pub(crate) fn put_shell(&mut self, shell: WindowsShell) {
+        self.active = shell.active;
+        self.layouts = shell.layouts;
+        self.tiles = shell.tiles;
+        self.code_resume = shell.code_resume;
+        self.code_saved = shell.code_saved;
+        self.tty_resume = shell.tty_resume;
+        self.tty_saved = shell.tty_saved;
+    }
     /// Whether Classic currently owns the window layout.
     pub fn in_classic(&self) -> bool {
         self.active

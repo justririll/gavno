@@ -22,6 +22,16 @@ slides in from the top. A Super swipe drags it under the fingers and springs
 back if released early; Mod+Shift+T plays it on its own. The mode itself (tiling,
 no mouse) switches at once. The transition costs frames only while it moves.
 
+## Several monitors
+
+The mode belongs to one monitor: Mod+Shift+T, the swipe and the chip act on
+the monitor under the pointer (Mod+. and Mod+, move there from the keyboard).
+One monitor can be a console while another stays GAVNO or Classic. Each
+monitor's mode is remembered by connector name in `$XDG_STATE_HOME/gavno/mode`
+and comes back when that monitor is plugged in again. IPC `tty_mode` and
+`shell_mode` take an optional `"output": "HDMI-A-1"`, which switches that
+monitor at once, without the animation.
+
 ## The status line
 
 28 logical pixels on top, reserved from the work area, in the `[tty] font` family:

@@ -295,8 +295,16 @@ impl Gavno {
             return;
         }
         self.guard(Feature::Classic, (), |gv| {
-            let needed = gv.greeter.is_none()
-                && (gv.classic.mode == ShellMode::Classic || gv.shell_progress() > 0.001);
+            // Desktop icons live on the leftmost output that is in Classic.
+            let loaded = gv.loaded_output();
+            let classic_output = gv.outputs_in_order().into_iter().find(|o| {
+                if loaded.is_none() || loaded.as_ref() == Some(o) {
+                    gv.classic.mode == ShellMode::Classic || gv.shell_progress() > 0.001
+                } else {
+                    gv.shell_of(o).0 == ShellMode::Classic
+                }
+            });
+            let needed = gv.greeter.is_none() && classic_output.is_some();
             if !needed {
                 if gv.classic.desktop.active {
                     gv.stop_classic_desktop();
@@ -313,7 +321,7 @@ impl Gavno {
             {
                 return;
             }
-            let Some(output) = gv.space.outputs().next().cloned() else {
+            let Some(output) = classic_output else {
                 gv.stop_classic_desktop();
                 return;
             };

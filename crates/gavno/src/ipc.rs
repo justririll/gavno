@@ -234,6 +234,18 @@ fn dispatch(gv: &mut Gavno, method: &str, params: &Value) -> Result<Value, Strin
     if method == "screen" {
         return Ok(screen(gv));
     }
+    // `"output"` picks another output's shell; it switches without animation.
+    let other_output = match params.get("output") {
+        Some(name) if matches!(method, "shell_mode" | "tty_mode") => {
+            let name = name.as_str().ok_or("output must be a connector name")?;
+            let output = gv.space.outputs().find(|o| o.name() == name).cloned().ok_or("unknown output")?;
+            (gv.loaded_output().as_ref() != Some(&output)).then_some(output)
+        }
+        _ => None,
+    };
+    let outputs_json = |gv: &Gavno| -> Value {
+        Value::Object(gv.output_modes().into_iter().map(|(name, mode)| (name, json!(mode.name()))).collect())
+    };
     if method == "shell_mode" {        if let Some(mode) = params.get("mode") {
             let mode = match mode.as_str() {
                 Some("gavno") => crate::classic::ShellMode::Gavno,
@@ -241,9 +253,19 @@ fn dispatch(gv: &mut Gavno, method: &str, params: &Value) -> Result<Value, Strin
                 _ => return Err("mode must be gavno or classic".into()),
             };
             if !gv.features.on(crate::module::Feature::Classic) { return Err("Classic module disabled".into()); }
-            gv.set_shell_mode(mode);
+            match &other_output {
+                Some(output) => gv.with_shell(output, |gv| {
+                    gv.set_shell_mode(mode);
+                    gv.classic.progress.jump(mode.progress());
+                    gv.settle_classic_here();
+                }),
+                None => gv.set_shell_mode(mode),
+            }
         }
-        return Ok(json!({"mode": gv.classic.mode, "settled": gv.classic.settled, "progress": gv.shell_progress()}));
+        if let Some(output) = &other_output {
+            return Ok(json!({"output": output.name(), "settled": gv.shell_of(output).0, "outputs": outputs_json(gv)}));
+        }
+        return Ok(json!({"mode": gv.classic.mode, "settled": gv.classic.settled, "progress": gv.shell_progress(), "outputs": outputs_json(gv)}));
     }
     if method == "code_mode" {
         let enable = match params.get("enable") {
@@ -260,10 +282,21 @@ fn dispatch(gv: &mut Gavno, method: &str, params: &Value) -> Result<Value, Strin
             Some(value) => value.as_bool().ok_or("enable must be a boolean")?,
             None => !gv.tty_requested(),
         };
+        if let Some(output) = &other_output {
+            let (settled, on) = gv.shell_of(output);
+            let enable = match params.get("enable") { Some(_) => enable, None => !on };
+            if enable && settled == crate::classic::ShellMode::Classic { return Err("TTY mode is only available in GAVNO".into()); }
+            audit(method, params).map_err(|e| format!("cannot append agent audit log: {e}"))?;
+            gv.with_shell(output, |gv| {
+                gv.set_tty_mode(enable);
+                gv.tty.progress.jump(if enable { 1.0 } else { 0.0 });
+            });
+            return Ok(json!({"output": output.name(), "enabled": gv.shell_of(output).1, "outputs": outputs_json(gv)}));
+        }
         if enable && gv.classic_mode() { return Err("TTY mode is only available in GAVNO".into()); }
         audit(method, params).map_err(|e| format!("cannot append agent audit log: {e}"))?;
         gv.set_tty_mode(enable);
-        return Ok(json!({"enabled": gv.tty_requested()}));
+        return Ok(json!({"enabled": gv.tty_requested(), "outputs": outputs_json(gv)}));
     }
     if method == "night_light" {
         if let Some(preview) = params.get("preview") {

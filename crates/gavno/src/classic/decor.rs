@@ -52,15 +52,9 @@ impl Gavno {
     /// Only clients that negotiated xdg-decoration are asked to change style.
     /// GTK/CSD clients without that protocol retain their client decorations.
     pub fn sync_classic_decorations(&mut self) -> bool {
-        let classic = self.features.on(Feature::Classic)
+        let enabled = self.features.on(Feature::Classic)
             && self.features.on(Feature::Decorations)
-            && self.classic.settled == super::ShellMode::Classic
             && self.greeter.is_none();
-        let desired = if classic {
-            Mode::ServerSide
-        } else {
-            Mode::ClientSide
-        };
         let mut changed = false;
         for w in self
             .space
@@ -68,6 +62,12 @@ impl Gavno {
             .chain(self.unmapped.iter())
             .chain(self.workspaces.all().map(|v| &v.window))
         {
+            // Each window takes the style of the output it lives on.
+            let desired = if enabled && self.window_shell(w).0 == super::ShellMode::Classic {
+                Mode::ServerSide
+            } else {
+                Mode::ClientSide
+            };
             let Some(t) = w.toplevel() else { continue };
             let update = t.with_pending_state(|state| {
                 if state.decoration_mode.is_some_and(|mode| mode != desired) {
@@ -89,7 +89,7 @@ impl Gavno {
     }
     pub fn classic_client_rect(&self, window: &Window, mut slot: Rect) -> Rect {
         if self.features.on(Feature::Classic)
-            && self.classic.settled == super::ShellMode::Classic
+            && self.window_shell(window).0 == super::ShellMode::Classic
             && self.features.on(Feature::Decorations)
             && ssd(window)
         {

@@ -51,7 +51,9 @@ it first before it hides. The bind does nothing while the session is locked. See
 | Mod+Shift+. | Move the focused window to the next monitor. |
 | Mod+Shift+, | Move the focused window to the previous monitor. |
 
-Monitors are ordered left to right; the last one wraps to the first.
+Monitors are ordered left to right; the last one wraps to the first. Every
+monitor has its own shell mode (GAVNO, Classic or TTY): mode switches act on
+the monitor under the pointer, and keys follow the mode of that monitor.
 
 ## Snap
 
