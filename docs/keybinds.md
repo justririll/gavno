@@ -221,6 +221,28 @@ Mod+Alt+L swap. Ctrl+Alt+L keeps its emergency-lock precedence, including
 when Super is also held. The Shift+H collision also applies with the extra
 swap modifier held. The other aliases do not collide with existing binds.
 
+## TTY mode
+
+TTY mode is the Linux text console, "but beautiful", on the GAVNO shell: black,
+monospace, no chrome, keyboard first. Classic never enters it. Mod+Shift+T or the
+**TTY** chip in the quick settings toggles it; IPC `tty_mode` with
+`{"enable":true|false}` sets it and no parameters toggle it. `[tty] start = true`
+starts in it. The whole story, including what is drawn, is in [tty.md](tty.md).
+
+| Keys | Action |
+|---|---|
+| Mod+Shift+T | Toggle TTY mode. |
+| Alt+F1 ... Alt+F6 | TTY mode only: switch to console (workspace) 1-6; a console that does not exist yet means the last one. |
+| Mod+1 ... Mod+9, Mod+Tab | As always, they switch consoles too. |
+| Mod+J / Mod+K (and the other focus binds) | Focus the next / previous window of the console. |
+| Hold Mod | Show the status line after 150 ms. |
+
+Alt+F1 ... F6 is bound only while TTY mode is on, so apps keep the key otherwise.
+Ctrl+Alt+F1 ... F12 stay real virtual terminal switching, and Mod+F1 stays the
+shortcut overlay. With `mod_key = "alt"` (nested), Alt+F1 is Mod+F1 and therefore
+the shortcut overlay; Alt+F2 ... F6 switch consoles. The overview and the quick
+settings panel are not available on a console; Mod+Shift+T and IPC leave it.
+
 ## Window hints
 
 Mod+G shows accent-coloured letter badges at the centre of each non-minimized
