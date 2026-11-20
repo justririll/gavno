@@ -92,6 +92,8 @@ pub struct Gavno {
     pub(crate) code_mode_saved: Vec<(Output, u64, bool)>,
     /// The console look layered on the GAVNO shell; see `tty_mode.rs`.
     pub tty: crate::tty_mode::Tty,
+    /// The mode last written by `session_mode`.
+    pub(crate) persisted_mode: Option<crate::session_mode::Mode>,
     /// The pointer is hidden until the next pointer activity.
     pub pointer_hidden: bool,
     pub(crate) pointer_image: CursorImageStatus,
@@ -126,7 +128,14 @@ impl Gavno {
         let features = Features::new(&config);
         let tiling_default = config.tiling.default && features.on(Feature::Tiling);
         let config_code_mode = config.code_mode;
-        let start_classic = config.modules.classic && config.classic.start_in_classic;
+        let restored = crate::session_mode::take_restore();
+        let start = crate::session_mode::start_mode(
+            config.classic.start_in_classic,
+            config.tty.start,
+            restored,
+        );
+        let start_classic = config.modules.classic && start == crate::session_mode::Mode::Classic;
+        let start_tty = !start_classic && start == crate::session_mode::Mode::Tty;
         let dh = display.handle();
         let clock = Clock::new();
 
@@ -189,7 +198,7 @@ impl Gavno {
             loop_handle: event_loop.handle(),
             constraints_refresh_queued: false,
             loop_signal: event_loop.get_signal(),
-            classic: crate::classic::Classic::new(config.modules.classic && config.classic.start_in_classic),
+            classic: crate::classic::Classic::new(start_classic),
             config,
             ipc: crate::ipc::IpcState::default(),
             screencopy_global: None,
@@ -229,6 +238,7 @@ impl Gavno {
             code_mode: config_code_mode && !start_classic,
             code_mode_saved: Vec::new(),
             tty: crate::tty_mode::Tty::default(),
+            persisted_mode: None,
             pointer_hidden: false,
             pointer_image: CursorImageStatus::default_named(),
             #[cfg(test)]
@@ -248,7 +258,8 @@ impl Gavno {
             launches: Default::default(),
             polkit: Default::default(),
         };
-        state.tty.on = state.config.tty.start && !start_classic;
+        state.tty.on = start_tty;
+        state.persisted_mode = Some(state.current_mode());
         state.sync_tty_flags();
         state.sync_bar_hints();
         #[cfg(not(test))]

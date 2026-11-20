@@ -223,25 +223,32 @@ swap modifier held. The other aliases do not collide with existing binds.
 
 ## TTY mode
 
-TTY mode is the Linux text console, "but beautiful", on the GAVNO shell: black,
-monospace, no chrome, keyboard first. Classic never enters it. Mod+Shift+T or the
-**TTY** chip in the quick settings toggles it; IPC `tty_mode` with
-`{"enable":true|false}` sets it and no parameters toggle it. `[tty] start = true`
-starts in it. The whole story, including what is drawn, is in [tty.md](tty.md).
+TTY mode is a terminals-only look on the GAVNO shell: a permanent status line on
+top, no mouse, every workspace tiled like tmux panes. Classic never enters it.
+Mod+Shift+T, the **TTY** chip in the quick settings, or Super and a swipe down
+toggles it; IPC `tty_mode` with `{"enable":true|false}` sets it and no parameters
+toggle it. `[tty] start = true` starts in it. Details are in [tty.md](tty.md).
 
 | Keys | Action |
 |---|---|
 | Mod+Shift+T | Toggle TTY mode. |
-| Alt+F1 ... Alt+F6 | TTY mode only: switch to console (workspace) 1-6; a console that does not exist yet means the last one. |
-| Mod+1 ... Mod+9, Mod+Tab | As always, they switch consoles too. |
-| Mod+J / Mod+K (and the other focus binds) | Focus the next / previous window of the console. |
-| Hold Mod | Show the status line after 150 ms. |
+| Mod+Enter | Open a terminal as its own window, tiled next to the focused pane. |
+| Mod+H / J / K / L | Focus left / down / up / right (the code-mode aliases, with their Ctrl, Shift and Alt variants). |
+| Mod+Q | Close the focused pane (Mod+Shift+1 ... 9 moves it to another workspace). |
+| Alt+F1 ... Alt+F6 | TTY mode only: switch to workspace 1-6; a workspace that does not exist yet means the last one. |
+| Mod+1 ... Mod+9, Mod+Tab | As always, they switch workspaces too. |
+
+Mod+L does **not** lock while TTY mode is on (it focuses right, as in code mode,
+and Mod+Shift+H resizes left instead of toggling HDR); lock with Ctrl+Alt+L, which
+works in every mode. The other code-mode alias collisions are listed
+[above](#alias-collisions).
 
 Alt+F1 ... F6 is bound only while TTY mode is on, so apps keep the key otherwise.
 Ctrl+Alt+F1 ... F12 stay real virtual terminal switching, and Mod+F1 stays the
 shortcut overlay. With `mod_key = "alt"` (nested), Alt+F1 is Mod+F1 and therefore
-the shortcut overlay; Alt+F2 ... F6 switch consoles. The overview and the quick
-settings panel are not available on a console; Mod+Shift+T and IPC leave it.
+the shortcut overlay; Alt+F2 ... F6 switch workspaces. The overview and the quick
+settings panel are not available in TTY mode; Mod+Shift+T, IPC and the gesture
+leave it.
 
 ## Window hints
 
@@ -490,12 +497,15 @@ The next window of that application uses that state, clamped to an available
 output. `[classic] open_maximized = false` lets other clients choose their own
 size; remembered states still apply. Mod+T cannot enable tiling in Classic.
 
-| Gesture | GAVNO | Classic |
-|---|---|---|
-| Super + three-finger swipe up | Enter Classic | Nothing |
-| Three-finger swipe up | Nothing | Toggle show desktop |
-| Super + three-finger swipe down | Nothing | Return to GAVNO |
-| Super + two-finger swipe | Same routing as three fingers | Same routing as three fingers |
+| Gesture | TTY | GAVNO | Classic |
+|---|---|---|---|
+| Super + three-finger swipe up | Return to GAVNO | Enter Classic | Nothing |
+| Three-finger swipe up | Nothing | Nothing | Toggle show desktop |
+| Super + three-finger swipe down | Nothing | Enter TTY mode | Return to GAVNO |
+| Super + two-finger swipe | Same routing | Same routing | Same routing |
+
+The modes sit in a strip, TTY - GAVNO - Classic. Classic and TTY are never
+adjacent: leaving one goes through GAVNO.
 
 Switching the shell mode needs Super held when the swipe picks its
 direction, so a plain swipe never flips the whole desktop by accident.
@@ -506,8 +516,13 @@ With the overview enabled, swipe up in GAVNO opens the overview instead, so
 the Classic directions flip: swipe down enters Classic and toggles show
 desktop, swipe up returns to GAVNO.
 
+The TTY directions flip the same way as Classic's when the overview is enabled
+(swipe up enters TTY, swipe down returns); with Super held they win over the
+overview's vertical swipe. The TTY switch does not follow the fingers: it commits
+on release with the same distance and velocity rule, and plays the CRT animation.
+
 An open overview retains its existing vertical gestures. Horizontal gestures
-continue switching workspaces. Mode transitions follow the fingers; release
+continue switching workspaces. Classic transitions follow the fingers; release
 uses the existing distance and velocity projection, and cancellation returns
 to the originating mode.
 

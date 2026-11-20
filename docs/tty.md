@@ -1,87 +1,80 @@
 # TTY mode
 
-A third look for the shell besides GAVNO (GNOME-like) and Classic (KDE-like): the
-Linux text console, but beautiful. Black, monospace, no chrome, keyboard first,
+A terminals-only look on the GAVNO shell: a permanent status line on top, no
+mouse, and every workspace tiled like tmux panes. Black, monospace, keyboard first,
 and as light as the rest of GAVNO: nothing runs while the screen is settled.
 
 It is a session flag on the GAVNO shell, like [code mode](keybinds.md#code-mode),
 not a third shell mode. Classic never enters it; switching to Classic leaves it
-and it resumes when the GAVNO shell returns.
+and it resumes when the GAVNO shell returns. Gesture strip: TTY - GAVNO - Classic.
 
 ## Turning it on
 
-- Mod+Shift+T, or the **TTY** chip in the quick settings next to the Code mode chip.
+- Mod+Shift+T, the **TTY** chip in the quick settings, or Super and a three-finger
+  swipe down in GAVNO (swipe up returns); see [keybinds.md](keybinds.md#tty-mode).
 - `gavno msg tty_mode` toggles; `gavno msg tty_mode '{"enable":true}'` sets it.
-- `[tty] start = true` starts in it; see [config.md](config.md#tty-mode).
+- `[tty] start = true` forces it at start; otherwise the last mode is remembered,
+  see [config.md](config.md#start-mode).
 
-Entering plays a CRT power-on: the screen grows out of a bright horizontal line
-in 200 ms. Leaving plays it backwards and ends the mode when it is over. The
-animation costs frames only while it runs.
+Entering plays a CRT power-on (200 ms): the screen grows out of a bright line.
+Leaving plays it backwards. The animation costs frames only while it runs.
 
-## What changes
+## The status line
 
-- **No chrome.** No bar, dock, window decorations, shadows, rounded corners,
-  focus ring, wallpaper or living-theme background. The gap is 0. The background
-  is `#0a0a0c` with a very subtle radial vignette, rendered once.
-- **Consoles are workspaces in monocle layout.** Each workspace shows its
-  focused window over the whole output; the other windows of that console stay
-  behind it and are not drawn. Mod+J / Mod+K (aliases of Mod+Down / Mod+Up, with
-  the usual Ctrl, Shift and Alt variants) and the other focus binds cycle the
-  windows of a console; H and L are not aliased, so Mod+L still locks. Every workspace's previous floating/tiling state comes
-  back when the mode ends.
-- **Alt+F1 ... Alt+F6** switch to console 1-6 (only while the mode is on), next
-  to Mod+1 ... Mod+9. A console that does not exist yet means the last one.
-  Ctrl+Alt+Fn remains real VT switching. Switching does not slide: the console
-  changes at once and a 120 ms dip through black fades in over it.
-- **Empty console.** A workspace without windows shows, top left in monospace:
+28 logical pixels on top, reserved from the work area, in the `[tty] font` family:
 
-  ```
-  GAVNO 0.1.0 vivobook tty3
+- **Left:** workspace tabs, `1 fish  2 nvim  3`. The active tab is a pill in the
+  accent colour with dark text and slides to the new tab on a switch (a spring that
+  settles to zero cost). Other tabs are dim; an empty workspace shows only its
+  number, fainter. The label is the workspace name when it has one (see the AI
+  workspace names), else the focused window's app name.
+- **Centre:** the focused window title, dim, cut with an ellipsis.
+- **Right:** Wi-Fi strength, volume, battery and the date and time, each with a small
+  icon and separated by hairlines, from the same sources as the bar. The battery
+  turns amber at 20 % and red at 10 %, green while charging.
+- A 1 px hairline closes it at the bottom; the background is a touch lighter than
+  the console. It redraws when its content changes; the clock is one one-shot timer
+  aligned to the next minute, never a per-second tick.
 
-  vivobook login: kirill
-  [kirill@vivobook ~]$ █
-  ```
+## Panes
 
-  The host name comes from `/etc/hostname`, the user from `$USER`. The block
-  cursor blinks every 530 ms, and the timer exists only while an empty console is
-  on screen.
-- **Terminal autostart.** With `[tty] autostart_terminal = true` (the default),
-  entering the mode on an empty console or switching to one starts the configured
-  `terminal` once. Nothing restarts it: a terminal that fails or is closed again
-  is started only by the next switch into that empty console, and never twice for
-  one console within two seconds.
-- **Status line on demand.** There is no permanent bar. While Mod is held for more
-  than 150 ms, and for 1.5 s after a console switch, one line shows at the bottom:
-  `tty2  foot` on the left (console number in the accent colour, app id of the
-  focused window) and `wifi 87%  bat 64%  14:32` on the right, from the same
-  status sources as the bar (a trailing `+` after the battery means charging;
-  `eth` and `net off` replace Wi-Fi when wired or offline). It fades in and out
-  in 80 ms. Pressing another key while Mod is held (a chord) does not bring it up.
-  The status worker only runs while the line is visible.
-- **Notifications** are kernel messages at the top left, at most three lines,
-  `[ 1234.567] Telegram: Alice: message text`, each gone after 4 s (the time is
-  seconds since the compositor started). Do not disturb and the history still work.
+Windows tile with no gaps except a 1 px divider; the focused pane has an accent
+frame, the others a faint one. No rounded corners, shadows or decorations.
+Mod+Enter opens a terminal as its own window next to the focused one, Mod+Q closes
+it, Mod+H/J/K/L move focus, Mod+Shift+1..9 sends it to a workspace.
+**Mod+L does not lock here**: use Ctrl+Alt+L. Alt+F1 ... Alt+F6 (and Mod+1 ... 9)
+switch workspaces, with a 120 ms dip through black instead of a slide.
+
+Terminals are bare: GAVNO draws no title bar, shadow, rounded corners or focus ring
+for any window in this mode, only the 1 px pane frame. The `footclient` it starts
+(`footclient -o csd.preferred=none -o pad=8x6`) draws no client-side decorations
+either and keeps 8x6 px of padding so text does not touch the divider.
+
+An empty workspace starts a terminal (`[tty] autostart_terminal`): `footclient`
+when a foot server socket exists, else the configured `terminal`. It happens only
+on a switch into the empty workspace, never from a refresh, and never twice within
+two seconds, so a terminal that fails is not started in a loop. Meanwhile you see a
+dim `Mod+Enter  terminal` hint on the background, which is `#0a0a0c` with a static
+vignette.
+
+## No mouse
+
+The cursor is never drawn and pointer motion and buttons are dropped before
+anything sees them: no clicks, hover or focus-follows-mouse. Two-finger scroll still
+reaches the focused window (the invisible pointer sits on it), so terminal scrollback
+works, and 3/4-finger gestures keep working. Leaving restores the pointer.
+
+## Also restyled
+
+- **Notifications** are kernel messages, up to three lines at the top right under
+  the status line, `[ 1234.567] Telegram: Alice: text`, gone after 4 s.
 - **Launcher** is a command line at the bottom: `$ query` with the matches above
-  it as plain lines and the selected one in the accent colour. The ranking,
-  frecency, calculator, files and AI row are the regular launcher.
-- **Lock screen** is a console login: `host login: user`, a silent `Password:`
-  prompt (nothing is echoed, no dots) and `Login incorrect` on failure. The
-  authentication is the regular one.
-- **Pointer** hides at the first key press that reaches a client or a bind, like
-  code mode, and returns on the next pointer event.
-- The overview and the quick settings popovers are not available on a console.
-
-## Font
-
-`[tty] font` is a fontconfig family (default `monospace`), used for every TTY
-text. It is resolved once with `fc-match` when the first text is drawn and falls
-back to Liberation Mono or Noto Sans Mono. The text has no glow: that would cost
-a blurred second pass, and the console should stay free when nothing changes.
+  it, the selected one in the accent colour.
+- **Lock screen** is a console login (`host login: user`, a silent `Password:`,
+  `Login incorrect`); authentication is the regular one.
+- The overview and quick settings popovers are not available.
 
 ## Cost
 
-When settled, TTY mode arms no timer and requests no frame. The only timers are
-the 150 ms Mod-hold timer, the 1.5 s status linger, the 200 ms end of the
-power-off, and the cursor blink on a visible empty console; each exists only
-while its thing is on screen. The living theme, the bar clock and the bar status
-worker are not running while the mode is on.
+Settled, TTY mode arms one timer (the minute clock) and requests no frame. The
+living theme, the bar clock and the bar are not running while it is on.

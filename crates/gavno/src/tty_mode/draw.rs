@@ -1,5 +1,5 @@
-//! Everything TTY mode draws: the static vignette, the empty console, the
-//! status line, the console switch dip and the CRT power animation.
+//! Everything TTY mode draws: the status line on top, pane dividers, the
+//! static vignette, the console switch dip and the CRT power animation.
 
 use std::time::Duration;
 
@@ -22,12 +22,19 @@ use smithay::{
     utils::{Logical, Point, Rectangle, Size, Transform},
 };
 
-use super::{crt_shape, fade_cover, Tty, CRT_TIME};
+use super::{crt_shape, fade_cover, Tty, BAR_HEIGHT, CRT_TIME};
 use crate::{
-    overview::SceneWindow,
+    icons::Icons,
     render::GavnoRenderElement,
-    topbar::{geometry::rect, status::{Network, Snapshot}, Canvas},
-    ui::text::{TextStyleSpec, Weight},
+    topbar::{
+        geometry::rect,
+        status::{battery_icons, strength_icon, volume_icon, Network, Snapshot},
+        Canvas, FULL_COLOR,
+    },
+    ui::{
+        spring::{Spring, SpringParams},
+        text::{TextStyleSpec, Weight},
+    },
     window_mode::{mode_state, WindowMode},
     workspace::{OwnedWindow, Workspace, Workspaces},
 };
@@ -36,31 +43,57 @@ type Elem = GavnoRenderElement;
 
 /// Console background at the centre; the vignette darkens towards the corners.
 const BACKGROUND: [u8; 3] = [10, 10, 12];
-const TEXT: [f32; 4] = [0.78, 0.78, 0.81, 1.0];
-const DIM: [f32; 4] = [0.46, 0.46, 0.51, 1.0];
-const STRIP: [f32; 4] = [0.085, 0.085, 0.10, 1.0];
-const FONT: f32 = 15.0;
-const LINE_HEIGHT: i32 = 20;
-const MARGIN: i32 = 14;
-const STRIP_HEIGHT: i32 = 24;
+const BAR_BG: [f32; 4] = [0.066, 0.066, 0.082, 1.0];
+const HAIRLINE: [f32; 4] = [1.0, 1.0, 1.0, 0.075];
+const TEXT: [f32; 4] = [0.80, 0.80, 0.84, 1.0];
+const DIM: [f32; 4] = [0.50, 0.50, 0.56, 1.0];
+const FAINT: [f32; 4] = [0.33, 0.33, 0.39, 1.0];
+const FONT: f32 = 13.0;
+const TEXT_HEIGHT: i32 = 16;
+const PAD: i32 = 10;
+const ICON: i32 = 14;
 
 /// Render-side state: canvases and caches that are built once.
 #[derive(Default)]
 pub(super) struct View {
     front: Canvas,
     back: Canvas,
+    icons: Icons,
     vignette: Option<((i32, i32), MemoryRenderBuffer)>,
-    host: Option<String>,
-    user: Option<String>,
+    /// Position of the active-tab pill per output, in tab units.
+    tabs: Vec<(String, Spring)>,
+}
+
+impl View {
+    pub(super) fn tabs_active(&self) -> bool {
+        self.tabs.iter().any(|(_, spring)| spring.is_active())
+    }
+    /// The pill spring of `output`, retargeted to `active`; the first frame
+    /// starts in place.
+    fn tab_position(&mut self, output: &str, active: usize, now: Duration) -> f64 {
+        let at = match self.tabs.iter().position(|(name, _)| name == output) {
+            Some(at) => at,
+            None => {
+                self.tabs.push((output.to_owned(), Spring::new(active as f64, SpringParams::SNAPPY)));
+                self.tabs.len() - 1
+            }
+        };
+        let spring = &mut self.tabs[at].1;
+        if spring.target != active as f64 {
+            spring.set(active as f64);
+        }
+        spring.advance(now)
+    }
 }
 
 /// What a frame needs from the compositor.
 pub(crate) struct Frame<'a> {
     pub workspaces: &'a Workspaces,
+    pub space: &'a Space<Window>,
     pub status: &'a Snapshot,
     pub accent: [f32; 4],
-    /// Notification lines above the console text.
-    pub rows: usize,
+    pub mod_label: &'static str,
+    pub icon_theme: &'a str,
 }
 
 /// The workspace shows no window the user could see.
@@ -72,8 +105,8 @@ fn style(color: [f32; 4]) -> TextStyleSpec {
     TextStyleSpec { size: FONT, weight: Weight::Mono, color, tracking: 0.0 }
 }
 
-/// A tile that fills the console: it competes for the screen with the others.
-fn monocle_candidate(window: &Window) -> bool {
+/// A pane: a tiled window of a console.
+fn pane(window: &Window) -> bool {
     let state = mode_state(window);
     crate::classic::windows::normal_window(window)
         && !state.tile_floating
@@ -81,25 +114,35 @@ fn monocle_candidate(window: &Window) -> bool {
         && state.mode == WindowMode::Floating
 }
 
-/// The windows to draw, back to front: every window that is not a console
-/// filler, and only the topmost of the fillers.
-pub(crate) fn scene(space: &Space<Window>, output: &Output) -> Vec<SceneWindow> {
-    let origin = space.output_geometry(output).unwrap_or_default().loc;
-    let elements: Vec<&Window> = space.elements().collect();
-    let top = elements.iter().rposition(|w| monocle_candidate(w));
-    elements
-        .into_iter()
-        .enumerate()
-        .filter(|(i, w)| !monocle_candidate(w) || Some(*i) == top)
-        .filter_map(|(_, window)| {
-            let location = space.element_location(window)?;
-            Some(SceneWindow {
-                window: window.clone(),
-                location,
-                rect: Rectangle::new((location - origin).to_f64(), window.geometry().size.to_f64()),
-            })
-        })
-        .collect()
+/// "org.kde.konsole" -> "konsole", "Foot" -> "foot".
+pub(crate) fn short_app(app: &str) -> String {
+    app.rsplit('.').next().unwrap_or(app).trim().to_lowercase()
+}
+
+/// The tab label of a workspace: its name when it has one, else the app of
+/// its focused window; empty for an empty workspace.
+pub(crate) fn tab_label(workspace: &Workspace<OwnedWindow>) -> String {
+    if let Some(name) = workspace.name.as_ref().filter(|n| !n.is_empty()) {
+        return name.clone();
+    }
+    workspace
+        .windows
+        .iter()
+        .rev()
+        .find(|w| !mode_state(&w.window).minimized)
+        .map(|w| short_app(&crate::overlay::window_labels(&w.window).1))
+        .unwrap_or_default()
+}
+
+/// Colour of the battery icon: calm normally, amber and red when low, green
+/// while charging.
+pub(crate) fn battery_color(percent: u8, charging: bool) -> [u8; 3] {
+    match (charging, percent) {
+        (true, _) => [120, 200, 140],
+        (_, 0..=10) => [240, 100, 90],
+        (_, 11..=20) => [235, 180, 90],
+        _ => [150, 150, 160],
+    }
 }
 
 /// Radial vignette as premultiplied ARGB bytes, opaque.
@@ -124,59 +167,6 @@ pub(crate) fn vignette_pixels(width: i32, height: i32) -> Vec<u8> {
     pixels
 }
 
-fn read_trimmed(path: &str) -> Option<String> {
-    std::fs::read_to_string(path).ok().map(|s| s.trim().to_owned()).filter(|s| !s.is_empty())
-}
-
-impl View {
-    fn identity(&mut self) -> (String, String) {
-        let host = self
-            .host
-            .get_or_insert_with(|| read_trimmed("/etc/hostname").unwrap_or_else(|| "localhost".into()))
-            .clone();
-        let user = self
-            .user
-            .get_or_insert_with(|| std::env::var("USER").ok().filter(|u| !u.is_empty()).unwrap_or_else(|| "user".into()))
-            .clone();
-        (host, user)
-    }
-}
-
-/// The lines of an empty console, top to bottom, and the column of the cursor.
-pub(crate) fn console_lines(host: &str, user: &str, number: usize) -> [String; 4] {
-    [
-        format!("GAVNO {} {host} tty{number}", env!("CARGO_PKG_VERSION")),
-        String::new(),
-        format!("{host} login: {user}"),
-        format!("[{user}@{host} ~]$ "),
-    ]
-}
-
-/// "wifi 87%  bat 64%  14:32"
-pub(crate) fn status_right(status: &Snapshot, hour: u32, minute: u32) -> String {
-    let mut parts = Vec::new();
-    match &status.network {
-        Network::Wifi { strength, .. } => parts.push(format!("wifi {strength}%")),
-        Network::Wired => parts.push("eth".to_owned()),
-        Network::Offline => parts.push("net off".to_owned()),
-    }
-    if let Some(battery) = &status.battery {
-        parts.push(format!("bat {}%{}", battery.percent, if battery.charging { "+" } else { "" }));
-    }
-    parts.push(format!("{hour:02}:{minute:02}"));
-    parts.join("  ")
-}
-
-/// The app id of the window on top of a console, or nothing.
-fn console_app(workspace: &Workspace<OwnedWindow>) -> String {
-    workspace
-        .windows
-        .iter()
-        .rev()
-        .find(|w| !mode_state(&w.window).minimized)
-        .map(|w| crate::overlay::window_labels(&w.window).1)
-        .unwrap_or_default()
-}
 
 impl Tty {
     /// Elements above everything: the status line and the dip through black.
@@ -189,34 +179,108 @@ impl Tty {
         now: Duration,
         frame: &Frame,
     ) -> Vec<Elem> {
-        let alpha = self.status_alpha(now);
         let cover = self.fade.map_or(0.0, |start| fade_cover(start, now));
-        if alpha <= 0.0 && cover <= 0.003 {
-            return Vec::new();
-        }
-        let c = &mut self.view.front;
+        let Some(owner) = frame.workspaces.get(output) else { return Vec::new() };
+        let position = self.view.tab_position(&output.name(), owner.list.active, now);
+        let view = &mut self.view;
+        let c = &mut view.front;
         c.begin(renderer, scale);
-        if alpha > 0.0 {
-            if let Some(owner) = frame.workspaces.get(output) {
-                let workspace = &owner.list.items[owner.list.active];
-                let y = size.h - STRIP_HEIGHT;
-                c.alpha = alpha;
-                c.rect(rect(0, y, size.w, STRIP_HEIGHT), 0.0, STRIP, 0.0, [0.0; 4]);
-                let text_y = y + (STRIP_HEIGHT - LINE_HEIGHT) / 2 + 1;
-                let number = format!("tty{}", owner.list.active + 1);
-                let accent = TextStyleSpec { color: [frame.accent[0], frame.accent[1], frame.accent[2], 1.0], ..style(TEXT) };
-                let number_w = c.text.measure(&number, accent).ceil() as i32;
-                c.styled_label(renderer, &number, MARGIN, text_y, number_w + 4, accent);
-                let app = console_app(workspace);
-                if !app.is_empty() {
-                    let gap = c.text.measure("  ", style(DIM)).ceil() as i32;
-                    c.styled_label(renderer, &app, MARGIN + number_w + gap, text_y, size.w / 2, style(DIM));
-                }
-                let time = crate::ui::theme::LocalTime::now();
-                let right = status_right(frame.status, time.hour, time.minute);
-                let right_w = c.text.measure(&right, style(DIM)).ceil() as i32;
-                c.styled_label(renderer, &right, size.w - MARGIN - right_w, text_y, right_w + 4, style(DIM));
-                c.alpha = 1.0;
+        let w = size.w;
+        c.rect(rect(0, 0, w, BAR_HEIGHT), 0.0, BAR_BG, 0.0, [0.0; 4]);
+        c.rect(rect(0, BAR_HEIGHT - 1, w, 1), 0.0, HAIRLINE, 0.0, [0.0; 4]);
+        let text_y = (BAR_HEIGHT - 1 - TEXT_HEIGHT) / 2;
+        let accent = [frame.accent[0], frame.accent[1], frame.accent[2], 1.0];
+
+        // Tabs on the left.
+        let mut tabs = Vec::new();
+        let mut x = 6;
+        for (index, workspace) in owner.list.items.iter().enumerate() {
+            let label = tab_label(workspace);
+            let number = (index + 1).to_string();
+            let text = if label.is_empty() { number.clone() } else { format!("{number} {label}") };
+            let width = c.text.measure(&text, style(TEXT)).ceil() as i32;
+            tabs.push((x, width + 2 * 8, text, number.len(), label.is_empty()));
+            x += width + 2 * 8 + 2;
+        }
+        let tabs_end = x;
+        // Draw order is back to front: the pill first.
+        if !tabs.is_empty() {
+            let last = tabs.len() - 1;
+            let p = position.clamp(0.0, last as f64);
+            let (lo, hi) = (p.floor() as usize, (p.ceil() as usize).min(last));
+            let t = p - lo as f64;
+            let pill_x = tabs[lo].0 as f64 + (tabs[hi].0 - tabs[lo].0) as f64 * t;
+            let pill_w = tabs[lo].1 as f64 + (tabs[hi].1 - tabs[lo].1) as f64 * t;
+            c.rect(rect(pill_x.round() as i32, 4, pill_w.round() as i32, BAR_HEIGHT - 9), 5.0, accent, 0.0, [0.0; 4]);
+        }
+        let on_accent = crate::ui::style::on_accent(accent);
+        for (index, (tab_x, width, text, digits, empty)) in tabs.iter().enumerate() {
+            // The label colour follows how much of the pill covers the tab.
+            let cover_amount = (1.0 - (position - index as f64).abs()).clamp(0.0, 1.0) as f32;
+            let base = if *empty { FAINT } else { DIM };
+            let mix = |a: f32, b: f32| a + (b - a) * cover_amount;
+            let color = [mix(base[0], on_accent[0]), mix(base[1], on_accent[1]), mix(base[2], on_accent[2]), 1.0];
+            c.styled_label(renderer, text, tab_x + 8, text_y, width + 4, style(color));
+            let _ = digits;
+        }
+
+        // Status segments on the right, from the right edge.
+        let mut right = w - PAD;
+        let divider = |c: &mut Canvas, x: i32| c.rect(rect(x, 8, 1, BAR_HEIGHT - 17), 0.0, HAIRLINE, 0.0, [0.0; 4]);
+        let time = crate::ui::theme::LocalTime::now();
+        let clock = format!("{} {:02} {} {:02}:{:02}", &time.weekday_name()[..3], time.day, &time.month_name()[..3], time.hour, time.minute);
+        let clock_w = c.text.measure(&clock, style(TEXT)).ceil() as i32;
+        right -= clock_w;
+        c.styled_label(renderer, &clock, right, text_y, clock_w + 4, style(TEXT));
+        let segment_gap = 14;
+        let mut segments: Vec<(Vec<String>, [u8; 3], String)> = Vec::new();
+        let snapshot = frame.status;
+        match &snapshot.network {
+            Network::Wifi { strength, .. } => segments.push((vec![strength_icon(*strength).into()], [150, 150, 160], format!("{strength}%"))),
+            Network::Wired => segments.push((vec!["network-wired-symbolic".into()], [150, 150, 160], "eth".into())),
+            Network::Offline => segments.push((vec!["network-wireless-offline-symbolic".into()], [95, 95, 105], "off".into())),
+        }
+        if let Some(volume) = snapshot.volume {
+            let text = if volume.muted { "mute".to_owned() } else { format!("{}%", (volume.level * 100.0).round() as u32) };
+            segments.push((vec![volume_icon(Some(volume)).into()], if volume.muted { [95, 95, 105] } else { [150, 150, 160] }, text));
+        }
+        if let Some(battery) = &snapshot.battery {
+            segments.push((battery_icons(battery).to_vec(), battery_color(battery.percent, battery.charging), format!("{}%", battery.percent)));
+        }
+        let mut limit = tabs_end;
+        // Draw the segments right to left.
+        divider(c, right - segment_gap / 2 - 1);
+        right -= segment_gap;
+        for (names, color, text) in segments.iter().rev() {
+            let text_w = c.text.measure(text, style(TEXT)).ceil() as i32;
+            right -= text_w;
+            let text_color = if *color == [150, 150, 160] || *color == [95, 95, 105] { DIM } else { [color[0] as f32 / 255.0, color[1] as f32 / 255.0, color[2] as f32 / 255.0, 1.0] };
+            c.styled_label(renderer, text, right, text_y, text_w + 4, style(text_color));
+            right -= 4 + ICON;
+            let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+            let icon = rect(right, (BAR_HEIGHT - 1 - ICON) / 2, ICON, ICON);
+            c.colored_icon(renderer, &mut view.icons, &refs, frame.icon_theme, icon, Some(*color));
+            let _ = FULL_COLOR;
+            divider(c, right - segment_gap / 2 - 1);
+            right -= segment_gap;
+        }
+        limit = limit.max(0);
+
+        // The focused title in the middle.
+        if let Some(workspace) = owner.list.items.get(owner.list.active) {
+            let title = workspace
+                .windows
+                .iter()
+                .rev()
+                .find(|w| !mode_state(&w.window).minimized)
+                .map(|w| crate::overlay::window_labels(&w.window).0)
+                .unwrap_or_default();
+            let room = (right - limit - 24).max(0);
+            if !title.is_empty() && room > 40 {
+                let title = crate::topbar::ellipsize(&mut c.text, &title, style(DIM), room);
+                let title_w = (c.text.measure(&title, style(DIM)).ceil() as i32).min(room);
+                let x = ((w - title_w) / 2).clamp(limit + 12, (right - 12 - title_w).max(limit + 12));
+                c.styled_label(renderer, &title, x, text_y, title_w + 4, style(DIM));
             }
         }
         if cover > 0.003 {
@@ -225,8 +289,8 @@ impl Tty {
         c.finish()
     }
 
-    /// The console itself, behind every window: the empty-console text and
-    /// the static vignette.
+    /// Behind the windows: the dividers between panes, the hint of an empty
+    /// workspace and the static vignette.
     pub(crate) fn back(
         &mut self,
         renderer: &mut GlesRenderer,
@@ -236,31 +300,34 @@ impl Tty {
         frame: &Frame,
     ) -> Vec<Elem> {
         let mut elements = Vec::new();
-        if let Some(owner) = frame.workspaces.get(output) {
-            if console_empty(&owner.list.items[owner.list.active]) {
-                let (host, user) = self.view.identity();
-                let lines = console_lines(&host, &user, owner.list.active + 1);
-                let blink = self.blink_on;
-                let top = MARGIN + frame.rows as i32 * LINE_HEIGHT;
-                let c = &mut self.view.back;
-                c.begin(renderer, scale);
-                for (i, line) in lines.iter().enumerate() {
-                    if line.is_empty() {
-                        continue;
-                    }
-                    let color = if i == 0 { DIM } else { TEXT };
-                    let width = c.text.measure(line, style(color)).ceil() as i32 + 4;
-                    c.styled_label(renderer, line, MARGIN, top + i as i32 * LINE_HEIGHT, width, style(color));
-                }
-                if blink {
-                    let x = MARGIN + c.text.measure(&lines[3], style(TEXT)).ceil() as i32;
-                    let cell = c.text.measure("M", style(TEXT)).ceil() as i32;
-                    let y = top + 3 * LINE_HEIGHT;
-                    c.rect(rect(x, y + 2, cell, LINE_HEIGHT - 3), 0.0, [TEXT[0], TEXT[1], TEXT[2], 0.9], 0.0, [0.0; 4]);
-                }
-                elements.extend(c.finish());
-            }
+        let origin = frame.space.output_geometry(output).unwrap_or_default().loc;
+        let accent = [frame.accent[0], frame.accent[1], frame.accent[2], 1.0];
+        let panes: Vec<Rectangle<i32, Logical>> = frame
+            .space
+            .elements()
+            .filter(|w| pane(w))
+            .filter_map(|w| {
+                let loc = frame.space.element_location(w)?;
+                Some(Rectangle::new(loc - origin, w.geometry().size))
+            })
+            .collect();
+        let empty = frame.workspaces.get(output).is_some_and(|o| console_empty(&o.list.items[o.list.active]));
+        let c = &mut self.view.back;
+        c.begin(renderer, scale);
+        if empty {
+            let hint = format!("{}+Enter  terminal", frame.mod_label);
+            let width = c.text.measure(&hint, style(FAINT)).ceil() as i32;
+            c.styled_label(renderer, &hint, (size.w - width) / 2, (size.h + BAR_HEIGHT) / 2 - TEXT_HEIGHT / 2, width + 4, style(FAINT));
         }
+        // A 1 px frame around every pane; the focused one (the topmost) in
+        // the accent. Windows cover their insides.
+        for (index, area) in panes.iter().enumerate() {
+            let focused = index + 1 == panes.len();
+            let outer = Rectangle::new(area.loc - Point::from((1, 1)), area.size + Size::from((2, 2)));
+            let color = if focused { [accent[0], accent[1], accent[2], 0.9] } else { [1.0, 1.0, 1.0, 0.10] };
+            c.rect(outer, 0.0, [0.0; 4], 1.0, color);
+        }
+        elements.extend(c.finish());
         elements.push(self.vignette(renderer, size, scale));
         elements
     }

@@ -272,7 +272,7 @@ pub(crate) fn kernel_line(born: Duration, app: &str, summary: &str, body: &str) 
 }
 
 impl Notifications {
-    /// Console look: up to three kernel message lines at the top left.
+    /// Console look: up to three kernel message lines at the top right, under the status line.
     fn elements_tty(&mut self, renderer: &mut GlesRenderer, scale: f64, width: i32) -> Vec<GavnoRenderElement> {
         const FONT: f32 = 15.0;
         const LINE: i32 = 20;
@@ -292,7 +292,11 @@ impl Notifications {
             }
             canvas.alpha = (card.spring.value * 2.0).clamp(0.0, 1.0) as f32;
             let line = kernel_line(card.born, &card.notice.app, &card.notice.summary, &card.notice.body);
-            canvas.styled_label(renderer, &line, 14, 14 + row * LINE, width - 28, style);
+            let line_w = (canvas.text.measure(&line, style).ceil() as i32).min(width - 28);
+            let y = crate::tty_mode::BAR_HEIGHT + 10 + row * LINE;
+            // A dark backing keeps the line readable over a window.
+            canvas.rect(crate::topbar::geometry::rect(width - 14 - line_w - 6, y - 1, line_w + 12, LINE), 0.0, [0.03, 0.03, 0.04, 0.88], 0.0, crate::topbar::LINE);
+            canvas.styled_label(renderer, &line, width - 14 - line_w, y, line_w + 4, style);
             row += 1;
         }
         canvas.finish()

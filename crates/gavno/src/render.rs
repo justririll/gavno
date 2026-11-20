@@ -468,7 +468,7 @@ fn output_elements_inner(
     if !tty.on { elements.extend(features.call(Feature::Dock, Vec::new(), || dock.elements(renderer, output, output_geo.size, pointer_pos - output_geo.loc.to_f64(), time, shell_visible))); }
     // Workspace ownership and transitions are core; overview only adds its zoom.
     let mut scene = if tty.on {
-        Some(crate::tty_mode::draw::scene(space, output))
+        None
     } else if features.on(Feature::Overview) {
         features.call(Feature::Overview, None, || {
             overview.work_area = Some(work_area);
@@ -506,8 +506,8 @@ fn output_elements_inner(
     if let Some(stall) = stall.as_deref_mut() { stall.mark("elements.desktop"); }
     if tty.on {
         // The console: no wallpaper, no sky, only the static vignette.
-        let rows = topbar.notifications.borrow().tty_rows();
-        let frame = crate::tty_mode::draw::Frame { workspaces: &*workspaces, status: topbar.status(), accent, rows };
+        let mod_label = match config.mod_key { crate::config::ModKey::Super => "Super", crate::config::ModKey::Alt => "Alt" };
+        let frame = crate::tty_mode::draw::Frame { workspaces: &*workspaces, space, status: topbar.status(), accent, mod_label, icon_theme: &config.dock.icon_theme };
         let front = tty.front(renderer, output, output_geo.size, scale.x, time, &frame);
         elements.splice(0..0, front);
         elements.extend(tty.back(renderer, output, output_geo.size, scale.x, &frame));

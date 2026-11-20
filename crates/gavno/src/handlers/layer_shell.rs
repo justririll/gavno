@@ -99,8 +99,11 @@ impl Gavno {
     pub fn work_area(&self, output: &Output) -> Rectangle<i32, Logical> {
         let geo = self.space.output_geometry(output).unwrap_or_default();
         let zone = layer_map_for_output(output).non_exclusive_zone();
-        // A console has no bar or dock to leave room for.
-        if self.tty.on { return Rectangle::new(zone.loc + geo.loc, zone.size); }
+        // A console has the status line on top and no dock.
+        if self.tty.on {
+            let bar = crate::tty_mode::BAR_HEIGHT.min(zone.size.h);
+            return Rectangle::new((zone.loc.x + geo.loc.x, zone.loc.y + geo.loc.y + bar).into(), (zone.size.w, zone.size.h - bar).into());
+        }
         crate::classic::reserve(Rectangle::new(zone.loc + geo.loc, zone.size),
             if self.greeter.is_none() && self.features.on(crate::module::Feature::Classic) { self.classic.settled } else { crate::classic::ShellMode::Gavno },
             self.greeter.is_none() && (self.features.on(crate::module::Feature::Bar) && self.config.bar.enabled),

@@ -487,10 +487,10 @@ impl Gavno {
         let workspace = &owner.list.items[index];
         if !workspace.tiling { return None; }
         let area = self.work_area(&output);
-        if self.tty.on { return Some(area); }
         let mut tree = workspace.tree.clone();
-        tree.insert(window.clone(), self.focused_window().as_ref(), area, self.config.gap);
-        tree.layout(area, self.config.gap).0.into_iter()
+        let gap = self.tile_gap();
+        tree.insert(window.clone(), self.focused_window().as_ref(), area, gap);
+        tree.layout(area, gap).0.into_iter()
             .find_map(|(w, rect)| (w == *window).then_some(rect))
     }
 
@@ -689,7 +689,7 @@ impl Gavno {
         self.enforce_tty_tiling();
         let tty = self.tty.on;
         let gap = self.tile_gap();
-        // A console shows one window at a time: no animated moves.
+        // Panes of a console snap into place.
         let animate = animate && !tty;
         let focus = self.focused_window();
         let moving = self.workspaces.moving_tile.clone();
@@ -748,12 +748,7 @@ impl Gavno {
                         ws.tree.insert(w, focus.as_ref(), area, gap);
                     }
                 }
-                if tty {
-                    // Monocle: every tile fills the console, the focused one on top.
-                    targets.extend(ws.tree.layout(area, gap).0.into_iter().map(|(w, _)| (w, area)));
-                } else {
-                    targets.extend(ws.tree.layout(area, gap).0);
-                }
+                targets.extend(ws.tree.layout(area, gap).0);
             }
         }
         for (w, r) in restores {

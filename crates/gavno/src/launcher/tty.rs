@@ -9,7 +9,7 @@ const FONT: f32 = 15.0;
 const LINE_H: i32 = 20;
 const MARGIN: i32 = 14;
 /// Room kept for the status line under the command line.
-const STRIP: i32 = 24;
+const STRIP: i32 = 4;
 const GREY: [f32; 4] = [0.78, 0.78, 0.81, 1.0];
 const DIM: [f32; 4] = [0.46, 0.46, 0.51, 1.0];
 const BAND: [f32; 4] = [0.035, 0.035, 0.042, 0.97];

@@ -319,6 +319,7 @@ impl Gavno {
             }
             if gv.update_window_drag(delta.upscale(gv.gestures.direction),event.time()) {return;}
             let super_held = gv.seat.get_keyboard().is_some_and(|k| k.modifier_state().logo);
+            let in_tty = gv.tty.active();
             let Some(s) = &mut gv.gestures.swipe else {return;};
             s.delta += delta.upscale(gv.gestures.direction);
             if s.axis.is_none() {
@@ -328,7 +329,7 @@ impl Gavno {
             if s.axis == Some(Axis::Vertical) && s.vertical.is_none() {
                 s.vertical = Some(if gv.features.on(crate::module::Feature::Classic) {
                     crate::classic::vertical_route(s.classic_origin, toward_classic * s.delta.y > 0.0,
-                        gv.features.on(crate::module::Feature::Overview), s.overview_origin, super_held)
+                        gv.features.on(crate::module::Feature::Overview), s.overview_origin, super_held, in_tty)
                 } else if gv.features.on(crate::module::Feature::Overview) {
                     crate::classic::VerticalRoute::Overview
                 } else { crate::classic::VerticalRoute::Ignore });
@@ -344,6 +345,9 @@ impl Gavno {
             let vertical = match s.vertical {
                 Some(crate::classic::VerticalRoute::Mode) => (s.classic_start + toward_classic * s.delta.y / OVERVIEW_SWIPE_DISTANCE).clamp(0.0, 1.0),
                 Some(crate::classic::VerticalRoute::ShowDesktop) => (toward_classic * s.delta.y / OVERVIEW_SWIPE_DISTANCE).clamp(0.0, 1.0),
+                // Progress toward the mode the gesture commits to: entering TTY
+                // moves away from Classic, leaving it moves toward Classic.
+                Some(crate::classic::VerticalRoute::Tty) => ((if in_tty { toward_classic } else { -toward_classic }) * s.delta.y / OVERVIEW_SWIPE_DISTANCE).clamp(0.0, 1.0),
                 _ => progress(s.overview_start, s.delta.y, OVERVIEW_SWIPE_DISTANCE).clamp(0.0, 1.0),
             };
             let position = Point::from((
@@ -437,7 +441,7 @@ impl Gavno {
                     gv.classic.progress.set(s.classic_origin.progress());
                 }
             });
-            if s.axis == Some(Axis::Vertical) && matches!(s.vertical, Some(crate::classic::VerticalRoute::Mode | crate::classic::VerticalRoute::ShowDesktop | crate::classic::VerticalRoute::Ignore)) {
+            if s.axis == Some(Axis::Vertical) && matches!(s.vertical, Some(crate::classic::VerticalRoute::Mode | crate::classic::VerticalRoute::ShowDesktop | crate::classic::VerticalRoute::Tty | crate::classic::VerticalRoute::Ignore)) {
                 let o = gv.workspaces.ensure(&s.output);
                 o.held = false;
                 o.position.set(o.list.active as f64);
@@ -445,6 +449,12 @@ impl Gavno {
                     gv.overview.held = false;
                     gv.overview.progress.set(if s.overview_origin { 1.0 } else { 0.0 });
                 });
+                // The same commit rule as the Classic switch: position plus projected velocity.
+                if !event.cancelled() && s.vertical == Some(crate::classic::VerticalRoute::Tty)
+                    && release_target(s.last_value.y, velocity.y, 1) == 1 {
+                    let enable = !gv.tty.active();
+                    gv.set_tty_mode(enable);
+                }
                 if !event.cancelled() && s.vertical == Some(crate::classic::VerticalRoute::ShowDesktop)
                     && release_target(s.last_value.y, velocity.y, 1) == 1 { gv.show_classic_desktop(true); }
                 gv.queue_redraw_all();

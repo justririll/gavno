@@ -1,13 +1,12 @@
-//! TTY mode: the Linux text console, "but beautiful", layered on the GAVNO
-//! shell like code mode (it is a session flag, not a shell mode). Every
-//! workspace is a console that shows its focused window full-screen on a near
-//! black background; there is no bar, dock, decoration or wallpaper. Classic
-//! never enters it.
+//! TTY mode: a terminals-only look on the GAVNO shell, layered like code mode
+//! (a session flag, not a shell mode). A permanent status line on top shows the
+//! workspaces as tabs, the focused title and the system status; below it every
+//! workspace tiles its windows like tmux panes with 1 px dividers. There is no
+//! mouse, dock, decoration or wallpaper. Classic never enters it.
 //!
-//! Nothing here costs anything while the screen is settled: the only timers are
-//! a 150 ms Mod-hold timer and a 1.5 s status linger (each armed only while
-//! needed), a one-shot that ends the power-off animation, and the cursor blink
-//! of a visible empty console.
+//! Nothing here costs anything while the screen is settled: the only timers
+//! are the minute-aligned clock tick, a one-shot that ends the power-off
+//! animation, and the springs and fades while they move.
 
 use std::time::Duration;
 
@@ -27,50 +26,10 @@ pub(crate) mod draw;
 pub const CRT_TIME: Duration = Duration::from_millis(200);
 /// The dip through black after a console switch.
 pub const FADE_TIME: Duration = Duration::from_millis(120);
-/// Fade of the status line in and out.
-pub const STATUS_FADE: Duration = Duration::from_millis(80);
-/// Mod has to be held this long before the status line appears.
-pub const STATUS_HOLD: Duration = Duration::from_millis(150);
-/// The status line stays this long after a console switch.
-pub const STATUS_LINGER: Duration = Duration::from_millis(1500);
-pub const BLINK: Duration = Duration::from_millis(530);
+/// Height of the status line on top, in logical pixels.
+pub const BAR_HEIGHT: i32 = 28;
 /// A terminal is never started twice for one console within this time.
 const SPAWN_GUARD: Duration = Duration::from_secs(2);
-
-/// A value that ramps linearly to 0 or 1 in `STATUS_FADE`.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct Ramp {
-    value: f32,
-    at: Duration,
-    target: bool,
-}
-impl Default for Ramp {
-    fn default() -> Self {
-        Self { value: 0.0, at: Duration::ZERO, target: false }
-    }
-}
-impl Ramp {
-    pub(crate) fn alpha(&self, now: Duration) -> f32 {
-        let step = now.saturating_sub(self.at).as_secs_f32() / STATUS_FADE.as_secs_f32();
-        if self.target { (self.value + step).min(1.0) } else { (self.value - step).max(0.0) }
-    }
-    /// Whether the target changed.
-    pub(crate) fn set(&mut self, target: bool, now: Duration) -> bool {
-        if self.target == target {
-            return false;
-        }
-        self.value = self.alpha(now);
-        self.at = now;
-        self.target = target;
-        true
-    }
-    pub(crate) fn animating(&self, now: Duration) -> bool {
-        self.alpha(now) != if self.target { 1.0 } else { 0.0 }
-    }
-    pub(crate) fn target(&self) -> bool {
-        self.target
-    }
-}
 
 /// Opacity of the black cover after a console switch: opaque at once, gone
 /// after `FADE_TIME`. The content switches immediately, so the dip adds no
@@ -104,14 +63,8 @@ pub struct Tty {
     crt_timer: Option<RegistrationToken>,
     /// Start of the console switch fade.
     fade: Option<Duration>,
-    status: Ramp,
-    mod_down: bool,
-    mod_visible: bool,
-    mod_timer: Option<RegistrationToken>,
-    linger_until: Option<Duration>,
-    linger_timer: Option<RegistrationToken>,
-    blink_timer: Option<RegistrationToken>,
-    pub(crate) blink_on: bool,
+    /// The clock of the status line wakes once per minute.
+    clock_timer: Option<RegistrationToken>,
     last_spawn: Option<Duration>,
     /// Forces the animation decision in tests.
     #[cfg(test)]
@@ -128,14 +81,7 @@ impl Default for Tty {
             crt: None,
             crt_timer: None,
             fade: None,
-            status: Ramp::default(),
-            mod_down: false,
-            mod_visible: false,
-            mod_timer: None,
-            linger_until: None,
-            linger_timer: None,
-            blink_timer: None,
-            blink_on: true,
+            clock_timer: None,
             last_spawn: None,
             #[cfg(test)]
             animate: None,
@@ -149,23 +95,20 @@ impl Tty {
     pub(crate) fn active(&self) -> bool {
         self.on && !self.closing
     }
-    /// Whether the status line wants fresh status data.
+    /// The status line shows, so the status worker should run.
     pub(crate) fn status_wanted(&self) -> bool {
-        self.on && self.status.target()
+        self.on
     }
     pub(crate) fn animating(&self, now: Duration) -> bool {
         self.on
             && (self.crt.is_some_and(|(start, _)| now < start + CRT_TIME)
                 || self.fade.is_some_and(|start| now < start + FADE_TIME)
-                || self.status.animating(now))
+                || self.view.tabs_active())
     }
     /// Timers currently armed, for the zero-idle-cost checks.
     #[cfg(test)]
     pub(crate) fn timers_armed(&self) -> bool {
-        self.mod_timer.is_some() || self.linger_timer.is_some() || self.blink_timer.is_some() || self.crt_timer.is_some()
-    }
-    pub(crate) fn status_alpha(&self, now: Duration) -> f32 {
-        self.status.alpha(now)
+        self.clock_timer.is_some() || self.crt_timer.is_some()
     }
     /// The SPAWN_GUARD check, recording the spawn when it is allowed.
     fn may_spawn(&mut self, now: Duration) -> bool {
@@ -287,6 +230,7 @@ impl Gavno {
                 }
             }
             self.tty.saved = saved;
+            self.hide_pointer();
             for owner in &mut self.workspaces.outputs {
                 for workspace in &mut owner.list.items {
                     workspace.tiling = true;
@@ -318,26 +262,16 @@ impl Gavno {
         self.reflow_tiling(false);
         self.refit_fixed_windows();
         self.refresh_tty();
+        self.persist_mode();
         self.queue_redraw_all();
     }
 
     /// Drops every timer and animation of the mode.
     fn tty_reset_view(&mut self) {
-        for token in [
-            self.tty.mod_timer.take(),
-            self.tty.linger_timer.take(),
-            self.tty.blink_timer.take(),
-        ]
-        .into_iter()
-        .flatten()
-        {
+        if let Some(token) = self.tty.clock_timer.take() {
             self.loop_handle.remove(token);
         }
-        self.tty.mod_visible = false;
-        self.tty.linger_until = None;
         self.tty.fade = None;
-        self.tty.status = Ramp::default();
-        self.tty.blink_on = true;
     }
 
     /// Pushes the mode into the parts that restyle themselves.
@@ -365,9 +299,9 @@ impl Gavno {
         changed
     }
 
-    /// Gap between windows and the screen edge: none on a console.
+    /// Gap between panes and the screen edge: the 1 px divider of a console.
     pub(crate) fn tile_gap(&self) -> i32 {
-        if self.tty.on { 0 } else { self.config.gap }
+        if self.tty.on { 1 } else { self.config.gap }
     }
 
     /// Classic took the shell over: leave TTY mode without animation and
@@ -397,7 +331,7 @@ impl Gavno {
     }
 
     /// A console was switched to (also by Mod+n and the like): the dip
-    /// through black, the status line, and the terminal of an empty console.
+    /// through black and the terminal of an empty console.
     pub(crate) fn tty_console_switched(&mut self) {
         if !self.tty.on {
             return;
@@ -411,7 +345,6 @@ impl Gavno {
     }
 
     fn tty_console_entered(&mut self, now: Duration) {
-        self.tty_linger(now);
         self.tty_autostart(now);
     }
 
@@ -425,8 +358,18 @@ impl Gavno {
         if !self.active_console_empty() || !self.tty.may_spawn(now) {
             return;
         }
-        let command = self.config.terminal.clone();
+        let command = self.tty_terminal();
         self.launch_shell(&command, None);
+    }
+
+    /// The terminal a console starts: `footclient` against a running foot
+    /// server (instant, native Wayland, no client-side decorations), else the
+    /// configured `terminal`.
+    pub(crate) fn tty_terminal(&self) -> String {
+        let socket = std::env::var_os("XDG_RUNTIME_DIR").zip(std::env::var_os("WAYLAND_DISPLAY")).map(|(dir, display)| {
+            std::path::Path::new(&dir).join(format!("foot-{}.sock", display.to_string_lossy()))
+        });
+        foot_client_command(socket.as_deref().is_some_and(|p| p.exists()), &self.config.terminal)
     }
 
     /// The active workspace of the active output shows no window.
@@ -436,107 +379,61 @@ impl Gavno {
             .is_none_or(|owner| draw::console_empty(&owner.list.items[owner.list.active]))
     }
 
-    /// Shows the status line for `STATUS_LINGER`.
-    fn tty_linger(&mut self, now: Duration) {
-        let until = now + STATUS_LINGER;
-        self.tty.linger_until = Some(until);
-        if let Some(token) = self.tty.linger_timer.take() {
-            self.loop_handle.remove(token);
-        }
-        self.tty.linger_timer = self
-            .loop_handle
-            .insert_source(Timer::from_duration(STATUS_LINGER), |_, _, gv| {
-                let _stall = crate::perf::Stall::new("timer.tty_linger");
-                gv.tty.linger_timer = None;
-                gv.tty.linger_until = None;
-                gv.tty_update_status();
-                TimeoutAction::Drop
-            })
-            .ok();
-        self.tty_update_status();
-    }
-
-    /// Recomputes whether the status line is wanted and starts its fade.
-    fn tty_update_status(&mut self) {
-        let now = self.start_time.elapsed();
-        let wanted = self.tty.on && (self.tty.mod_visible || self.tty.linger_until.is_some_and(|until| now < until));
-        if self.tty.status.set(wanted, now) {
-            self.queue_redraw_all();
-        }
-    }
-
-    /// Called after every keyboard event with the state of the mod key.
-    /// Holding it for `STATUS_HOLD` shows the status line while it stays down.
-    pub(crate) fn tty_mod_changed(&mut self, held: bool, pressed_other_key: bool) {
-        if !self.tty.on {
-            self.tty.mod_down = held;
-            return;
-        }
-        if held && pressed_other_key {
-            // A chord, not a look at the status: do not pop the line up.
-            if let Some(token) = self.tty.mod_timer.take() {
-                self.loop_handle.remove(token);
-            }
-        }
-        if held == self.tty.mod_down {
-            return;
-        }
-        self.tty.mod_down = held;
-        if held {
-            self.tty.mod_timer = self
-                .loop_handle
-                .insert_source(Timer::from_duration(STATUS_HOLD), |_, _, gv| {
-                    let _stall = crate::perf::Stall::new("timer.tty_mod_hold");
-                    gv.tty.mod_timer = None;
-                    if gv.tty.on && gv.tty.mod_down {
-                        gv.tty.mod_visible = true;
-                        gv.tty_update_status();
-                    }
-                    TimeoutAction::Drop
-                })
-                .ok();
-        } else {
-            if let Some(token) = self.tty.mod_timer.take() {
-                self.loop_handle.remove(token);
-            }
-            self.tty.mod_visible = false;
-            self.tty_update_status();
-        }
-    }
-
-    /// Per refresh pass: the cursor blink runs only while an empty console is
-    /// on screen.
+    /// Per refresh pass: the clock tick and the pointer focus, which stays on
+    /// the focused window so that scrolling reaches it without a mouse.
     pub(crate) fn refresh_tty(&mut self) {
-        let wanted = self.tty.on
-            && !self.tty.closing
-            && !self.power.is_off()
-            && !self.protocols.locks.locked
-            && self.greeter.is_none()
-            && self.space.outputs().any(|output| {
-                self.workspaces.get(output).is_some_and(|owner| draw::console_empty(&owner.list.items[owner.list.active]))
-            });
-        match (wanted, self.tty.blink_timer.is_some()) {
+        let wanted = self.tty.on && !self.tty.closing && !self.power.is_off();
+        match (wanted, self.tty.clock_timer.is_some()) {
             (true, false) => {
-                self.tty.blink_on = true;
-                self.tty.blink_timer = self
+                let second = crate::ui::theme::LocalTime::now().second as u64;
+                let wait = Duration::from_secs(60 - second.min(59)) + Duration::from_millis(20);
+                self.tty.clock_timer = self
                     .loop_handle
-                    .insert_source(Timer::from_duration(BLINK), |_, _, gv| {
-                        let _stall = crate::perf::Stall::new("timer.tty_blink");
-                        gv.tty.blink_on = !gv.tty.blink_on;
+                    .insert_source(Timer::from_duration(wait), |_, _, gv| {
+                        let _stall = crate::perf::Stall::new("timer.tty_clock");
+                        gv.tty.clock_timer = None;
                         gv.queue_redraw_all();
-                        TimeoutAction::ToDuration(BLINK)
+                        TimeoutAction::Drop
                     })
                     .ok();
-                self.queue_redraw_all();
             }
             (false, true) => {
-                if let Some(token) = self.tty.blink_timer.take() {
+                if let Some(token) = self.tty.clock_timer.take() {
                     self.loop_handle.remove(token);
                 }
-                self.tty.blink_on = true;
             }
             _ => {}
         }
+        self.tty_sync_pointer_focus();
+    }
+
+    /// Keeps the invisible pointer on the focused window: with no mouse events
+    /// delivered, scroll events still reach the window you type into.
+    fn tty_sync_pointer_focus(&mut self) {
+        if !self.tty.active() || self.protocols.locks.locked || self.greeter.is_some() || self.lock.internal() {
+            return;
+        }
+        let Some(window) = self.focused_window() else { return };
+        let Some(toplevel) = window.toplevel() else { return };
+        let surface = toplevel.wl_surface().clone();
+        let Some(pointer) = self.seat.get_pointer() else { return };
+        if pointer.current_focus().as_ref() == Some(&surface) {
+            return;
+        }
+        let Some(location) = self.space.element_location(&window) else { return };
+        let geometry = window.geometry();
+        let origin = (location - geometry.loc).to_f64();
+        let centre = location.to_f64() + smithay::utils::Point::from((geometry.size.w as f64 / 2.0, geometry.size.h as f64 / 2.0));
+        pointer.motion(
+            self,
+            Some((surface, origin)),
+            &smithay::input::pointer::MotionEvent {
+                location: centre,
+                serial: smithay::utils::SERIAL_COUNTER.next_serial(),
+                time: self.start_time.elapsed().as_millis() as u32,
+            },
+        );
+        pointer.frame(self);
     }
 
     /// Gesture-driven shell transitions also end TTY mode.
@@ -551,23 +448,14 @@ impl Gavno {
     pub(crate) fn tty_animating(&self) -> bool {
         self.tty.animating(self.start_time.elapsed())
     }
+}
 
-    /// Cycles the focus through the windows of the console in a fixed order.
-    pub(crate) fn tty_cycle_focus(&mut self, forward: bool) {
-        let Some(window) = self.focused_window() else {
-            self.focus_topmost();
-            return;
-        };
-        let Some((output, index)) = self.workspaces.membership(&window) else { return };
-        let Some(owner) = self.workspaces.get(&output) else { return };
-        let area = self.work_area(&output);
-        let order: Vec<_> = owner.list.items[index].tree.layout(area, 0).0.into_iter().map(|(w, _)| w).collect();
-        let Some(at) = order.iter().position(|w| *w == window) else { return };
-        let next = if forward { (at + 1) % order.len() } else { (at + order.len() - 1) % order.len() };
-        if next != at {
-            let target = order[next].clone();
-            self.focus_window(Some(&target));
-        }
+/// The console terminal: footclient when a foot server answers, else `fallback`.
+pub(crate) fn foot_client_command(server: bool, fallback: &str) -> String {
+    if server {
+        "footclient -o csd.preferred=none -o pad=8x6".to_owned()
+    } else {
+        fallback.to_owned()
     }
 }
 
