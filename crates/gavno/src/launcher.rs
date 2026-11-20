@@ -11,6 +11,7 @@
 mod calc;
 mod files;
 mod frecency;
+mod tty;
 
 use crate::{
     desktop_entry::{self, DesktopEntry},
@@ -156,6 +157,8 @@ struct RowView {
 pub struct Launcher {
     pub open: bool,
     pub run_style: bool,
+    /// TTY mode draws the launcher as a console command line.
+    pub(crate) tty: bool,
     loading: bool,
     launch_after_load: bool,
     launch_action: Option<Instant>,
@@ -204,6 +207,7 @@ impl Default for Launcher {
         Self {
             open: false,
             run_style: false,
+            tty: false,
             loading: false,
             launch_after_load: false,
             launch_action: None,
@@ -684,6 +688,9 @@ impl Launcher {
         accent: [f32; 4],
         icon_theme: &str,
     ) -> Vec<GavnoRenderElement> {
+        if self.tty {
+            return self.elements_tty(renderer, output, size, scale, now, accent);
+        }
         self.fade.advance(now);
         if !self.visible() || self.output.as_ref().is_some_and(|o| o != output) {
             return Vec::new();

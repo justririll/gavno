@@ -131,10 +131,12 @@ impl Lock {
         now: Duration,
         theme: &crate::config::ThemeConfig,
         battery: Option<(u8, bool)>,
+        tty: bool,
     ) -> Vec<GavnoRenderElement> {
         let backdrop = self.backdrop.buffer(output);
         let elements = self
             .ui_call(|ui| {
+                ui.tty = tty;
                 ui.set_location(theme);
                 ui.set_backdrop(backdrop);
                 ui.set_battery(battery);
@@ -659,7 +661,7 @@ mod tests {
                 "Adwaita",
             );
             assert!(!elements.is_empty(), "media controls must be drawn when music plays");
-            elements.extend(lock.elements(&mut renderer, "t", size, 1.0, Duration::from_secs(1), &config, Some((73, false))));
+            elements.extend(lock.elements(&mut renderer, "t", size, 1.0, Duration::from_secs(1), &config, Some((73, false)), false));
             assert!(lock.backdrop.buffer("t").is_some());
             if let Some(dir) = std::env::var_os("GAVNO_LOCK_TEST_ARTIFACTS") {
                 let dir = std::path::PathBuf::from(dir);

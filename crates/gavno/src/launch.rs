@@ -187,6 +187,11 @@ impl Launch {
     }
 }
 impl Launches {
+    /// Launches started and not yet matched to a window.
+    #[cfg(test)]
+    pub(crate) fn pending_count(&self) -> usize {
+        self.pending.len()
+    }
     fn expire(&mut self, now: Instant) {
         self.pending
             .retain(|launch| now.duration_since(launch.action) < LIFETIME);

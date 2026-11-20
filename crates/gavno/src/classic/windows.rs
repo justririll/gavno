@@ -70,6 +70,9 @@ pub(crate) struct Windows {
     /// Code mode was on when Classic was entered; returning turns it back on.
     code_resume: bool,
     code_saved: Vec<(Output, u64, bool)>,
+    /// The same for TTY mode.
+    tty_resume: bool,
+    tty_saved: Vec<(Output, u64, bool)>,
 }
 impl Windows {
     /// Whether Classic currently owns the window layout.
@@ -79,6 +82,14 @@ impl Windows {
     /// Records whether code mode should come back when Classic ends.
     pub fn set_code_resume(&mut self, resume: bool) {
         self.code_resume = resume;
+    }
+    /// Records whether TTY mode should come back when Classic ends.
+    pub fn set_tty_resume(&mut self, resume: bool) {
+        self.tty_resume = resume;
+    }
+    #[cfg(test)]
+    pub(crate) fn tty_resume(&self) -> bool {
+        self.tty_resume
     }
     pub fn new(active: bool) -> Self {
         Self {
@@ -93,6 +104,8 @@ impl Windows {
             gave_up: false,
             code_resume: false,
             code_saved: Vec::new(),
+            tty_resume: false,
+            tty_saved: Vec::new(),
         }
     }
 }
@@ -409,6 +422,13 @@ impl Gavno {
                 self.show_pointer();
                 self.sync_bar_hints();
             }
+            if let Some(saved) = self.tty_suspend_for_classic() {
+                self.classic.windows.tty_resume = true;
+                self.classic.windows.tty_saved = saved;
+                if !self.code_mode { self.show_pointer(); }
+                self.sync_bar_hints();
+                self.queue_redraw_all();
+            }
             for w in &tiles {
                 // Former tiles float in their tiling arrangement; the refit
                 // gives each one its slot of the saved layout.
@@ -448,6 +468,28 @@ impl Gavno {
                 for owner in &mut self.workspaces.outputs {
                     for ws in &mut owner.list.items {
                         if let Some((_, _, tiling)) = code_saved
+                            .iter()
+                            .find(|(o, id, _)| *o == owner.output && *id == ws.id)
+                        {
+                            ws.tiling = *tiling;
+                        }
+                    }
+                }
+            }
+            let tty_resume = std::mem::take(&mut self.classic.windows.tty_resume);
+            let tty_saved = std::mem::take(&mut self.classic.windows.tty_saved);
+            if tty_resume && !tty_saved.is_empty() {
+                self.tty.on = true;
+                self.tty.saved = tty_saved;
+                self.sync_tty_flags();
+                self.sync_bar_hints();
+                self.queue_redraw_all();
+            } else if tty_resume {
+                self.set_tty_mode(true);
+            } else {
+                for owner in &mut self.workspaces.outputs {
+                    for ws in &mut owner.list.items {
+                        if let Some((_, _, tiling)) = tty_saved
                             .iter()
                             .find(|(o, id, _)| *o == owner.output && *id == ws.id)
                         {
@@ -1061,6 +1103,37 @@ mod tests {
         assert!(h.gv.code_mode);
         assert!(h.gv.workspaces.ensure(&o).list.items.iter().all(|ws| ws.tiling));
         h.gv.set_code_mode(false);
+        assert!(!h.gv.workspaces.ensure(&o).list.items[0].tiling);
+    }
+
+    #[test]
+    fn tty_mode_leaves_for_classic_resumes_on_return_and_keeps_requests() {
+        let mut h = Harness::new();
+        let o = output(&mut h, "first", 0);
+        h.gv.config.tty.autostart_terminal = false;
+        h.gv.tty.animate = Some(false);
+        h.gv.workspaces.ensure(&o).list.items[0].tiling = false;
+        h.gv.set_tty_mode(true);
+        assert!(h.gv.tty.on);
+        settle(&mut h, ShellMode::Classic);
+        assert!(!h.gv.tty.on, "Classic never shows the console look");
+        assert!(h.gv.classic.windows.tty_resume());
+        assert!(!h.gv.workspaces.ensure(&o).list.items[0].tiling || h.gv.classic.windows.in_classic());
+        h.gv.set_tty_mode(false);
+        assert!(!h.gv.classic.windows.tty_resume(), "a request made in Classic replaces the old one");
+        h.gv.set_tty_mode(true);
+        assert!(!h.gv.tty.on && h.gv.classic.windows.tty_resume());
+        settle(&mut h, ShellMode::Gavno);
+        assert!(h.gv.tty.on, "the console look resumes with the shell");
+        assert!(h.gv.workspaces.ensure(&o).list.items.iter().all(|ws| ws.tiling));
+        h.gv.set_tty_mode(false);
+        assert!(!h.gv.workspaces.ensure(&o).list.items[0].tiling, "the saved layout state is back");
+        // Turned off while away: it stays off on return.
+        h.gv.set_tty_mode(true);
+        settle(&mut h, ShellMode::Classic);
+        h.gv.set_tty_mode(false);
+        settle(&mut h, ShellMode::Gavno);
+        assert!(!h.gv.tty.on);
         assert!(!h.gv.workspaces.ensure(&o).list.items[0].tiling);
     }
 

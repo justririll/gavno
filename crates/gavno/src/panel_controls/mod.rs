@@ -74,6 +74,7 @@ impl Secret {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Action {
+    Tty,
     WifiPower,
     Disconnect,
     Network(String),
@@ -109,6 +110,7 @@ pub struct Info {
     pub code_mode: bool,
     /// Code mode does not exist in the Classic shell.
     pub code_available: bool,
+    pub tty: bool,
     pub player: bool,
 }
 /// Work only the compositor can do, requested by the panel.
@@ -117,6 +119,7 @@ pub(crate) enum Effect {
     NightLight,
     DoNotDisturb,
     CodeMode,
+    TtyMode,
     Brightness(f64),
     Settings,
     Lock,
@@ -400,6 +403,14 @@ impl State {
                 info.code_mode,
                 None,
             );
+            tile(
+                "TTY",
+                on_off(info.tty),
+                "utilities-terminal-symbolic",
+                Action::Tty,
+                info.tty,
+                None,
+            );
         }
         let output = self.audio.output.as_ref();
         let volume = output.map(|e| (e.volume as f64 / 100.0, e.muted));
@@ -622,6 +633,7 @@ impl State {
             Action::NightLight => return Some(Effect::NightLight),
             Action::DoNotDisturb => return Some(Effect::DoNotDisturb),
             Action::CodeMode => return Some(Effect::CodeMode),
+            Action::Tty => return Some(Effect::TtyMode),
             Action::Open(page) => self.go(page),
             Action::Back => self.go(Page::Main),
             Action::Settings => return Some(Effect::Settings),
@@ -840,6 +852,7 @@ impl Gavno {
             }
             Effect::DoNotDisturb => self.bar_action(output, crate::topbar::BarAction::DoNotDisturb),
             Effect::CodeMode => self.set_code_mode(!self.code_mode),
+            Effect::TtyMode => self.set_tty_mode(!self.tty.active()),
             Effect::Brightness(level) => self.panel_set_brightness(level),
             Effect::Settings => {
                 self.topbar.controls.close();

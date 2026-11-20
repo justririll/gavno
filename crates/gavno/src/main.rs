@@ -18,6 +18,7 @@ mod config;
 mod config_schema;
 mod config_reload;
 mod code_mode;
+mod tty_mode;
 mod hints;
 mod keyboard_overlay;
 mod brightness;

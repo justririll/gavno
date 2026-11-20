@@ -25,8 +25,12 @@ impl Gavno {
             for owner in &mut self.workspaces.outputs {
                 let output = owner.output.clone();
                 for workspace in &mut owner.list.items {
-                    self.code_mode_saved
-                        .push((output.clone(), workspace.id, workspace.tiling));
+                    let original = if self.tty.on {
+                        self.tty.saved.iter().find(|(o, id, _)| *o == output && *id == workspace.id).map_or(workspace.tiling, |(_, _, t)| *t)
+                    } else {
+                        workspace.tiling
+                    };
+                    self.code_mode_saved.push((output.clone(), workspace.id, original));
                     workspace.tiling = true;
                 }
             }
@@ -43,10 +47,10 @@ impl Gavno {
                         .unwrap_or(fallback);
                 }
             }
-            self.show_pointer();
+            if !self.tty.on { self.show_pointer(); }
         }
         self.dock.close_menu();
-        self.dock.code_mode = enable;
+        self.dock.code_mode = enable || self.tty.on;
         self.sync_bar_hints();
         self.reflow_tiling(true);
         self.refit_fixed_windows();
@@ -114,12 +118,14 @@ impl Gavno {
     }
 
     pub(crate) fn sync_bar_hints(&mut self) {
+        self.sync_tty();
         // Gesture-driven shell transitions also leave code mode.
         if self.code_mode && self.classic.settled == crate::classic::ShellMode::Classic {
             self.set_code_mode(false);
         }
-        self.dock.code_mode = self.code_mode;
+        self.dock.code_mode = self.code_mode || self.tty.on;
         self.topbar.code_mode = self.code_mode;
+        self.topbar.tty_mode = self.tty.active();
         self.topbar.controls.code_mode = self.code_mode;
         self.topbar.hint_context = self.bar_hint_context();
         self.topbar.hint_items = self

@@ -287,6 +287,7 @@ impl Gavno {
         // A recreated output starts new workspace identities, even when its
         // connector name and local workspace IDs match a removed output.
         self.code_mode_saved.retain(|(output, _, _)| self.workspaces.outputs.iter().any(|owner| owner.output == *output));
+        self.tty.saved.retain(|(output, _, _)| self.workspaces.outputs.iter().any(|owner| owner.output == *output));
         let refit = !orphaned.is_empty();
         if let Some(output) = outputs.first() {
             for (mut w, origin) in orphaned {
@@ -461,6 +462,11 @@ impl Gavno {
         self.reflow_tiling(true);
         self.clear_desktop_pointer();
         self.focus_window(focus.as_ref());
+        if self.tty.on {
+            // Consoles do not slide: jump there and dip through black.
+            self.workspaces.ensure(output).position.jump(index as f64);
+            self.tty_console_switched();
+        }
         self.queue_redraw_all();
         true
     }

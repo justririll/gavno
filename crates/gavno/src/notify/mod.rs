@@ -1,6 +1,8 @@
 //! Notification state belongs to the event loop; D-Bus never borrows compositor state.
 pub mod dbus;
 mod ui;
+#[cfg(test)]
+pub(crate) use ui::kernel_line;
 
 use crate::{
     module::Feature,
@@ -29,6 +31,9 @@ use std::{
 };
 
 pub type Shared = Rc<RefCell<Notifications>>;
+
+/// How long a notification line stays in TTY mode.
+pub(crate) const TTY_LIFETIME: Duration = Duration::from_secs(4);
 
 #[derive(Clone, Debug)]
 pub struct Notice {
@@ -72,6 +77,8 @@ struct Card {
     buttons: Vec<(Rect, String)>,
     /// Body wrapped for a panel width; recomputed when either changes.
     lines: Option<(i32, Vec<String>)>,
+    /// Arrival time, the kernel-style stamp of TTY mode.
+    born: Duration,
 }
 #[derive(Default)]
 pub struct Notifications {
@@ -90,6 +97,8 @@ pub struct Notifications {
     active: bool,
     started: bool,
     blocked: bool,
+    /// TTY mode: kernel message lines that go away after `TTY_LIFETIME`.
+    tty: bool,
     /// Area of the open bar popover (set by the renderer); toasts keep clear of it.
     pub(crate) avoid: Option<Rect>,
     output: Option<Output>,
@@ -206,6 +215,7 @@ impl Notifications {
                 rect: None,
                 buttons: Vec::new(),
                 lines: None,
+                born: now,
             });
         }
     }
@@ -263,7 +273,20 @@ impl Notifications {
                 .map(|c| (c.notice.id, c.visible, c.closing))
                 .collect::<Vec<_>>()
     }
+    /// Kernel message lines on screen in TTY mode (at most three): an empty
+    /// console starts below them, like a terminal that scrolled.
+    pub(crate) fn tty_rows(&self) -> usize {
+        if !self.tty {
+            return 0;
+        }
+        self.cards.iter().filter(|c| c.visible && !c.closing).count().min(3)
+    }
+    /// Switches the look; the cards stay, so nothing is lost either way.
+    pub(crate) fn set_tty(&mut self, on: bool) {
+        self.tty = on;
+    }
     fn set_visibility(&mut self, now: Duration, blocked: bool, max_visible: usize) {
+        let tty = self.tty;
         let mut slots = 0;
         for card in &mut self.cards {
             let visible = self.active
@@ -275,7 +298,9 @@ impl Notifications {
             }
             if visible != card.visible {
                 if visible {
-                    card.expires = card.ttl.map(|ttl| now.saturating_add(ttl));
+                    // Kernel messages scroll away: nothing stays beyond four seconds.
+                    let ttl = if tty { Some(card.ttl.map_or(TTY_LIFETIME, |t| t.min(TTY_LIFETIME))) } else { card.ttl };
+                    card.expires = ttl.map(|ttl| now.saturating_add(ttl));
                 } else {
                     if let Some(start) = card.hovered.take() {
                         card.expires = card

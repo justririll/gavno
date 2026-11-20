@@ -23,6 +23,8 @@ pub enum Weight {
     Regular,
     Medium,
     SemiBold,
+    /// The TTY mode family, see `set_mono_family`.
+    Mono,
 }
 
 // Canvases live on the renderer thread. Share immutable parsed fonts there,
@@ -30,6 +32,24 @@ pub enum Weight {
 // window's labels must not rescan/read/parse fonts the shell already uses.
 thread_local! {
     static SHARED_FONTS: RefCell<HashMap<Weight, Weak<Font>>> = RefCell::new(HashMap::new());
+    static MONO_FAMILY: RefCell<String> = RefCell::new(String::from("monospace"));
+    static MONO_GENERATION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Chooses the family behind `Weight::Mono`. Renderers pick the change up on
+/// their next use; nothing is loaded until a mono string is drawn.
+pub fn set_mono_family(family: &str) {
+    if MONO_FAMILY.with(|f| *f.borrow() == family) { return; }
+    MONO_FAMILY.with(|f| *f.borrow_mut() = family.to_owned());
+    MONO_GENERATION.with(|g| g.set(g.get() + 1));
+    SHARED_FONTS.with(|fonts| { fonts.borrow_mut().remove(&Weight::Mono); });
+}
+
+/// Font file of a fontconfig family, resolved once per family by `fc-match`.
+fn mono_file(family: &str) -> Option<PathBuf> {
+    let out = std::process::Command::new("fc-match").arg("-f").arg("%{file}").arg(family).output().ok()?;
+    let path = PathBuf::from(String::from_utf8(out.stdout).ok()?.trim());
+    matches!(path.extension().and_then(|e| e.to_str()), Some("ttf" | "otf" | "ttc")).then_some(path)
 }
 
 /// Font files by weight. IBM Plex Sans first, Liberation Sans as the fallback
@@ -41,6 +61,7 @@ fn candidates(weight: Weight) -> &'static [&'static str] {
         Weight::Regular => &["IBMPlexSans-Regular", "LiberationSans-Regular"],
         Weight::Medium => &["IBMPlexSans-Medium", "IBMPlexSans-Regular", "LiberationSans-Bold"],
         Weight::SemiBold => &["IBMPlexSans-SemiBold", "IBMPlexSans-Medium", "LiberationSans-Bold"],
+        Weight::Mono => &["LiberationMono-Regular", "NotoSansMono-Regular", "DejaVuSansMono"],
     }
 }
 
@@ -109,6 +130,7 @@ pub struct TextRenderer {
     measure_scale: f64,
     /// Opt-in scopes used by cached shells to release obsolete raster images.
     frame_keys: Option<HashSet<Key>>,
+    mono_generation: u64,
 }
 
 impl TextRenderer {
@@ -118,6 +140,7 @@ impl TextRenderer {
             cache: HashMap::new(),
             measure_scale: 1.0,
             frame_keys: None,
+            mono_generation: MONO_GENERATION.with(|g| g.get()),
         }
     }
 
@@ -132,6 +155,14 @@ impl TextRenderer {
     pub(crate) fn clear_images(&mut self) { self.cache.clear(); }
 
     fn font(&mut self, weight: Weight) -> Option<Arc<Font>> {
+        if weight == Weight::Mono {
+            let generation = MONO_GENERATION.with(|g| g.get());
+            if self.mono_generation != generation {
+                self.mono_generation = generation;
+                self.fonts.remove(&Weight::Mono);
+                self.cache.retain(|key, _| key.weight != Weight::Mono);
+            }
+        }
         if let Some(f) = self.fonts.get(&weight) {
             return Some(f.clone());
         }
@@ -140,8 +171,8 @@ impl TextRenderer {
             return Some(font);
         }
         let _startup = crate::perf::Startup::new("font.load.begin", "font.load.end");
-        let font = candidates(weight).iter().find_map(|stem| {
-            let path = find_font_file(stem)?;
+        let family_file = (weight == Weight::Mono).then(|| MONO_FAMILY.with(|f| mono_file(&f.borrow()))).flatten();
+        let font = family_file.into_iter().chain(candidates(weight).iter().filter_map(|stem| find_font_file(stem))).find_map(|path| {
             if crate::perf::in_startup() { tracing::info!(target: "gavno::startup", stage = "font.found", ms = crate::perf::elapsed_ms(), ?weight, path = %path.display()); }
             let data = std::fs::read(&path).ok()?;
             crate::perf::startup("font.read");
