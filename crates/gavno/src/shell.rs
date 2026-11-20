@@ -265,8 +265,12 @@ impl Gavno {
 
     /// The settled Classic mode of the output `window` lives on.
     pub(crate) fn window_shell(&self, window: &Window) -> (ShellMode, bool) {
-        match self.workspaces.membership(window) {
-            Some((output, _)) => self.shell_of(&output),
+        // Inside a scope other outputs' workspaces are hidden, but their
+        // windows are still mapped: place those by geometry.
+        let output = self.workspaces.membership(window).map(|(o, _)| o)
+            .or_else(|| self.space.element_location(window).and_then(|_| self.output_for_window(window)));
+        match output {
+            Some(output) => self.shell_of(&output),
             None => (self.classic.settled, self.tty.on),
         }
     }
