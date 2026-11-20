@@ -310,12 +310,21 @@ it to `false` clears the history and frees the chord. See
 
 ## TTY mode
 
-`[tty] start = true` starts in TTY mode, the Linux-console look on top of the
-GAVNO shell; Mod+Shift+T and the quick-settings TTY chip toggle it. `font` is the
+`[tty] start = true` forces TTY mode at start (see [Start mode](#start-mode)), a
+terminals-only look on top of the GAVNO shell; Mod+Shift+T and the quick-settings TTY chip toggle it. `font` is the
 fontconfig family used for every TTY mode text (default `monospace`, resolved once
 with `fc-match`; an unavailable family falls back to a bundled monospace file).
-`autostart_terminal = true` runs the configured `terminal` once when you switch
-to an empty console. All three apply live. See [tty.md](tty.md).
+`autostart_terminal = true` starts a terminal once when you switch to an empty
+workspace (`footclient` when a foot server runs, else the configured `terminal`). All three apply live. See [tty.md](tty.md).
+
+## Start mode
+
+The shell remembers its last settled mode (GAVNO, Classic or TTY) in
+`$XDG_STATE_HOME/gavno/mode` (default `~/.local/state/gavno/mode`), written
+atomically when a switch settles, and restores it at the next start. Precedence:
+`[classic] start_in_classic = true` first, then `[tty] start = true`, then the
+remembered mode, then GAVNO. A `false` value never forces anything, so with both
+at their default the last mode wins. A missing or damaged file means GAVNO.
 
 ## Dropdown terminal
 

@@ -335,7 +335,7 @@ impl Gavno {
         if !(self.features.on(crate::module::Feature::ResizeMode) && self.overlay.resize_mode.active()) {
             return false;
         }
-        let sym = if self.code_mode { crate::input::vim_arrow(sym).unwrap_or(sym) } else { sym };
+        let sym = if self.keyboard_first() { crate::input::vim_arrow(sym).unwrap_or(sym) } else { sym };
         if matches!(
             sym,
             keysyms::KEY_Escape | keysyms::KEY_Return | keysyms::KEY_KP_Enter

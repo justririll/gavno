@@ -19,6 +19,7 @@ mod config_schema;
 mod config_reload;
 mod code_mode;
 mod tty_mode;
+mod session_mode;
 mod hints;
 mod keyboard_overlay;
 mod brightness;
@@ -147,6 +148,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let display: Display<Gavno> = Display::new()?;
     perf::startup("config.begin");
     let config = config::Config::load(backend_choice == BackendChoice::Winit);
+    session_mode::enable(session_mode::state_path());
     perf::startup("config.loaded");
     perf::startup("gavno.new.begin");
     let mut state = Gavno::new(&mut event_loop, display, config);

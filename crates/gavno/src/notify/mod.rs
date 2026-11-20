@@ -273,14 +273,6 @@ impl Notifications {
                 .map(|c| (c.notice.id, c.visible, c.closing))
                 .collect::<Vec<_>>()
     }
-    /// Kernel message lines on screen in TTY mode (at most three): an empty
-    /// console starts below them, like a terminal that scrolled.
-    pub(crate) fn tty_rows(&self) -> usize {
-        if !self.tty {
-            return 0;
-        }
-        self.cards.iter().filter(|c| c.visible && !c.closing).count().min(3)
-    }
     /// Switches the look; the cards stay, so nothing is lost either way.
     pub(crate) fn set_tty(&mut self, on: bool) {
         self.tty = on;

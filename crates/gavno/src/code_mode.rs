@@ -165,7 +165,8 @@ impl Gavno {
 
     /// Shows the pointer again after motion, a button, a scroll or a gesture.
     pub fn show_pointer(&mut self) {
-        if !self.pointer_hidden {
+        // A console never shows the pointer.
+        if !self.pointer_hidden || self.tty.on {
             return;
         }
         self.pointer_hidden = false;

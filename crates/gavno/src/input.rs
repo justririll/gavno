@@ -84,6 +84,13 @@ impl Gavno {
     where
         I::GestureSwipeUpdateEvent: 'static,
     {
+        // TTY mode has no mouse: motion and buttons are dropped here, before
+        // anything reacts. Scroll and gestures still work.
+        if self.tty.on && !self.protocols.locks.locked && self.greeter.is_none() && !self.lock.internal()
+            && matches!(&event, InputEvent::PointerMotion { .. } | InputEvent::PointerMotionAbsolute { .. } | InputEvent::PointerButton { .. })
+        {
+            return;
+        }
         // Any pointer activity brings a hidden cursor back, without touching
         // pointer focus.
         if matches!(&event,
@@ -432,11 +439,6 @@ impl Gavno {
             KeyState::Pressed => { if !self.desktop_keys.contains(&raw_code) { self.desktop_keys.push(raw_code); } }
             KeyState::Released => self.desktop_keys.retain(|k| *k != raw_code),
         }
-        // TTY mode shows its status line while the mod key is held.
-        self.tty_mod_changed(
-            self.config.mod_key.is_held(&keyboard.modifier_state()),
-            key_state == KeyState::Pressed && !modifier_only,
-        );
         // The first key press that reaches a client or a bind hides the
         // pointer. Shell text entry, such as the launcher, leaves it alone.
         if key_state == KeyState::Pressed && self.keyboard_first()
@@ -575,19 +577,12 @@ impl Gavno {
         // In code mode H/J/K/L stand in for the arrows in every Mod+arrow
         // chord. The alias wins over Mod+L lock and Mod+Shift+H HDR, but never
         // over Ctrl+Alt+L above.
-        if self.code_mode {
+        if self.keyboard_first() {
             if let Some(dir) = vim_arrow(sym).and_then(arrow_direction) {
                 return Some(self.direction_action(dir, mods));
             }
         }
-        // A console is keyboard first: J and K walk its windows. H and L stay
-        // as they are, so Mod+L still locks.
-        if self.tty.on && !self.code_mode && matches!(sym, keysyms::KEY_j | keysyms::KEY_J | keysyms::KEY_k | keysyms::KEY_K) {
-            if let Some(dir) = vim_arrow(sym).and_then(arrow_direction) {
-                return Some(self.direction_action(dir, mods));
-            }
-        }
-        if !self.code_mode && matches!(sym, keysyms::KEY_l | keysyms::KEY_L) && !mods.shift && !mods.ctrl {
+        if !self.keyboard_first() && matches!(sym, keysyms::KEY_l | keysyms::KEY_L) && !mods.shift && !mods.ctrl {
             return Some(Action::Lock);
         }
         if (keysyms::KEY_1..=keysyms::KEY_9).contains(&sym) {
@@ -608,7 +603,7 @@ impl Gavno {
             keysyms::KEY_h | keysyms::KEY_H if mods.shift && !mods.ctrl => Some(Action::ToggleHdr),
             keysyms::KEY_F2 if mods.shift && !mods.ctrl => Some(Action::SdrWhite(-10)),
             keysyms::KEY_F3 if mods.shift && !mods.ctrl => Some(Action::SdrWhite(10)),
-            keysyms::KEY_Return | keysyms::KEY_KP_Enter => Some(Action::Spawn(self.config.terminal.clone())),
+            keysyms::KEY_Return | keysyms::KEY_KP_Enter => Some(Action::Spawn(if self.tty.on { self.tty_terminal() } else { self.config.terminal.clone() })),
             keysyms::KEY_v | keysyms::KEY_V if !mods.shift && !mods.ctrl => Some(Action::ClipboardHistory),
             keysyms::KEY_grave if !mods.shift && !mods.ctrl => Some(Action::ToggleDropdown),
             keysyms::KEY_q if !mods.shift => Some(Action::CloseWindow),
