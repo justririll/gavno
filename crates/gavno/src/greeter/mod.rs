@@ -7,6 +7,9 @@
 //! (the clock wakes it once a minute).
 
 pub mod ipc;
+mod tty;
+#[cfg(test)]
+pub(crate) use tty::failure_text;
 
 use std::time::Duration;
 
@@ -117,6 +120,9 @@ pub struct Greeter {
     lat: f64,
     lon: f64,
     palette: Option<(u32, Palette)>,
+    /// The lock screen is drawn as a console login (TTY mode).
+    pub(crate) tty: bool,
+    tty_canvas: Option<crate::topbar::Canvas>,
 }
 
 impl Greeter {
@@ -208,6 +214,8 @@ impl Greeter {
             lat,
             lon,
             palette: None,
+            tty: false,
+            tty_canvas: None,
         }
     }
 
@@ -415,6 +423,9 @@ impl Greeter {
         scale: f64,
         now: Duration,
     ) -> Vec<GavnoRenderElement> {
+        if self.tty && self.lock_tx.is_some() {
+            return self.elements_tty(renderer, size, scale, now);
+        }
         self.now = now;
         if self.shaders.is_none() {
             match Shaders::compile(renderer) {

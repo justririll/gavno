@@ -20,7 +20,7 @@ horizontally (160 ms). Nothing animates, and no timer runs, while it is settled.
 - **Tiles:** Wi-Fi (subtitle: SSID or Off), Bluetooth (connected device or
   Off), Night light (`display.night_light`, applied at once, not written to the
   config file), Do not disturb (silences notification popups, history is kept)
-  and Code mode (hidden in Classic). A click toggles; the chevron of Wi-Fi and
+  Code mode and TTY mode (both hidden in Classic; see [tty.md](tty.md)). A click toggles; the chevron of Wi-Fi and
   Bluetooth opens their page.
 - **Sliders:** volume (the icon mutes, the chevron opens the mixer) and
   brightness (backlight, or the software dimming when that is configured).

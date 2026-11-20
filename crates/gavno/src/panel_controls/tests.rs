@@ -238,16 +238,16 @@ fn main_page_rows_follow_the_spec_and_hide_what_is_unavailable() {
     let labels: Vec<_> = rows.iter().map(|r| r.label.as_str()).collect();
     assert_eq!(
         labels,
-        ["Wi-Fi", "Bluetooth", "Night light", "Do not disturb", "Code mode", "Volume", "Brightness", "Settings", "Lock", "Power"]
+        ["Wi-Fi", "Bluetooth", "Night light", "Do not disturb", "Code mode", "TTY", "Volume", "Brightness", "Settings", "Lock", "Power"]
     );
     assert_eq!(rows[0].detail, "Home network");
     assert_eq!(rows[1].detail, "Wireless headphones");
     assert!(rows[0].on && rows[1].on && !rows[2].on);
     assert_eq!(rows[0].chevron, Some(Page::Wifi));
-    assert_eq!(rows[5].chevron, Some(Page::Audio));
+    assert_eq!(rows[6].chevron, Some(Page::Audio));
     let none = Info { brightness: None, code_available: false, ..info() };
     let labels: Vec<_> = s.rows(Page::Main, &none).into_iter().map(|r| r.label).collect();
-    assert!(!labels.contains(&"Brightness".to_string()) && !labels.contains(&"Code mode".to_string()));
+    assert!(!labels.contains(&"Brightness".to_string()) && !labels.contains(&"Code mode".to_string()) && !labels.contains(&"TTY".to_string()));
     let mut off = state(Page::Main);
     off.wifi.enabled = false;
     off.bluetooth.powered = false;
@@ -268,6 +268,7 @@ fn tiles_toggle_and_chevrons_slide_to_detail_pages_with_backspace_returning() {
         (keysyms::KEY_j, Effect::NightLight),
         (keysyms::KEY_j, Effect::DoNotDisturb),
         (keysyms::KEY_j, Effect::CodeMode),
+        (keysyms::KEY_j, Effect::TtyMode),
     ] {
         s.key(key, None, &info);
         assert_eq!(s.key(keysyms::KEY_Return, None, &info), Some(effect));
@@ -284,7 +285,7 @@ fn tiles_toggle_and_chevrons_slide_to_detail_pages_with_backspace_returning() {
     assert_eq!(s.page, Page::Main);
     assert!(matches!(wifi.try_recv(), Ok(worker::Command::Visible(false))));
     // Space on the volume slider opens the mixer instead of muting.
-    s.selected = 5;
+    s.selected = 6;
     s.key(keysyms::KEY_space, None, &info);
     assert_eq!(s.page, Page::Audio);
     assert!(audio.try_iter().all(|c| !matches!(c, worker::Command::Mute(_))));
@@ -296,10 +297,10 @@ fn tiles_toggle_and_chevrons_slide_to_detail_pages_with_backspace_returning() {
 fn brightness_and_footer_buttons_ask_the_compositor() {
     let mut s = state(Page::Main);
     let info = info();
-    s.selected = 6;
+    s.selected = 7;
     assert_eq!(s.key(keysyms::KEY_Right, None, &info), Some(Effect::Brightness(0.75)));
     assert_eq!(s.key(keysyms::KEY_h, None, &info), Some(Effect::Brightness(0.65)));
-    s.selected = 7;
+    s.selected = 8;
     assert_eq!(s.key(keysyms::KEY_Return, None, &info), Some(Effect::Settings));
     s.key(keysyms::KEY_j, None, &info);
     assert_eq!(s.key(keysyms::KEY_Return, None, &info), Some(Effect::Lock));

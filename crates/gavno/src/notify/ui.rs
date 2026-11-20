@@ -46,6 +46,13 @@ pub(super) fn column(size: Size<i32, Logical>, width: i32, avoid: Option<Rect>) 
 
 impl Notifications {
     pub(super) fn layout(&mut self, size: Size<i32, Logical>) {
+        if self.tty {
+            for c in &mut self.cards {
+                c.rect = None;
+                c.buttons.clear();
+            }
+            return;
+        }
         let width = 360.min((size.w - 16).max(1));
         let column = column(size, width, self.avoid);
         let (column_x, top) = column.unwrap_or((size.w - width - 8, 40));
@@ -110,6 +117,9 @@ impl Notifications {
             if c.visible {
                 c.spring.advance(now);
             }
+        }
+        if self.tty {
+            return self.elements_tty(renderer, scale, size.w);
         }
         self.layout(size);
         self.anchor_classic(size, shell_progress);
@@ -247,4 +257,44 @@ fn wrap(
         lines.push(line);
     }
     lines
+}
+
+/// "[ 1234.567] Telegram: Alice: see you at 6", flattened to one line.
+pub(crate) fn kernel_line(born: Duration, app: &str, summary: &str, body: &str) -> String {
+    let mut text = String::new();
+    for part in [app, summary, body].into_iter().filter(|p| !p.trim().is_empty()) {
+        if !text.is_empty() {
+            text.push_str(": ");
+        }
+        text.push_str(&part.split_whitespace().collect::<Vec<_>>().join(" "));
+    }
+    format!("[{:>5}.{:03}] {text}", born.as_secs(), born.subsec_millis())
+}
+
+impl Notifications {
+    /// Console look: up to three kernel message lines at the top left.
+    fn elements_tty(&mut self, renderer: &mut GlesRenderer, scale: f64, width: i32) -> Vec<GavnoRenderElement> {
+        const FONT: f32 = 15.0;
+        const LINE: i32 = 20;
+        let style = crate::ui::text::TextStyleSpec {
+            size: FONT,
+            weight: Weight::Mono,
+            color: [0.70, 0.70, 0.74, 1.0],
+            tracking: 0.0,
+        };
+        let canvas = &mut self.canvas;
+        canvas.begin(renderer, scale);
+        let width = width.max(200);
+        let mut row = 0;
+        for card in self.cards.iter().filter(|c| c.visible && !c.closing || c.spring.is_active() && c.spring.value > 0.01) {
+            if row >= 3 {
+                break;
+            }
+            canvas.alpha = (card.spring.value * 2.0).clamp(0.0, 1.0) as f32;
+            let line = kernel_line(card.born, &card.notice.app, &card.notice.summary, &card.notice.body);
+            canvas.styled_label(renderer, &line, 14, 14 + row * LINE, width - 28, style);
+            row += 1;
+        }
+        canvas.finish()
+    }
 }

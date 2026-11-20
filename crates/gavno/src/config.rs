@@ -55,6 +55,7 @@ pub struct Config {
     pub display: DisplayConfig,
     pub clipboard: ClipboardConfig,
     pub dropdown: DropdownConfig,
+    pub tty: TtyConfig,
     pub ai: AiConfig,
     pub appearance: AppearanceConfig,
 }
@@ -185,6 +186,7 @@ struct FileConfig {
     display: DisplayConfig,
     clipboard: ClipboardConfig,
     dropdown: DropdownConfig,
+    tty: TtyConfig,
     ai: AiConfig,
     appearance: AppearanceConfig,
     #[serde(flatten)]
@@ -280,7 +282,7 @@ impl Config {
             "file_manager":self.file_manager,"polkit_agent":self.polkit_agent,"autostart":self.autostart,"gap":self.gap,
             "output":{"internal_scale":self.internal_scale,"mode":mode,"hdr":self.output_hdr,"sdr_white_nits":self.sdr_white_nits},
             "keyboard":{"layout":self.xkb_layout,"variant":self.xkb_variant,"options":self.xkb_options,"repeat_delay":self.repeat_delay,"repeat_rate":self.repeat_rate,"code_mode":self.code_mode,"bar_hints":self.bar_hints},
-            "display":self.display,"media":self.media,"clipboard":self.clipboard,"dropdown":self.dropdown,"ai":self.ai,"appearance":self.appearance,"modules":self.modules,"classic":self.classic,"dock":self.dock,"bar":self.bar,"tiling":self.tiling,"lock":self.lock,"notifications":self.notifications,"outputs":self.outputs})
+            "display":self.display,"media":self.media,"clipboard":self.clipboard,"dropdown":self.dropdown,"tty":self.tty,"ai":self.ai,"appearance":self.appearance,"modules":self.modules,"classic":self.classic,"dock":self.dock,"bar":self.bar,"tiling":self.tiling,"lock":self.lock,"notifications":self.notifications,"outputs":self.outputs})
     }
 
     /// Pure merge: defaults < file < environment. Empty environment values are unset.
@@ -297,7 +299,7 @@ impl Config {
         // Capture unknown fields during deserialization, so this list cannot drift from the schema.
         let mut unknown = Vec::new();
         for (prefix, extra) in
-            [("display.", &file.display.unknown), ("", &file.unknown), ("output.", &file.output.unknown), ("keyboard.", &file.keyboard.unknown), ("classic.", &file.classic.unknown), ("dock.", &file.dock.unknown), ("bar.", &file.bar.unknown), ("tiling.", &file.tiling.unknown), ("media.", &file.media.unknown), ("clipboard.", &file.clipboard.unknown), ("dropdown.", &file.dropdown.unknown), ("ai.", &file.ai.unknown), ("appearance.", &file.appearance.unknown), ("notifications.", &file.notifications.unknown), ("lock.", &file.lock.unknown), ("modules.", &file.modules.unknown)]
+            [("display.", &file.display.unknown), ("", &file.unknown), ("output.", &file.output.unknown), ("keyboard.", &file.keyboard.unknown), ("classic.", &file.classic.unknown), ("dock.", &file.dock.unknown), ("bar.", &file.bar.unknown), ("tiling.", &file.tiling.unknown), ("media.", &file.media.unknown), ("clipboard.", &file.clipboard.unknown), ("dropdown.", &file.dropdown.unknown), ("tty.", &file.tty.unknown), ("ai.", &file.ai.unknown), ("appearance.", &file.appearance.unknown), ("notifications.", &file.notifications.unknown), ("lock.", &file.lock.unknown), ("modules.", &file.modules.unknown)]
         {
             unknown.extend(extra.keys().map(|key| format!("{prefix}{key}")));
         }
@@ -413,6 +415,7 @@ impl Config {
                 display: file.display,
                 clipboard: file.clipboard.clamped(),
                 dropdown: file.dropdown.clamped(),
+                tty: file.tty.clamped(),
                 ai: file.ai.clamped(),
                 appearance: file.appearance.clamped(),
             },
@@ -561,6 +564,7 @@ options = "caps:escape"
             display: Default::default(),
             clipboard: Default::default(),
             dropdown: Default::default(),
+            tty: Default::default(),
             ai: Default::default(),
             appearance: Default::default(),
         };
@@ -634,6 +638,7 @@ options = "caps:escape"
             display: Default::default(),
             clipboard: Default::default(),
             dropdown: Default::default(),
+            tty: Default::default(),
             ai: Default::default(),
             appearance: Default::default(),
         };
@@ -1117,6 +1122,32 @@ impl DropdownConfig {
     }
 }
 
+/// The console look, see `tty_mode.rs`.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct TtyConfig {
+    /// Start in TTY mode.
+    pub start: bool,
+    /// Font family for every TTY mode text.
+    pub font: String,
+    /// Start the terminal when an empty console is switched to.
+    pub autostart_terminal: bool,
+    #[serde(flatten)]
+    unknown: toml::Table,
+}
+impl Default for TtyConfig {
+    fn default() -> Self {
+        Self { start: false, font: "monospace".into(), autostart_terminal: true, unknown: Default::default() }
+    }
+}
+impl TtyConfig {
+    fn clamped(mut self) -> Self {
+        self.font = self.font.trim().to_owned();
+        if self.font.is_empty() { self.font = Self::default().font; }
+        self
+    }
+}
+
 /// Local AI in the launcher, see `design/ai.md`.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
@@ -1158,6 +1189,29 @@ mod ai_config_tests {
         let (config, _) = Config::build(false, Some("[ai]\nidle_stop_minutes = 99999"), |_| None);
         assert_eq!(config.ai.idle_stop_minutes, 1440);
         assert_eq!(config.values()["ai"]["idle_stop_minutes"], 1440);
+    }
+}
+
+#[cfg(test)]
+mod tty_config_tests {
+    use super::*;
+    #[test]
+    fn defaults_parse_and_clamp() {
+        let config = Config::build(false, None, |_| None).0;
+        assert_eq!(config.tty, TtyConfig::default());
+        assert!(!config.tty.start && config.tty.autostart_terminal);
+        assert_eq!(config.tty.font, "monospace");
+        let text = "[tty]\nstart = true\nfont = \"  Iosevka \"\nautostart_terminal = false\nwrong = 1";
+        let (config, warnings) = Config::build(false, Some(text), |_| None);
+        assert_eq!(warnings, ["unknown config keys ignored: tty.wrong"]);
+        assert!(config.tty.start && !config.tty.autostart_terminal);
+        assert_eq!(config.tty.font, "Iosevka");
+        assert_eq!(config.values()["tty"]["font"], "Iosevka");
+        let (config, _) = Config::build(false, Some("[tty]\nfont = \"   \""), |_| None);
+        assert_eq!(config.tty.font, "monospace");
+        for bad in ["start = 'yes'", "font = 3", "autostart_terminal = 1"] {
+            assert!(Config::parse_checked(false, &format!("[tty]\n{bad}"), |_| None).is_err(), "{bad}");
+        }
     }
 }
 

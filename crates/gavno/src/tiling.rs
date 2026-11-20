@@ -487,6 +487,7 @@ impl Gavno {
         let workspace = &owner.list.items[index];
         if !workspace.tiling { return None; }
         let area = self.work_area(&output);
+        if self.tty.on { return Some(area); }
         let mut tree = workspace.tree.clone();
         tree.insert(window.clone(), self.focused_window().as_ref(), area, self.config.gap);
         tree.layout(area, self.config.gap).0.into_iter()
@@ -532,7 +533,7 @@ impl Gavno {
 
     fn toggle_workspace_tiling_feature(&mut self, output: &Output) {
         // Code mode keeps every workspace tiled; leave it first.
-        if self.code_mode || self.classic_windows_active() { return; }
+        if self.code_mode || self.tty.on || self.classic_windows_active() { return; }
         self.end_window_grab();
         self.workspaces.snapshot(&self.space);
         let owner = self.workspaces.ensure(output);
@@ -685,13 +686,17 @@ impl Gavno {
         }
         // Workspaces created during code mode tile like all the others.
         self.enforce_code_mode_tiling();
+        self.enforce_tty_tiling();
+        let tty = self.tty.on;
+        let gap = self.tile_gap();
+        // A console shows one window at a time: no animated moves.
+        let animate = animate && !tty;
         let focus = self.focused_window();
         let moving = self.workspaces.moving_tile.clone();
         let mut targets = Vec::new();
         let mut restores = Vec::new();
         for index in 0..self.workspaces.outputs.len() {
             let area = self.work_area(&self.workspaces.outputs[index].output);
-            let gap = self.config.gap;
             for ws in &mut self.workspaces.outputs[index].list.items {
                 for (w, _) in ws.tree.layout(area, gap).0 {
                     if !ws.windows.iter().any(|v| v.window == w) {
@@ -743,7 +748,12 @@ impl Gavno {
                         ws.tree.insert(w, focus.as_ref(), area, gap);
                     }
                 }
-                targets.extend(ws.tree.layout(area, gap).0);
+                if tty {
+                    // Monocle: every tile fills the console, the focused one on top.
+                    targets.extend(ws.tree.layout(area, gap).0.into_iter().map(|(w, _)| (w, area)));
+                } else {
+                    targets.extend(ws.tree.layout(area, gap).0);
+                }
             }
         }
         for (w, r) in restores {

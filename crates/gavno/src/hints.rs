@@ -964,6 +964,8 @@ fn action_label(action: &Action) -> (&'static str, &'static str) {
         ToggleOverview | CloseOverview => ("Overview", "overview"),
         SwitcherCycle(_) | SwitcherFinish(_) => ("Focus and swap", "window switcher"),
         ToggleCodeMode => ("Code mode", "toggle code mode"),
+        ToggleTtyMode => ("TTY mode", "toggle TTY mode"),
+        Console(_) => ("TTY mode", "switch console"),
         Screenshot(crate::screenshot::ScreenshotMode::Full) => ("Screenshots", "screenshot"),
         Screenshot(crate::screenshot::ScreenshotMode::Area) => ("Screenshots", "screenshot area"),
         ClipboardHistory => ("Apps", "clipboard history"),

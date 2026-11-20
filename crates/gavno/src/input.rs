@@ -66,6 +66,10 @@ pub enum Action {
     ToggleDropdown,
     /// Keyboard-only shell mode; applies to the GAVNO shell only.
     ToggleCodeMode,
+    /// Console look on the GAVNO shell (Mod+Shift+T); see `tty_mode.rs`.
+    ToggleTtyMode,
+    /// Alt+F<n> in TTY mode: console n.
+    Console(usize),
     WindowHints,
     CheatSheet,
     PanelControls(crate::panel_controls::Page),
@@ -248,7 +252,7 @@ impl Gavno {
                 {
                     let latin = handle.raw_latin_sym_or_raw_current_sym().map(|s| s.raw()).unwrap_or(sym);
                     if !modifier_only {
-                        if gv.code_mode { gv.hide_pointer(); }
+                        if gv.keyboard_first() { gv.hide_pointer(); }
                         if gv.overlay.keyboard.open() { gv.keyboard_overlay_key(latin); }
                         else { gv.overview_key(latin, mods.shift); }
                     }
@@ -377,7 +381,7 @@ impl Gavno {
                     return FilterResult::Intercept(Some(Action::ToggleDropdown));
                 }
                 if gv.resize_mode_key_with_ctrl(handle.raw_latin_sym_or_raw_current_sym().map(|s| s.raw()).unwrap_or(sym), mods.shift, mods.ctrl) {
-                    if gv.code_mode { gv.hide_pointer(); }
+                    if gv.keyboard_first() { gv.hide_pointer(); }
                     gv.suppressed_keys.push(raw_code);
                     return FilterResult::Intercept(None);
                 }
@@ -428,9 +432,14 @@ impl Gavno {
             KeyState::Pressed => { if !self.desktop_keys.contains(&raw_code) { self.desktop_keys.push(raw_code); } }
             KeyState::Released => self.desktop_keys.retain(|k| *k != raw_code),
         }
+        // TTY mode shows its status line while the mod key is held.
+        self.tty_mod_changed(
+            self.config.mod_key.is_held(&keyboard.modifier_state()),
+            key_state == KeyState::Pressed && !modifier_only,
+        );
         // The first key press that reaches a client or a bind hides the
         // pointer. Shell text entry, such as the launcher, leaves it alone.
-        if key_state == KeyState::Pressed && self.code_mode
+        if key_state == KeyState::Pressed && self.keyboard_first()
             && !self.protocols.locks.locked && self.greeter.is_none()
         {
             let reaches = match &action {
@@ -490,7 +499,10 @@ impl Gavno {
     }
     pub(crate) fn action_enabled(&self, action: &Action) -> bool {
         let feature = match action {
-            Action::ToggleCodeMode if self.classic_mode() => return false,
+            Action::ToggleCodeMode | Action::ToggleTtyMode if self.classic_mode() => return false,
+            Action::Console(_) if !self.tty.active() => return false,
+            // No bar, no overview and no quick settings on a console.
+            Action::ToggleOverview | Action::CloseOverview | Action::PanelControls(_) if self.tty.on => return false,
             Action::Classic(_) => Feature::Classic,
             Action::PanelControls(_) => Feature::Bar,
             Action::Minimize => Feature::Dock,
@@ -533,6 +545,13 @@ impl Gavno {
         }
         if (self.features.on(crate::module::Feature::Overview) && self.overview.visible()) && sym == keysyms::KEY_Escape { return Some(Action::CloseOverview); }
         if mods.logo && mods.shift && sym == keysyms::KEY_F23 { return Some(Action::ToggleOverview); }
+        // The authentic console keys; Ctrl+Alt+F<n> stays real VT switching.
+        if self.tty.active() && mods.alt && !mods.ctrl && !mods.shift && !mods.logo
+            && (keysyms::KEY_F1..=keysyms::KEY_F6).contains(&sym)
+            && !(main && sym == keysyms::KEY_F1)
+        {
+            return Some(Action::Console((sym - keysyms::KEY_F1 + 1) as usize));
+        }
         if !main {
             return None;
         }
@@ -550,10 +569,20 @@ impl Gavno {
         if !self.classic_mode() && mods.shift && !mods.ctrl && matches!(sym, keysyms::KEY_c | keysyms::KEY_C) {
             return Some(Action::ToggleCodeMode);
         }
+        if !self.classic_mode() && mods.shift && !mods.ctrl && matches!(sym, keysyms::KEY_t | keysyms::KEY_T) {
+            return Some(Action::ToggleTtyMode);
+        }
         // In code mode H/J/K/L stand in for the arrows in every Mod+arrow
         // chord. The alias wins over Mod+L lock and Mod+Shift+H HDR, but never
         // over Ctrl+Alt+L above.
         if self.code_mode {
+            if let Some(dir) = vim_arrow(sym).and_then(arrow_direction) {
+                return Some(self.direction_action(dir, mods));
+            }
+        }
+        // A console is keyboard first: J and K walk its windows. H and L stay
+        // as they are, so Mod+L still locks.
+        if self.tty.on && !self.code_mode && matches!(sym, keysyms::KEY_j | keysyms::KEY_J | keysyms::KEY_k | keysyms::KEY_K) {
             if let Some(dir) = vim_arrow(sym).and_then(arrow_direction) {
                 return Some(self.direction_action(dir, mods));
             }
@@ -633,6 +662,8 @@ impl Gavno {
             Action::CheatSheet => self.toggle_cheat_sheet(),
             Action::PanelControls(page) => { if let Some(output) = self.active_output() { self.toggle_panel_controls(page, &output); } },
             Action::ToggleCodeMode => self.set_code_mode(!self.code_mode),
+            Action::ToggleTtyMode => self.set_tty_mode(!self.tty.active()),
+            Action::Console(number) => self.tty_switch_console(number),
             Action::Quit => self.quit(),
             Action::Spawn(cmd) => self.launch_shell(&cmd, None),
             Action::CloseWindow => self.close_focused(),

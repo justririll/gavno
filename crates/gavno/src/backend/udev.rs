@@ -1310,6 +1310,7 @@ fn render_surface(gv: &mut Gavno, crtc: crtc::Handle) {
         &mut gv.classic,
         &mut gv.polkit,
         &mut gv.background,
+        &mut gv.tty,
         Some(&mut stall),
     );
     if !surface.first_frame_queued {
@@ -1636,6 +1637,7 @@ fn capture_output_with_cursor_state(gv: &mut Gavno, output: &Output) -> Option<(
         &mut gv.classic,
         &mut gv.polkit,
         &mut gv.background,
+        &mut gv.tty,
         None,
     );
     let bytes = render::capture_elements(&mut gpu.renderer, &elements, (mode.size.w, mode.size.h), scale)?;

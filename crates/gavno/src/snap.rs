@@ -210,6 +210,11 @@ impl Gavno {
         .map(|i| pool[i].0.clone())
     }
     pub fn focus_direction(&mut self, dir: Direction) {
+        // Every window of a console fills it: focus walks them in order.
+        if self.tty.active() {
+            self.tty_cycle_focus(matches!(dir, Direction::Right | Direction::Down));
+            return;
+        }
         let Some(w) = self.focused_window() else {
             self.focus_topmost();
             return;

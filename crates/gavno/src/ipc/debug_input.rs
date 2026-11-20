@@ -165,7 +165,7 @@ fn state(gv: &Gavno) -> Value {
         "resize_mode_open": gv.overlay.resize_mode.active(),
         "window_hints_open": gv.overlay.keyboard.windows.is_some(), "keyboard_overlay_open": gv.overlay.keyboard.open(),
         "overview_selected": gv.overview.selected.as_ref().map(|w| crate::overlay::window_labels(w).0), "outputs": outputs, "focused": focused,
-        "code_mode": gv.code_mode, "pointer_hidden": gv.pointer_hidden,
+        "code_mode": gv.code_mode, "tty_mode": gv.tty.on, "tty_closing": gv.tty.closing, "pointer_hidden": gv.pointer_hidden,
         "launcher_open": gv.launcher.open, "start_open": gv.classic.start.open,
         "screenshot_open": gv.screenshot_active(), "screenshot_selection": gv.overlay.screenshot.selection().map(|r| json!([r.loc.x, r.loc.y, r.size.w, r.size.h])),
         "toast_visible": gv.overlay.screenshot.toast_visible(),

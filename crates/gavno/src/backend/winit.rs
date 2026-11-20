@@ -158,6 +158,7 @@ fn render(gv: &mut Gavno) {
         &mut gv.classic,
         &mut gv.polkit,
         &mut gv.background,
+        &mut gv.tty,
         Some(&mut elements_stall),
         );
         drop(elements_stall);
@@ -257,6 +258,7 @@ fn capture_output_with_cursor_state(gv: &mut Gavno, output: &Output) -> Option<(
         &mut gv.classic,
         &mut gv.polkit,
         &mut gv.background,
+        &mut gv.tty,
         None,
     );
     let bytes = render::capture_elements(renderer, &elements, (mode.size.w, mode.size.h), scale)?;

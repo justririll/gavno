@@ -402,7 +402,7 @@ impl Gavno {
         }
     }
     pub(crate) fn theme_output_visible(&self, output: &Output) -> bool {
-        !self.protocols.locks.locked && self.greeter.is_none() && self.background.visible(output)
+        !self.tty.on && !self.protocols.locks.locked && self.greeter.is_none() && self.background.visible(output)
     }
     /// Whether theme changes are visible on this output: a fade, a living accent,
     /// or a living sky that no wallpaper covers.
@@ -434,6 +434,7 @@ impl Gavno {
     fn bar_clock_needed(&self) -> bool {
         // Nothing shows a clock while the outputs are powered off.
         !self.power.is_off()
+            && !self.tty.on
             && !self.protocols.locks.locked
             && self.greeter.is_none()
             && self.features.on(Feature::Bar)
@@ -1009,6 +1010,7 @@ mod tests {
             &mut gv.classic,
             &mut gv.polkit,
             &mut gv.background,
+            &mut gv.tty,
             None,
         )
     }
@@ -1422,6 +1424,7 @@ mod tests {
                     &mut gv.classic,
                     &mut gv.polkit,
                     &mut gv.background,
+                    &mut gv.tty,
                     None,
                 );
                 assert!(scene.len() > 1, "the artifact includes shell chrome");

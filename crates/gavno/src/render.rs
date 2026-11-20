@@ -15,7 +15,8 @@ use smithay::{
                 utils::{Relocate, RelocateRenderElement, RescaleRenderElement},
                 AsRenderElements, Kind, RenderElementStates,
             },
-            gles::GlesRenderer,
+            gles::{GlesRenderer, GlesTexture},
+            element::texture::TextureRenderElement,
         },
     },
     desktop::{
@@ -56,6 +57,7 @@ render_elements! {
     Shader = smithay::backend::renderer::gles::element::PixelShaderElement,
     Thumbnail = crate::overview::ThumbnailElement,
     Plain = RelocateRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>,
+    Texture = TextureRenderElement<GlesTexture>,
 }
 
 /// Dmabuf feedback for one output: what to prefer for composition and what
@@ -140,6 +142,42 @@ pub fn output_elements(
     classic: &mut crate::classic::Classic,
     polkit: &mut crate::polkit::Polkit,
     background: &mut crate::ui::background::Background,
+    tty: &mut crate::tty_mode::Tty,
+    stall: Option<&mut crate::perf::Stall<'_>>,
+) -> Vec<GavnoRenderElement> {
+    let elements = output_elements_colored(renderer, space, output, pointer_pos, cursor_status, cursor, time, greeter, lock, overlay, window_decor, animations, locks, workspaces, overview, dock, topbar, config, features, osd, launcher, classic, polkit, background, tty, stall);
+    match space.output_geometry(output) {
+        Some(geo) if tty.on && !locks.locked => tty.crt_wrap(renderer, elements, geo.size, output.current_scale().fractional_scale(), time),
+        _ => elements,
+    }
+}
+
+fn output_elements_colored(
+    renderer: &mut GlesRenderer,
+    space: &Space<Window>,
+    output: &Output,
+    pointer_pos: Point<f64, Logical>,
+    cursor_status: &mut CursorImageStatus,
+    cursor: &mut CursorCache,
+    time: Duration,
+    greeter: Option<&mut crate::greeter::Greeter>,
+    lock: &mut crate::lock::Lock,
+    overlay: &mut crate::overlay::Overlay,
+    window_decor: &mut crate::decor::WindowDecor,
+    animations: &mut crate::anim::WindowAnimations,
+    locks: &crate::handlers::session_lock::Locks,
+    workspaces: &mut crate::workspace::Workspaces,
+    overview: &mut crate::overview::Overview,
+    dock: &mut crate::dock::Dock,
+    topbar: &mut crate::topbar::TopBar,
+    config: &crate::config::Config,
+    features: &mut Features,
+    osd: &mut crate::topbar::osd::Osd,
+    launcher: &mut crate::launcher::Launcher,
+    classic: &mut crate::classic::Classic,
+    polkit: &mut crate::polkit::Polkit,
+    background: &mut crate::ui::background::Background,
+    tty: &mut crate::tty_mode::Tty,
     mut stall: Option<&mut crate::perf::Stall<'_>>,
 ) -> Vec<GavnoRenderElement> {
     if let Some(stall) = stall.as_deref_mut() {
@@ -164,7 +202,7 @@ pub fn output_elements(
         if let Some(surface) = locks.surface(output) { with_surfaces_surface_tree(surface, |s, states| collect(s, states)); }
     }
     if let Some(stall) = stall.as_deref_mut() { stall.mark("elements.state"); }
-    let elements = output_elements_inner(renderer, space, output, pointer_pos, cursor_status, cursor, time, greeter, lock, overlay, window_decor, animations, locks, workspaces, overview, dock, topbar, config, features, osd, launcher, classic, polkit, background, stall.as_deref_mut());
+    let elements = output_elements_inner(renderer, space, output, pointer_pos, cursor_status, cursor, time, greeter, lock, overlay, window_decor, animations, locks, workspaces, overview, dock, topbar, config, features, osd, launcher, classic, polkit, background, tty, stall.as_deref_mut());
     if descriptions.is_empty() { crate::hdr::surface::reset(output); return elements; }
     let hdr = crate::handlers::color_management::is_hdr(output);
     if !hdr { descriptions.retain(|_, d| d.tf != crate::color::Transfer::Srgb || d.primaries != crate::color::SRGB); }
@@ -220,6 +258,7 @@ fn output_elements_inner(
     classic: &mut crate::classic::Classic,
     polkit: &mut crate::polkit::Polkit,
     background: &mut crate::ui::background::Background,
+    tty: &mut crate::tty_mode::Tty,
     mut stall: Option<&mut crate::perf::Stall<'_>>,
 ) -> Vec<GavnoRenderElement> {
     let mut elements: Vec<GavnoRenderElement> = Vec::new();
@@ -246,12 +285,12 @@ fn output_elements_inner(
             if let Some(stall) = stall.as_deref_mut() { stall.mark("elements.cursor"); }
             elements.extend(osd.elements(renderer, output, output_geo.size, time, &config.dock.icon_theme, topbar.accent()));
             let name = output.name();
-            if lock.backdrop_wanted(&name) {
+            if !tty.on && lock.backdrop_wanted(&name) {
                 // The first lock frame captures the desktop once; the blur happens
                 // on a worker and arrives as a small texture a frame or two later.
                 lock.set_capturing(true);
                 let open = crate::handlers::session_lock::Locks::default();
-                let desktop = output_elements_inner(renderer, space, output, pointer_pos, cursor_status, cursor, time, None, lock, overlay, window_decor, animations, &open, workspaces, overview, dock, topbar, config, features, osd, launcher, classic, polkit, background, None);
+                let desktop = output_elements_inner(renderer, space, output, pointer_pos, cursor_status, cursor, time, None, lock, overlay, window_decor, animations, &open, workspaces, overview, dock, topbar, config, features, osd, launcher, classic, polkit, background, tty, None);
                 lock.set_capturing(false);
                 let physical = (
                     (output_geo.size.w as f64 * scale.x).round() as i32,
@@ -263,10 +302,10 @@ fn output_elements_inner(
                 }
             }
             let battery = topbar.status().battery.as_ref().map(|b| (b.percent, b.charging));
-            let lock_elements = lock.elements(renderer, &name, output_geo.size, scale.x, time, &config.theme, battery);
-            let media_elements = features.call(Feature::Media, Vec::new(), || {
+            let lock_elements = lock.elements(renderer, &name, output_geo.size, scale.x, time, &config.theme, battery, tty.on);
+            let media_elements = if tty.on { Vec::new() } else { features.call(Feature::Media, Vec::new(), || {
                 lock.media_elements(renderer, output_geo.size, scale.x, &topbar.now_playing.borrow().snapshot, &config.dock.icon_theme)
-            });
+            }) };
             // Media is in front of the trusted lock background, beneath its cursor.
             elements.extend(media_elements);
             elements.extend(lock_elements);
@@ -371,13 +410,13 @@ fn output_elements_inner(
         }
     }
 
-    if !locks.locked && !lock.shell_hidden() {
+    if !tty.on && !locks.locked && !lock.shell_hidden() {
         let accent = topbar.accent();
         let media_on = features.on(Feature::Media);
         elements.extend(features.call(Feature::Bar, Vec::new(), || topbar.panel_elements(renderer, output, output_geo.size, scale.x, accent, &config.dock.icon_theme, classic.progress.value > 0.5, media_on)));
     }
 
-    if !locks.locked && !lock.shell_hidden() {
+    if !tty.on && !locks.locked && !lock.shell_hidden() {
         elements.extend(features.call(Feature::Media, Vec::new(), || {
             topbar.now_playing.borrow_mut().music.session.as_mut()
                 .map(|s| s.elements(renderer, output, output_geo.size, scale.x, topbar.accent())).unwrap_or_default()
@@ -423,12 +462,14 @@ fn output_elements_inner(
     let focused = classic.taskbar.focused.clone();
     features.call(Feature::Classic, (), || classic.start.append(renderer, output, output_geo.size, time, config.classic.align, accent, &config.dock.icon_theme, &mut elements));
     features.call(Feature::Classic, (), || classic.taskbar.append(renderer, output, output_geo.size, p, config.classic.align, focused.as_ref(), topbar.status(), accent, &config.dock.icon_theme, shell_visible, &mut elements));
-    elements.extend(features.read(Feature::Bar, Vec::new(), || topbar.elements(renderer, output, output_geo.size.w, workspaces.get(output), time, shell_visible || (p > 0.0 && topbar.menu.as_ref() == Some(output)), features)));
+    if !tty.on { elements.extend(features.read(Feature::Bar, Vec::new(), || topbar.elements(renderer, output, output_geo.size.w, workspaces.get(output), time, shell_visible || (p > 0.0 && topbar.menu.as_ref() == Some(output)), features))); }
     // Above the dock and every window, beneath the bar and its popovers.
     elements.extend(overlay.dropdown.elements(renderer, window_decor, output, output_geo, work_area, &config.dropdown, time));
-    elements.extend(features.call(Feature::Dock, Vec::new(), || dock.elements(renderer, output, output_geo.size, pointer_pos - output_geo.loc.to_f64(), time, shell_visible)));
+    if !tty.on { elements.extend(features.call(Feature::Dock, Vec::new(), || dock.elements(renderer, output, output_geo.size, pointer_pos - output_geo.loc.to_f64(), time, shell_visible))); }
     // Workspace ownership and transitions are core; overview only adds its zoom.
-    let mut scene = if features.on(Feature::Overview) {
+    let mut scene = if tty.on {
+        Some(crate::tty_mode::draw::scene(space, output))
+    } else if features.on(Feature::Overview) {
         features.call(Feature::Overview, None, || {
             overview.work_area = Some(work_area);
             overview.scene(workspaces, space, output, time)
@@ -437,13 +478,13 @@ fn output_elements_inner(
         crate::workspace::workspace_scene(workspaces, space, output, time)
     };
     features.call(Feature::Dock, (), || dock.minimize_scene(space, output, time, &mut scene));
-    elements.extend(features.call(Feature::Overview, Vec::new(), || overview.chrome(renderer, workspaces, space, output, accent)));
+    if !tty.on { elements.extend(features.call(Feature::Overview, Vec::new(), || overview.chrome(renderer, workspaces, space, output, accent))); }
     let accent = topbar.accent();
     let overview_visible = features.on(Feature::Overview) && overview.visible();
     elements.extend(features.call(Feature::Tiling, Vec::new(), || {
         let mut line = Vec::new();
         if let Some((hover_output, split)) = &workspaces.splitter_hover {
-            if hover_output == output && !overview_visible {
+            if hover_output == output && !overview_visible && !tty.on {
                 let mut rect = split.line();
                 rect.loc -= output_geo.loc;
                 workspaces.splitter_canvas.begin(renderer, scale.x);
@@ -457,12 +498,22 @@ fn output_elements_inner(
     let mut static_animations = crate::anim::WindowAnimations::default();
     let animations = if features.on(Feature::Animations) { animations } else { &mut static_animations };
     if let Some(stall) = stall.as_deref_mut() { stall.mark("elements.shell"); }
-    let decorated = features.read(Feature::Decorations, None, || Some(window_decor.elements(renderer, space, output, animations, time, scene.as_deref(), features, stall.as_deref_mut())));
+    let decorated = features.read(Feature::Decorations, None, || if tty.on { None } else { Some(window_decor.elements(renderer, space, output, animations, time, scene.as_deref(), features, stall.as_deref_mut())) });
     elements.extend(decorated.unwrap_or_else(|| {
         plain_elements(renderer, space, output, scene.as_deref(), stall.as_deref_mut())
     }));
     features.call(Feature::Classic, (), || classic.desktop.append(renderer, output, &mut elements, p, scale.x, accent, &config.dock.icon_theme));
     if let Some(stall) = stall.as_deref_mut() { stall.mark("elements.desktop"); }
+    if tty.on {
+        // The console: no wallpaper, no sky, only the static vignette.
+        let rows = topbar.notifications.borrow().tty_rows();
+        let frame = crate::tty_mode::draw::Frame { workspaces: &*workspaces, status: topbar.status(), accent, rows };
+        let front = tty.front(renderer, output, output_geo.size, scale.x, time, &frame);
+        elements.splice(0..0, front);
+        elements.extend(tty.back(renderer, output, output_geo.size, scale.x, &frame));
+        if let Some(stall) = stall.as_deref_mut() { stall.mark("elements.background"); }
+        return elements;
+    }
     elements.extend(background_elements(renderer, output, smithay::wayland::shell::wlr_layer::Layer::Bottom));
     background.record_visibility(output, &elements, output_geo.size, scale.x);
     elements.extend(background_elements(renderer, output, smithay::wayland::shell::wlr_layer::Layer::Background));

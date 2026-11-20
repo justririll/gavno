@@ -506,6 +506,8 @@ pub struct TopBar {
     pub enabled: bool,
     /// Code mode chip and key hint strip state, refreshed on mode changes.
     pub code_mode: bool,
+    /// TTY mode is on; shown by the quick settings chip.
+    pub tty_mode: bool,
     pub hint_context: Option<crate::hints::HintContext>,
     /// The hints of `hint_context` whose binds are currently enabled.
     pub hint_items: Vec<&'static crate::hints::BindHint>,
@@ -554,6 +556,7 @@ impl Default for TopBar {
             views: Vec::new(),
             enabled: true,
             code_mode: false,
+            tty_mode: false,
             hint_context: None,
             hint_items: Vec::new(),
             mod_label: "Super",
@@ -603,6 +606,7 @@ impl TopBar {
             night_light: self.night_light,
             code_mode: self.code_mode,
             code_available: !classic,
+            tty: self.tty_mode,
             player: media && self.now_playing.borrow().snapshot.player.is_some(),
         }
     }
@@ -1365,7 +1369,13 @@ impl Gavno {
                 gv.classic.taskbar.release(); gv.classic.start.release();
             }
         });
-        self.refresh_bar_status(!self.power.is_off() && outputs.iter().any(|o| self.shell_visible(o)) && self.features.on(crate::module::Feature::Bar));
+        // The status line of TTY mode reads the same data, only while it shows.
+        let status_wanted = if self.tty.on {
+            self.tty.status_wanted()
+        } else {
+            self.features.on(crate::module::Feature::Bar)
+        };
+        self.refresh_bar_status(!self.power.is_off() && outputs.iter().any(|o| self.shell_visible(o)) && status_wanted);
         self.guard(crate::module::Feature::Bar, (), |gv| gv.refresh_bar(&outputs));
     }
     fn refresh_bar(&mut self, outputs: &[Output]) {

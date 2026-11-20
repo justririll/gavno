@@ -90,6 +90,8 @@ pub struct Gavno {
     /// Saved per (output identity, workspace id) tiling modes, restored when code mode
     /// turns off.
     pub(crate) code_mode_saved: Vec<(Output, u64, bool)>,
+    /// The console look layered on the GAVNO shell; see `tty_mode.rs`.
+    pub tty: crate::tty_mode::Tty,
     /// The pointer is hidden until the next pointer activity.
     pub pointer_hidden: bool,
     pub(crate) pointer_image: CursorImageStatus,
@@ -226,6 +228,7 @@ impl Gavno {
             cursor: crate::render::CursorCache::new(),
             code_mode: config_code_mode && !start_classic,
             code_mode_saved: Vec::new(),
+            tty: crate::tty_mode::Tty::default(),
             pointer_hidden: false,
             pointer_image: CursorImageStatus::default_named(),
             #[cfg(test)]
@@ -245,6 +248,8 @@ impl Gavno {
             launches: Default::default(),
             polkit: Default::default(),
         };
+        state.tty.on = state.config.tty.start && !start_classic;
+        state.sync_tty_flags();
         state.sync_bar_hints();
         #[cfg(not(test))]
         state.start_classic_window_store();
@@ -309,6 +314,7 @@ impl Gavno {
         if self.sync_classic_decorations() { self.refit_fixed_windows(); }
         self.refresh_shell();
         self.refresh_classic_desktop();
+        self.refresh_tty();
         self.refresh_notifications();
         self.refresh_music_gate();
         self.refresh_panel_controls_gate();
@@ -345,9 +351,10 @@ impl Gavno {
         let bar = self.guard(Feature::Bar, false, |gv| gv.topbar.active());
         let launcher = self.guard(Feature::Launcher, false, |gv| gv.launcher.is_animating());
         let notifications = self.guard(Feature::Notifications, false, |gv| gv.notifications.borrow().animating());
+        let tty = self.tty_animating();
         // Animated named cursors (wait, progress) need frames while shown.
         let cursor = !self.pointer_hidden && matches!(&self.cursor_status, smithay::input::pointer::CursorImageStatus::Named(icon) if self.cursor.animated(icon.name()));
-        theme || classic || cursor || animations || fading || overlay || self.workspaces.active() || overview || dock || bar || launcher || notifications || self.media.osd.is_animating()
+        theme || tty || classic || cursor || animations || fading || overlay || self.workspaces.active() || overview || dock || bar || launcher || notifications || self.media.osd.is_animating()
             || self.overlay.screenshot.is_animating() || self.overlay.clipboard.picker.is_animating() || self.overlay.dropdown.is_animating()
     }
 
