@@ -49,6 +49,7 @@ pub struct Config {
     pub dock: DockConfig,
     pub bar: BarConfig,
     pub tiling: TilingConfig,
+    pub workspaces: WorkspacesConfig,
     pub lock: LockConfig,
     pub notifications: NotificationsConfig,
     pub media: MediaConfig,
@@ -138,6 +139,19 @@ pub struct TilingConfig {
     unknown: toml::Table,
 }
 
+/// Workspaces `1..=fixed` always exist; `0` keeps workspaces fully dynamic.
+pub const MAX_FIXED_WORKSPACES: u32 = 20;
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct WorkspacesConfig {
+    pub fixed: u32,
+    #[serde(flatten)]
+    unknown: toml::Table,
+}
+impl Default for WorkspacesConfig {
+    fn default() -> Self { Self { fixed: 10, unknown: Default::default() } }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ModKey {
@@ -180,6 +194,7 @@ struct FileConfig {
     dock: DockConfig,
     bar: BarConfig,
     tiling: TilingConfig,
+    workspaces: WorkspacesConfig,
     lock: LockConfig,
     notifications: NotificationsConfig,
     media: MediaConfig,
@@ -282,7 +297,7 @@ impl Config {
             "file_manager":self.file_manager,"polkit_agent":self.polkit_agent,"autostart":self.autostart,"gap":self.gap,
             "output":{"internal_scale":self.internal_scale,"mode":mode,"hdr":self.output_hdr,"sdr_white_nits":self.sdr_white_nits},
             "keyboard":{"layout":self.xkb_layout,"variant":self.xkb_variant,"options":self.xkb_options,"repeat_delay":self.repeat_delay,"repeat_rate":self.repeat_rate,"code_mode":self.code_mode,"bar_hints":self.bar_hints},
-            "display":self.display,"media":self.media,"clipboard":self.clipboard,"dropdown":self.dropdown,"tty":self.tty,"ai":self.ai,"appearance":self.appearance,"modules":self.modules,"classic":self.classic,"dock":self.dock,"bar":self.bar,"tiling":self.tiling,"lock":self.lock,"notifications":self.notifications,"outputs":self.outputs})
+            "display":self.display,"media":self.media,"clipboard":self.clipboard,"dropdown":self.dropdown,"tty":self.tty,"ai":self.ai,"appearance":self.appearance,"modules":self.modules,"classic":self.classic,"dock":self.dock,"bar":self.bar,"tiling":self.tiling,"workspaces":self.workspaces,"lock":self.lock,"notifications":self.notifications,"outputs":self.outputs})
     }
 
     /// Pure merge: defaults < file < environment. Empty environment values are unset.
@@ -299,7 +314,7 @@ impl Config {
         // Capture unknown fields during deserialization, so this list cannot drift from the schema.
         let mut unknown = Vec::new();
         for (prefix, extra) in
-            [("display.", &file.display.unknown), ("", &file.unknown), ("output.", &file.output.unknown), ("keyboard.", &file.keyboard.unknown), ("classic.", &file.classic.unknown), ("dock.", &file.dock.unknown), ("bar.", &file.bar.unknown), ("tiling.", &file.tiling.unknown), ("media.", &file.media.unknown), ("clipboard.", &file.clipboard.unknown), ("dropdown.", &file.dropdown.unknown), ("tty.", &file.tty.unknown), ("ai.", &file.ai.unknown), ("appearance.", &file.appearance.unknown), ("notifications.", &file.notifications.unknown), ("lock.", &file.lock.unknown), ("modules.", &file.modules.unknown)]
+            [("display.", &file.display.unknown), ("", &file.unknown), ("output.", &file.output.unknown), ("keyboard.", &file.keyboard.unknown), ("classic.", &file.classic.unknown), ("dock.", &file.dock.unknown), ("bar.", &file.bar.unknown), ("tiling.", &file.tiling.unknown), ("workspaces.", &file.workspaces.unknown), ("media.", &file.media.unknown), ("clipboard.", &file.clipboard.unknown), ("dropdown.", &file.dropdown.unknown), ("tty.", &file.tty.unknown), ("ai.", &file.ai.unknown), ("appearance.", &file.appearance.unknown), ("notifications.", &file.notifications.unknown), ("lock.", &file.lock.unknown), ("modules.", &file.modules.unknown)]
         {
             unknown.extend(extra.keys().map(|key| format!("{prefix}{key}")));
         }
@@ -409,6 +424,7 @@ impl Config {
                 dock: file.dock,
                 bar: file.bar,
                 tiling: file.tiling,
+                workspaces: WorkspacesConfig { fixed: file.workspaces.fixed.min(MAX_FIXED_WORKSPACES), ..file.workspaces },
                 lock: file.lock,
                 notifications: file.notifications,
                 media: file.media,
@@ -558,6 +574,7 @@ options = "caps:escape"
             dock: Default::default(),
             bar: Default::default(),
             tiling: Default::default(),
+            workspaces: Default::default(),
             lock: Default::default(),
             notifications: Default::default(),
             media: Default::default(),
@@ -632,6 +649,7 @@ options = "caps:escape"
             dock: Default::default(),
             bar: Default::default(),
             tiling: Default::default(),
+            workspaces: Default::default(),
             lock: Default::default(),
             notifications: Default::default(),
             media: Default::default(),
@@ -765,6 +783,19 @@ options = "caps:escape"
         assert_eq!(c.output_mode.unwrap().width, 1920);
         assert_eq!(c.sdr_white_nits, 80.0);
         assert_eq!(warnings.len(), 1);
+    }
+
+    #[test]
+    fn workspaces_fixed_defaults_clamp_and_unknown_keys() {
+        assert_eq!(build(false, None, &[]).0.workspaces.fixed, 10);
+        assert_eq!(build(false, Some("[workspaces]\nfixed = 0"), &[]).0.workspaces.fixed, 0);
+        assert_eq!(build(false, Some("[workspaces]\nfixed = 4"), &[]).0.workspaces.fixed, 4);
+        assert_eq!(build(false, Some("[workspaces]\nfixed = 99"), &[]).0.workspaces.fixed, 20);
+        let (c, warnings) = build(false, Some("[workspaces]\nunknown = true"), &[]);
+        assert_eq!(c.workspaces.fixed, 10);
+        assert_eq!(warnings, ["unknown config keys ignored: workspaces.unknown"]);
+        assert!(Config::parse_checked(false, "[workspaces]\nfixed = 7", |_| None).is_ok());
+        assert!(Config::parse_checked(false, "[workspaces]\nfixed = -1", |_| None).is_err());
     }
 
     #[test]

@@ -423,7 +423,7 @@ impl Gavno {
         if !matches!(sym, keysyms::KEY_Escape | keysyms::KEY_Return | keysyms::KEY_KP_Enter
             | keysyms::KEY_Delete | keysyms::KEY_Tab | keysyms::KEY_ISO_Left_Tab
             | keysyms::KEY_Left | keysyms::KEY_Right | keysyms::KEY_Up | keysyms::KEY_Down
-            | keysyms::KEY_1..=keysyms::KEY_9) { return; }
+            | keysyms::KEY_0..=keysyms::KEY_9) { return; }
         let Some(output) = self.overview.output.clone() else { return; };
         let selected_before = self.overview.selected.clone();
         let now = self.start_time.elapsed();
@@ -454,8 +454,8 @@ impl Gavno {
             keysyms::KEY_Left | keysyms::KEY_Right | keysyms::KEY_Up | keysyms::KEY_Down => {
                 select = nearest(&hits.iter().map(|v| v.rect).collect::<Vec<_>>(), current, sym);
             }
-            keysyms::KEY_1..=keysyms::KEY_9 => {
-                let index = (sym - keysyms::KEY_1) as usize;
+            keysyms::KEY_0..=keysyms::KEY_9 => {
+                let index = if sym == keysyms::KEY_0 { 9 } else { (sym - keysyms::KEY_1) as usize };
                 if self.workspaces.get(&output).is_some_and(|owner| index < owner.list.items.len()) {
                     let owner = self.workspaces.get(&output).unwrap();
                     if index != owner.list.active || owner.position.target != index as f64 || owner.held {

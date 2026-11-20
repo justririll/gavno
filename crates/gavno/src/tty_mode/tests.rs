@@ -28,7 +28,11 @@ fn output(h: &mut Harness, name: &str) -> Output {
 
 /// A harness whose launches do not start anything real.
 fn harness() -> (Harness, Output) {
-    let mut h = Harness::new();
+    harness_fixed(0)
+}
+
+fn harness_fixed(fixed: u32) -> (Harness, Output) {
+    let mut h = Harness::with_fixed_workspaces(fixed);
     h.gv.config.terminal = "true".into();
     h.gv.tty.animate = Some(false);
     let o = output(&mut h, "tty-test");
@@ -151,10 +155,10 @@ fn alt_f_keys_switch_consoles_only_in_tty_mode() {
     let alt = mods(true, false, false, false);
     assert_eq!(h.gv.bind_for(keysyms::KEY_F2.into(), &alt), None);
     h.gv.set_tty_mode(true);
-    for n in 1..=6u32 {
+    for n in 1..=10u32 {
         assert_eq!(h.gv.bind_for((keysyms::KEY_F1 + n - 1).into(), &alt), Some(Action::Console(n as usize)));
     }
-    assert_eq!(h.gv.bind_for(keysyms::KEY_F7.into(), &alt), None);
+    assert_eq!(h.gv.bind_for(keysyms::KEY_F11.into(), &alt), None);
     // Ctrl+Alt+Fn stays real VT switching, and Mod+F1 stays the cheat sheet.
     assert_eq!(h.gv.bind_for(keysyms::KEY_F2.into(), &mods(true, true, false, false)), None);
     assert_eq!(h.gv.bind_for(keysyms::KEY_F1.into(), &mods(false, false, false, true)), Some(Action::CheatSheet));
@@ -404,4 +408,16 @@ fn the_pointer_is_never_shown_and_motion_and_buttons_are_dropped() {
     assert!(h.gv.pointer_hidden, "nothing brings the cursor back");
     h.gv.set_tty_mode(false);
     assert!(!h.gv.pointer_hidden && !h.gv.cursor.hidden);
+}
+
+#[test]
+fn alt_f7_to_f10_reach_fixed_consoles_on_a_fresh_output() {
+    let (mut h, o) = harness_fixed(10);
+    h.gv.config.tty.autostart_terminal = false;
+    h.gv.set_tty_mode(true);
+    for n in [7usize, 10, 3] {
+        h.gv.tty_switch_console(n);
+        assert_eq!(h.gv.workspaces.ensure(&o).list.active, n - 1);
+    }
+    assert_eq!(h.gv.workspaces.ensure(&o).list.items.len(), 10);
 }

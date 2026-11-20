@@ -29,6 +29,8 @@ pub struct WorkspaceList<T> {
     pub active: usize,
     next_id: u64,
     pub(crate) default_tiling: bool,
+    /// Workspaces `0..min_count` always exist; later ones stay dynamic.
+    pub(crate) min_count: usize,
 }
 impl<T> Default for WorkspaceList<T> {
     fn default() -> Self {
@@ -45,14 +47,37 @@ impl<T> Default for WorkspaceList<T> {
             active: 0,
             next_id: 1,
             default_tiling: false,
+            min_count: 0,
         }
     }
 }
 impl<T> WorkspaceList<T> {
+    fn push_empty(&mut self) {
+        self.items.push(Workspace {
+            id: self.next_id,
+            windows: Vec::new(),
+            tiling: self.default_tiling,
+            tree: Default::default(),
+            name: None,
+            user_named: false,
+            name_sig: None,
+        });
+        self.next_id += 1;
+    }
+    /// Grows to `min_count`, then keeps one trailing empty workspace only
+    /// after an occupied last one.
+    pub fn append_empty(&mut self) {
+        while self.items.len() < self.min_count {
+            self.push_empty();
+        }
+        if self.items.last().is_none_or(|w| !w.windows.is_empty()) {
+            self.push_empty();
+        }
+    }
     /// Returns indices removed, descending, so visual coordinates can be rebased.
     pub fn normalize(&mut self) -> Vec<usize> {
         let mut removed = Vec::new();
-        for i in (0..self.items.len().saturating_sub(1)).rev() {
+        for i in (self.min_count..self.items.len().saturating_sub(1)).rev() {
             if i != self.active && self.items[i].windows.is_empty() {
                 self.items.remove(i);
                 if i < self.active {
@@ -61,18 +86,17 @@ impl<T> WorkspaceList<T> {
                 removed.push(i);
             }
         }
-        if self.items.last().is_none_or(|w| !w.windows.is_empty()) {
-            self.items.push(Workspace {
-                id: self.next_id,
-                windows: Vec::new(),
-                tiling: self.default_tiling,
-                tree: Default::default(),
-                name: None,
-                user_named: false,
-                name_sig: None,
-            });
-            self.next_id += 1;
+        // With fixed workspaces the trailing empty is only needed after an occupied last one.
+        while self.min_count > 0
+            && self.items.len() > self.min_count
+            && self.items.len() - 1 != self.active
+            && self.items[self.items.len() - 1].windows.is_empty()
+            && self.items[self.items.len() - 2].windows.is_empty()
+        {
+            self.items.pop();
+            removed.push(self.items.len());
         }
+        self.append_empty();
         removed
     }
     pub fn move_item(&mut self, from: usize, index: usize, to: usize) -> bool {
@@ -101,19 +125,7 @@ pub struct OutputWorkspaces {
 }
 impl OutputWorkspaces {
     pub fn append_empty(&mut self) {
-        if self.list.items.last().is_none_or(|w| !w.windows.is_empty()) {
-            let id = self.list.next_id;
-            self.list.next_id += 1;
-            self.list.items.push(Workspace {
-                id,
-                windows: Vec::new(),
-                tiling: self.list.default_tiling,
-                tree: Default::default(),
-                name: None,
-                user_named: false,
-                name_sig: None,
-            });
-        }
+        self.list.append_empty();
     }
     pub fn normalize(&mut self) {
         for index in self.list.normalize() {
@@ -130,6 +142,8 @@ impl OutputWorkspaces {
 pub struct Workspaces {
     pub outputs: Vec<OutputWorkspaces>,
     pub default_tiling: bool,
+    /// Always-present workspace count, see `[workspaces] fixed`.
+    pub fixed: usize,
     pub moving_tile: Option<Window>,
     pub splitter_hover: Option<(Output, crate::tiling::Splitter)>,
     pub splitter_canvas: crate::topbar::Canvas,
@@ -141,7 +155,9 @@ impl Workspaces {
         }
         let mut list = WorkspaceList::default();
         list.default_tiling = self.default_tiling;
+        list.min_count = self.fixed;
         list.items[0].tiling = self.default_tiling;
+        list.append_empty();
         self.outputs.push(OutputWorkspaces {
             output: output.clone(),
             list,
@@ -575,6 +591,66 @@ mod tests {
         assert_eq!(l.items[0].id, id);
         assert_eq!(l.items.len(), 2);
     }
+    fn fixed_list(min: usize) -> WorkspaceList<u32> {
+        let mut l = WorkspaceList::<u32>::default();
+        l.min_count = min;
+        l.normalize();
+        l
+    }
+    #[test]
+    fn normalize_grows_to_min_count_and_never_removes_fixed_ones() {
+        let mut l = fixed_list(10);
+        assert_eq!(l.items.len(), 10);
+        let ids: Vec<_> = l.items.iter().map(|w| w.id).collect();
+        l.active = 6;
+        assert!(l.normalize().is_empty());
+        assert_eq!(l.items.len(), 10);
+        l.active = 0;
+        l.items[3].windows.push(1);
+        assert!(l.normalize().is_empty());
+        assert_eq!(l.items.iter().map(|w| w.id).collect::<Vec<_>>(), ids, "ids stay stable");
+    }
+    #[test]
+    fn dynamic_workspace_appears_only_after_the_last_fixed_one_is_used() {
+        let mut l = fixed_list(10);
+        l.items[9].windows.push(1);
+        l.normalize();
+        assert_eq!(l.items.len(), 11);
+        // An extra empty one beyond 11 is removed again, and so is 11 once 10 empties.
+        l.items[10].windows.push(2);
+        l.normalize();
+        assert_eq!(l.items.len(), 12);
+        l.items[10].windows.clear();
+        let removed = l.normalize();
+        assert_eq!(l.items.len(), 11);
+        assert_eq!(removed, [10]);
+        l.items[9].windows.clear();
+        let removed = l.normalize();
+        assert_eq!(l.items.len(), 10);
+        assert_eq!(removed, [10]);
+        // The active empty extra workspace survives until left.
+        l.items[9].windows.push(3);
+        l.normalize();
+        l.active = 10;
+        l.items[9].windows.clear();
+        l.normalize();
+        assert_eq!(l.items.len(), 11);
+        l.active = 9;
+        l.normalize();
+        assert_eq!(l.items.len(), 10);
+    }
+    #[test]
+    fn zero_min_count_is_the_old_dynamic_list() {
+        let mut l = fixed_list(0);
+        assert_eq!(l.items.len(), 1);
+        l.items[0].windows.push(1);
+        l.normalize();
+        assert_eq!(l.items.len(), 2);
+        l.items[0].windows.clear();
+        l.active = 1;
+        assert_eq!(l.normalize(), [0]);
+        assert_eq!(l.items.len(), 1);
+    }
     fn output(gv: &mut Gavno, name: &str, x: i32) -> Output {
         let o = Output::new(
             name.into(),
@@ -600,7 +676,7 @@ mod tests {
     }
     #[test]
     fn switching_unmaps_inactive_windows_and_keeps_geometry_modes_and_mru() {
-        let mut h = crate::state::tests::Harness::new();
+        let mut h = crate::state::tests::Harness::with_fixed_workspaces(0);
         let o = output(&mut h.gv, "left", 0);
         let first = h.window();
         h.gv.map_new_window(first.clone());
@@ -854,6 +930,32 @@ mod tests {
         assert_eq!(h.gv.workspaces.location(&w), Some((123, 234).into()));
         h.gv.switch_workspace(&o, 0);
         assert_eq!(h.gv.space.element_location(&w), Some((123, 234).into()));
+    }
+    #[test]
+    fn fresh_output_has_ten_workspaces_and_reaches_seven_and_ten() {
+        let mut h = crate::state::tests::Harness::new();
+        let o = output(&mut h.gv, "left", 0);
+        assert_eq!(h.gv.workspaces.get(&o).unwrap().list.items.len(), 10);
+        assert!(h.gv.switch_workspace(&o, 6));
+        assert_eq!(h.gv.workspaces.get(&o).unwrap().list.active, 6);
+        assert!(!h.gv.switch_workspace(&o, 10), "no 11th workspace until 10 is used");
+        assert!(h.gv.switch_workspace(&o, 0));
+        let w = h.window();
+        h.gv.map_new_window(w.clone());
+        assert!(h.gv.move_to_workspace(&w, 9));
+        assert_eq!(h.gv.workspaces.membership(&w), Some((o.clone(), 9)));
+        assert_eq!(h.gv.workspaces.get(&o).unwrap().list.items.len(), 11, "using 10 appends 11");
+        h.gv.workspace_step(false);
+        assert_eq!(h.gv.workspaces.get(&o).unwrap().list.active, 1);
+    }
+    #[test]
+    fn workspace_step_stops_at_the_last_fixed_workspace() {
+        let mut h = crate::state::tests::Harness::new();
+        let o = output(&mut h.gv, "left", 0);
+        h.gv.workspaces.ensure(&o).list.active = 9;
+        h.gv.switch_workspace(&o, 9);
+        h.gv.workspace_step(false);
+        assert_eq!(h.gv.workspaces.get(&o).unwrap().list.active, 9);
     }
 }
 

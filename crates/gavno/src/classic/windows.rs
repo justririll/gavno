@@ -1344,7 +1344,7 @@ mod tests {
 
     #[test]
     fn output_removal_recreation_moves_closes_new_workspaces_and_quick_toggles() {
-        let mut h = Harness::new();
+        let mut h = Harness::with_fixed_workspaces(0);
         let first = output(&mut h, "first", 0);
         h.gv.workspaces.default_tiling = true;
         h.gv.workspaces.ensure(&first).list.default_tiling = true;

@@ -93,7 +93,8 @@ impl Gavno {
         let mut updates = Vec::new();
         for (oi, owner) in self.workspaces.outputs.iter().enumerate() {
             for (wi, ws) in owner.list.items.iter().enumerate() {
-                if ws.user_named {
+                // Fixed empty workspaces have nothing to name; a stale name still gets cleared.
+                if ws.user_named || (ws.windows.is_empty() && ws.name.is_none() && ws.name_sig.is_none()) {
                     continue;
                 }
                 let apps: Vec<String> = ws.windows.iter().map(|w| crate::overlay::window_labels(&w.window).1).collect();

@@ -249,6 +249,15 @@ pub(crate) fn apply(gv: &mut Gavno, prepared: Prepared) -> Result<Value, String>
             }
         }
     }
+    // Growing creates the missing workspaces now; shrinking only lets `normalize`
+    // drop extra empty ones later, so no window is ever moved or closed here.
+    let fixed = gv.config.workspaces.fixed as usize;
+    gv.workspaces.fixed = fixed;
+    for owner in &mut gv.workspaces.outputs {
+        owner.list.min_count = fixed;
+        owner.list.append_empty();
+    }
+    gv.queue_redraw_all();
     gv.enforce_classic_floating();
     if night_light_changed {
         gv.refresh_theme_clock();
@@ -428,5 +437,33 @@ mod media_generation_tests {
                 .name,
             "new player"
         );
+    }
+
+    #[test]
+    fn fixed_workspaces_grow_now_and_shrink_without_touching_windows() {
+        let mut h = crate::state::tests::Harness::with_fixed_workspaces(3);
+        let o = smithay::output::Output::new("test".into(), smithay::output::PhysicalProperties {
+            size: (0, 0).into(), subpixel: smithay::output::Subpixel::Unknown, make: "test".into(), model: "test".into(),
+        });
+        o.change_current_state(Some(smithay::output::Mode { size: (1600, 900).into(), refresh: 60_000 }), None, None, Some((0, 0).into()));
+        h.gv.space.map_output(&o, (0, 0));
+        h.gv.workspaces.ensure(&o);
+        assert_eq!(h.gv.workspaces.get(&o).unwrap().list.items.len(), 3);
+        let reload = |h: &mut crate::state::tests::Harness, text: &str| {
+            let next = Config::parse_checked(true, text, |_| None).unwrap();
+            let prepared = Prepared::new(next, &h.gv.config).unwrap();
+            apply(&mut h.gv, prepared).unwrap();
+        };
+        reload(&mut h, "[workspaces]\nfixed = 6");
+        assert_eq!(h.gv.workspaces.get(&o).unwrap().list.items.len(), 6, "growing is immediate");
+        let w = h.window();
+        h.gv.map_new_window(w.clone());
+        assert!(h.gv.move_to_workspace(&w, 5));
+        reload(&mut h, "[workspaces]\nfixed = 2");
+        h.gv.refresh_workspaces();
+        let list = &h.gv.workspaces.get(&o).unwrap().list;
+        assert_eq!(h.gv.workspaces.membership(&w), Some((o.clone(), 5 - 3)), "the window keeps its workspace");
+        assert!(list.items.iter().any(|ws| ws.windows.len() == 1));
+        assert!(list.items.len() >= 2 && list.items.len() < 7);
     }
 }

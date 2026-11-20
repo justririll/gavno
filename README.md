@@ -4,7 +4,7 @@ GAVNO stands for "Graphical Application View Navigator and Organizer".
 
 A lightweight hybrid Wayland compositor in Rust on [Smithay](https://github.com/Smithay/smithay):
 - Windows-style floating with snap;
-- GNOME-style dynamic workspaces and overview;
+- Ten always-present workspaces (more appear dynamically) and an overview;
 - optional dwindle tiling;
 - touchpad-first input;
 - spring animations, with rendering only when something changes.
@@ -31,8 +31,8 @@ What works today:
   snap it from the keyboard. A snap preview shows the target zone
   (`crates/gavno/src/snap.rs`, `crates/gavno/src/overlay.rs`,
   `crates/gavno/src/grabs/move_grab.rs`).
-- Dynamic per-output workspaces with a sliding strip; Mod+1..9 selects and
-  Mod+Shift+1..9 moves a window (`crates/gavno/src/workspace.rs`).
+- Per-output workspaces (1-10 always exist, `[workspaces] fixed`) with a sliding strip; Mod+1..9, 0 selects and
+  Mod+Shift+1..9, 0 moves a window (`crates/gavno/src/workspace.rs`).
 - Per-workspace dwindle tiling: Mod+T or Mod+Alt+Space toggles a workspace,
   Mod+Space floats one window, splitters resize by keyboard or pointer, and
   dragging a tile onto another reorders the tree

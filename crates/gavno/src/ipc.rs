@@ -483,7 +483,7 @@ mod tests {
     }
     #[test]
     fn screen_includes_hidden_windows_and_zero_based_workspace_indices() {
-        let mut h = crate::state::tests::Harness::new();
+        let mut h = crate::state::tests::Harness::with_fixed_workspaces(0);
         let o = smithay::output::Output::new("test".into(), smithay::output::PhysicalProperties {
             size: (0, 0).into(), subpixel: smithay::output::Subpixel::Unknown, make: "test".into(), model: "test".into(),
         });

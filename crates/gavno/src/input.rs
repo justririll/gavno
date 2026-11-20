@@ -549,7 +549,7 @@ impl Gavno {
         if mods.logo && mods.shift && sym == keysyms::KEY_F23 { return Some(Action::ToggleOverview); }
         // The authentic console keys; Ctrl+Alt+F<n> stays real VT switching.
         if self.tty.active() && mods.alt && !mods.ctrl && !mods.shift && !mods.logo
-            && (keysyms::KEY_F1..=keysyms::KEY_F6).contains(&sym)
+            && (keysyms::KEY_F1..=keysyms::KEY_F10).contains(&sym)
             && !(main && sym == keysyms::KEY_F1)
         {
             return Some(Action::Console((sym - keysyms::KEY_F1 + 1) as usize));
@@ -585,8 +585,9 @@ impl Gavno {
         if !self.keyboard_first() && matches!(sym, keysyms::KEY_l | keysyms::KEY_L) && !mods.shift && !mods.ctrl {
             return Some(Action::Lock);
         }
-        if (keysyms::KEY_1..=keysyms::KEY_9).contains(&sym) {
-            let index = (sym - keysyms::KEY_1) as usize;
+        // Digits 1-9 pick workspaces 1-9, 0 is workspace 10.
+        if (keysyms::KEY_0..=keysyms::KEY_9).contains(&sym) {
+            let index = if sym == keysyms::KEY_0 { 9 } else { (sym - keysyms::KEY_1) as usize };
             return Some(if mods.shift { Action::MoveWorkspace(index) } else { Action::Workspace(index) });
         }
         if matches!(sym, keysyms::KEY_Tab | keysyms::KEY_ISO_Left_Tab) { return Some(Action::WorkspaceStep(mods.shift)); }
@@ -1195,9 +1196,11 @@ mod workspace_tests {
         ] {
             h.gv.config.mod_key = mod_key;
             assert_eq!(h.gv.bind_for(Keysym::from(keysyms::KEY_3), &mods), Some(Action::Workspace(2)));
+            assert_eq!(h.gv.bind_for(Keysym::from(keysyms::KEY_0), &mods), Some(Action::Workspace(9)));
             assert_eq!(h.gv.bind_for(Keysym::from(keysyms::KEY_Tab), &mods), Some(Action::WorkspaceStep(false)));
             mods.shift = true;
             assert_eq!(h.gv.bind_for(Keysym::from(keysyms::KEY_3), &mods), Some(Action::MoveWorkspace(2)));
+            assert_eq!(h.gv.bind_for(Keysym::from(keysyms::KEY_0), &mods), Some(Action::MoveWorkspace(9)));
             assert_eq!(h.gv.bind_for(Keysym::from(keysyms::KEY_Tab), &mods), Some(Action::WorkspaceStep(true)));
             mods.shift = false;
             mods.ctrl = true;

@@ -153,12 +153,18 @@ pub(crate) struct PreviousClient {
 
 impl Harness {
     pub fn new() -> Self {
+        Self::with_fixed_workspaces(10)
+    }
+
+    /// `fixed` is `[workspaces] fixed`; 0 gives the fully dynamic list.
+    pub fn with_fixed_workspaces(fixed: u32) -> Self {
         let mut event_loop = EventLoop::try_new().unwrap();
         let display = Display::new().unwrap();
+        let text = format!("[workspaces]\nfixed = {fixed}");
         let mut gv = Gavno::new(
             &mut event_loop,
             display,
-            Config::build(true, None, |_| None).0,
+            Config::build(true, Some(&text), |_| None).0,
         );
         let (server_socket, client_socket) = UnixStream::pair().unwrap();
         client_socket.set_nonblocking(true).unwrap();
