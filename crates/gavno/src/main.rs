@@ -52,6 +52,7 @@ mod input;
 mod ipc;
 mod module;
 mod overlay;
+mod output_layout;
 mod snap;
 mod render;
 mod render_sanitize;

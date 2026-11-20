@@ -48,6 +48,7 @@ default": see `terminal` and `launcher` below.
 | `[display] accessibility` | boolean | `false` | none |
 | `[display] night_light` | boolean | `true` | none |
 | `[display] night_light_temperature` | u32 kelvin, clamped to 1900-6500 | `3400` | none |
+| `[display] internal_off_with` | u32, `0` = never | `2` | none |
 | `[clipboard] history` | boolean | `true` | none |
 | `[clipboard] history_size` | integer, 1-500 | `50` | none |
 | `[ai] enabled` | boolean | `false` | none |
@@ -754,6 +755,7 @@ name such as `eDP-1`. Numeric steps describe the editor increments.
 | `display.direct_scanout` | boolean | `true` | yes |
 | `display.night_light` | boolean | `true` | yes |
 | `display.night_light_temperature` | int (1900-6500, step 100) | `3400` | yes |
+| `display.internal_off_with` | int (0-8, step 1) | `2` | yes |
 | `display.accessibility` | boolean | `false` | after re-login |
 | `output.sdr_white_nits` | float (80.0–400.0, step 10.0) | `203.0` | yes |
 | `keyboard.repeat_delay` | int (0–5000, step 1) | `300` | yes |
@@ -801,6 +803,26 @@ name such as `eDP-1`. Numeric steps describe the editor increments.
 | `outputs.*.scale` | float (0.5–3.0, step 0.05) | `unset` | yes |
 | `outputs.*.hdr` | bool | `unset` | yes |
 | `outputs.*.enabled` | bool | `unset` | after re-login |
+
+## Multiple monitors
+
+The laptop panel turns off while `[display] internal_off_with` external
+monitors are lit (default 2; `0` keeps it on). Closing the lid turns it off
+whenever at least one external monitor is lit. The panel never turns off
+without another lit output; with no external monitor a closed lid is left to
+logind. An explicit `[outputs."eDP-1"] enabled` wins over both rules.
+
+Windows on an output that goes away (unplugged or turned off) move to the
+output with the pointer, onto the same workspace number. When that output
+comes back they return to their old place, unless you moved them meanwhile.
+
+Outputs are placed left to right in connection order. A connector remembers
+its last place while GAVNO runs, and `[outputs."NAME"] position = [x, y]`
+(logical pixels) pins it; a position that would overlap another output falls
+back to the right edge. The position applies when the output is next lit.
+
+Every output has its own workspaces 1-10 and its own shell mode (GAVNO,
+Classic or TTY); see `docs/keybinds.md` for moving between monitors.
 
 ## Idle output power
 

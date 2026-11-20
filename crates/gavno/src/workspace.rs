@@ -99,6 +99,12 @@ impl<T> WorkspaceList<T> {
         self.append_empty();
         removed
     }
+    /// Creates empty workspaces until there are at least `len` (at most 64).
+    pub fn grow_to(&mut self, len: usize) {
+        while self.items.len() < len.min(64) {
+            self.push_empty();
+        }
+    }
     pub fn move_item(&mut self, from: usize, index: usize, to: usize) -> bool {
         if from == to
             || from >= self.items.len()
@@ -147,6 +153,19 @@ pub struct Workspaces {
     pub moving_tile: Option<Window>,
     pub splitter_hover: Option<(Output, crate::tiling::Splitter)>,
     pub splitter_canvas: crate::topbar::Canvas,
+    /// Windows moved off an output that went away, to bring them home.
+    pub exiles: Vec<Exile>,
+}
+/// Where a window lived before its output went away, and where it was put.
+#[derive(Clone, Debug)]
+pub struct Exile {
+    pub window: Window,
+    pub home: String,
+    pub workspace: usize,
+    /// Offset from the home output's origin.
+    pub offset: Point<i32, Logical>,
+    pub placed_on: String,
+    pub placed_at: Point<i32, Logical>,
 }
 impl Workspaces {
     pub fn ensure(&mut self, output: &Output) -> &mut OutputWorkspaces {
@@ -294,8 +313,9 @@ impl Gavno {
                 true
             } else {
                 let origin = o.output.current_location();
-                for ws in &mut o.list.items {
-                    orphaned.extend(ws.windows.drain(..).map(|w| (w, origin)));
+                let home = o.output.name();
+                for (index, ws) in o.list.items.iter_mut().enumerate() {
+                    orphaned.extend(ws.windows.drain(..).map(|w| (w, origin, home.clone(), index)));
                 }
                 false
             }
@@ -304,10 +324,13 @@ impl Gavno {
         // connector name and local workspace IDs match a removed output.
         self.code_mode_saved.retain(|(output, _, _)| self.workspaces.outputs.iter().any(|owner| owner.output == *output));
         self.tty.saved.retain(|(output, _, _)| self.workspaces.outputs.iter().any(|owner| owner.output == *output));
-        let refit = !orphaned.is_empty();
-        if let Some(output) = outputs.first() {
-            for (mut w, origin) in orphaned {
+        let mut refit = !orphaned.is_empty();
+        // Orphans go to the output with the pointer, onto the same workspace.
+        let target = self.active_output().filter(|o| outputs.contains(o)).or_else(|| outputs.first().cloned());
+        if let Some(output) = target.as_ref() {
+            for (mut w, origin, home, index) in orphaned {
                 self.space.unmap_elem(&w.window);
+                let offset = w.location - origin;
                 let area = self.work_area(output);
                 let size = w.window.toplevel().and_then(|t| t.with_pending_state(|s| s.size))
                     .unwrap_or(w.window.geometry().size);
@@ -320,11 +343,20 @@ impl Gavno {
                 self.features.call(crate::module::Feature::Animations, (), || self.window_animations.cancel(&w.window));
                 self.features.call(crate::module::Feature::Dock, (), || self.dock.cancel_window_motion(&w.window));
                 let owner = self.workspaces.ensure(output);
-                let active = owner.list.active;
-                if !crate::window_mode::mode_state(&w.window).minimized { self.space.map_element(w.window.clone(), w.location, false); }
-                owner.list.items[active].windows.push(w);
+                owner.list.grow_to(index + 1);
+                let index = index.min(owner.list.items.len() - 1);
+                let shown = index == owner.list.active;
+                self.workspaces.exiles.retain(|e| e.window != w.window);
+                self.workspaces.exiles.push(Exile {
+                    window: w.window.clone(), home, workspace: index, offset,
+                    placed_on: output.name(), placed_at: w.location,
+                });
+                if shown && !crate::window_mode::mode_state(&w.window).minimized { self.space.map_element(w.window.clone(), w.location, false); }
+                let owner = self.workspaces.ensure(output);
+                owner.list.items[index].windows.push(w);
             }
         }
+        refit |= self.bring_exiles_home(&outputs);
         // Windows mapped while no output existed never got an owner.
         if let Some(output) = outputs.first() {
             let homeless: Vec<_> = self
@@ -400,6 +432,164 @@ impl Gavno {
             self.queue_redraw_all();
         }
         self.reflow_tiling(true);
+    }
+    /// Moves the pointer to `location` and updates what it hovers.
+    pub fn warp_pointer(&mut self, location: Point<f64, Logical>) {
+        let Some(pointer) = self.seat.get_pointer() else { return };
+        if pointer.is_grabbed() {
+            return;
+        }
+        let under = self.surface_under(location);
+        pointer.motion(
+            self,
+            under,
+            &smithay::input::pointer::MotionEvent {
+                location,
+                serial: smithay::utils::SERIAL_COUNTER.next_serial(),
+                time: self.clock.now().as_millis() as u32,
+            },
+        );
+        pointer.frame(self);
+    }
+    /// Outputs left to right, then top to bottom.
+    pub fn outputs_in_order(&self) -> Vec<Output> {
+        let mut outputs: Vec<Output> = self.space.outputs().cloned().collect();
+        outputs.sort_by_key(|o| self.space.output_geometry(o).map(|r| (r.loc.x, r.loc.y)));
+        outputs
+    }
+    fn output_step(&self, from: &Output, next: bool) -> Option<Output> {
+        let outputs = self.outputs_in_order();
+        if outputs.len() < 2 {
+            return None;
+        }
+        let i = outputs.iter().position(|o| o == from)?;
+        let j = if next { (i + 1) % outputs.len() } else { (i + outputs.len() - 1) % outputs.len() };
+        Some(outputs[j].clone())
+    }
+    /// Mod+. / Mod+, : puts the pointer in the middle of the neighbouring
+    /// output and focuses its topmost window there.
+    pub fn focus_output_step(&mut self, next: bool) {
+        let Some(from) = self.active_output() else { return };
+        let Some(target) = self.output_step(&from, next) else { return };
+        let Some(geometry) = self.space.output_geometry(&target) else { return };
+        let centre = geometry.loc.to_f64() + geometry.size.to_f64().downscale(2.0).to_point();
+        self.warp_pointer(centre);
+        let top = self.workspaces.get(&target).and_then(|o| {
+            o.list.items[o.list.active].windows.iter().rev()
+                .find(|w| !crate::window_mode::mode_state(&w.window).minimized)
+                .map(|w| w.window.clone())
+        });
+        self.focus_window(top.as_ref());
+        self.queue_redraw_all();
+    }
+    /// Mod+Shift+. / Mod+Shift+, : sends the focused window to the
+    /// neighbouring output, and the pointer with it.
+    pub fn move_window_output_step(&mut self, next: bool) {
+        let Some(window) = self.focused_window() else { return };
+        let Some(from) = self.output_for_window(&window) else { return };
+        let Some(target) = self.output_step(&from, next) else { return };
+        if self.move_window_to_output(&window, &target, None, None) {
+            if let Some(rect) = self.space.element_geometry(&window) {
+                self.warp_pointer(rect.loc.to_f64() + rect.size.to_f64().downscale(2.0).to_point());
+            }
+        }
+    }
+    /// Returns windows to an output that came back, unless the user moved
+    /// them since. True when anything moved.
+    fn bring_exiles_home(&mut self, outputs: &[Output]) -> bool {
+        if self.workspaces.exiles.is_empty() {
+            return false;
+        }
+        let mut moved = false;
+        let mut keep = Vec::new();
+        for exile in std::mem::take(&mut self.workspaces.exiles) {
+            if !exile.window.alive() {
+                continue;
+            }
+            let Some(home) = outputs.iter().find(|o| o.name() == exile.home).cloned() else {
+                keep.push(exile);
+                continue;
+            };
+            let untouched = self.workspaces.membership(&exile.window).is_some_and(|(o, _)| o.name() == exile.placed_on)
+                && (self.tiled(&exile.window) || self.workspaces.location(&exile.window) == Some(exile.placed_at));
+            if untouched {
+                let location = home.current_location() + exile.offset;
+                moved |= self.move_window_to_output(&exile.window, &home, Some(exile.workspace), Some(location));
+            }
+        }
+        self.workspaces.exiles = keep;
+        moved
+    }
+    /// Moves `window` to `target`, onto `workspace` (default: the active
+    /// one) at `location` (default: the same place relative to the output),
+    /// keeping its size and window mode.
+    pub fn move_window_to_output(
+        &mut self,
+        window: &Window,
+        target: &Output,
+        workspace: Option<usize>,
+        location: Option<Point<i32, Logical>>,
+    ) -> bool {
+        self.workspaces.snapshot(&self.space);
+        let Some((from, from_index)) = self.workspaces.membership(window) else {
+            return false;
+        };
+        if &from == target && workspace.is_none_or(|w| w == from_index) {
+            return false;
+        }
+        self.end_window_grab();
+        let was_focused = self.focused_window().as_ref() == Some(window);
+        let origin = from.current_location();
+        let mut owned = None;
+        for o in &mut self.workspaces.outputs {
+            for ws in &mut o.list.items {
+                if let Some(i) = ws.windows.iter().position(|v| &v.window == window) {
+                    owned = Some(ws.windows.remove(i));
+                }
+                self.features.call(crate::module::Feature::Tiling, (), || ws.tree.remove(window));
+            }
+        }
+        let Some(mut owned) = owned else {
+            return false;
+        };
+        window.set_activated(false);
+        self.space.unmap_elem(window);
+        let area = self.work_area(target);
+        let target_origin = target.current_location();
+        let size = window.toplevel().and_then(|t| t.with_pending_state(|s| s.size)).unwrap_or(window.geometry().size);
+        let wanted = location.unwrap_or(owned.location - origin + target_origin);
+        owned.location = migrate_rect(smithay::utils::Rectangle::new(wanted, size), area.loc, area).loc;
+        crate::window_mode::with_mode_state(window, |s| {
+            s.restore = s.restore.map(|r| migrate_rect(r, origin, area));
+            s.tile_restore = s.tile_restore.map(|r| migrate_rect(r, origin, area));
+        });
+        crate::grabs::resize_grab::clear_anchor(window);
+        self.features.call(crate::module::Feature::Animations, (), || self.window_animations.cancel(window));
+        let owner = self.workspaces.ensure(target);
+        let index = workspace.unwrap_or(owner.list.active);
+        owner.list.grow_to(index + 1);
+        let index = index.min(owner.list.items.len() - 1);
+        let shown = index == owner.list.active;
+        let at = owned.location;
+        owner.list.items[index].windows.push(owned);
+        owner.append_empty();
+        let mode = crate::window_mode::mode_state(window);
+        if shown && !mode.minimized {
+            self.space.map_element(window.clone(), at, false);
+            if mode.mode != crate::window_mode::WindowMode::Floating {
+                self.set_window_mode(window, mode.mode, Some(target.clone()));
+            }
+        }
+        if let Some(t) = window.toplevel() {
+            t.send_pending_configure();
+        }
+        self.reflow_tiling(true);
+        self.clear_desktop_pointer();
+        if was_focused {
+            if shown { self.focus_window(Some(window)); } else { self.focus_topmost(); }
+        }
+        self.queue_redraw_all();
+        true
     }
     pub fn save_workspace_location(&mut self, window: &Window, location: Point<i32, Logical>) {
         for o in &mut self.workspaces.outputs {
@@ -733,6 +923,55 @@ mod tests {
         h.gv.space.unmap_output(&remaining);
         h.gv.refresh_workspaces();
         assert!(h.gv.workspaces.membership(&a).is_some());
+    }
+    #[test]
+    fn windows_return_to_an_output_that_comes_back_unless_moved() {
+        let mut h = crate::state::tests::Harness::new();
+        let left = output(&mut h.gv, "left", 0);
+        let right = output(&mut h.gv, "right", 1600);
+        let stays = h.window();
+        let moved = h.window();
+        for w in [&stays, &moved] {
+            h.gv.map_new_window(w.clone());
+            w.toplevel().unwrap().with_pending_state(|s| s.size = Some((400, 300).into()));
+            h.gv.space.map_element(w.clone(), (1800, 200), false);
+        }
+        h.gv.refresh_workspaces();
+        h.gv.move_to_workspace(&stays, 2);
+        assert_eq!(h.gv.workspaces.membership(&stays), Some((right.clone(), 2)));
+        h.gv.space.unmap_output(&right);
+        h.gv.refresh_workspaces();
+        // Same workspace number on the surviving output, still hidden there.
+        assert_eq!(h.gv.workspaces.membership(&stays), Some((left.clone(), 2)));
+        assert!(h.gv.space.element_location(&stays).is_none());
+        assert_eq!(h.gv.workspaces.membership(&moved), Some((left.clone(), 0)));
+        // The user moves one of them; only the other comes home.
+        h.gv.space.map_element(moved.clone(), (300, 400), false);
+        h.gv.refresh_workspaces();
+        let back = output(&mut h.gv, "right", 1600);
+        h.gv.refresh_workspaces();
+        assert_eq!(h.gv.workspaces.membership(&stays), Some((back.clone(), 2)));
+        assert_eq!(h.gv.workspaces.location(&stays).map(|p| p.x), Some(1800));
+        assert_eq!(h.gv.workspaces.membership(&moved), Some((left.clone(), 0)));
+        assert!(h.gv.workspaces.exiles.is_empty());
+    }
+    #[test]
+    fn mod_period_moves_the_focused_window_to_the_next_output() {
+        let mut h = crate::state::tests::Harness::new();
+        let left = output(&mut h.gv, "left", 0);
+        let right = output(&mut h.gv, "right", 1600);
+        let w = h.window();
+        h.gv.map_new_window(w.clone());
+        w.toplevel().unwrap().with_pending_state(|s| s.size = Some((400, 300).into()));
+        h.gv.space.map_element(w.clone(), (100, 200), false);
+        h.gv.refresh_workspaces();
+        h.gv.focus_window(Some(&w));
+        assert_eq!(h.gv.workspaces.membership(&w), Some((left.clone(), 0)));
+        h.gv.move_window_output_step(true);
+        assert_eq!(h.gv.workspaces.membership(&w), Some((right.clone(), 0)));
+        assert_eq!(h.gv.space.element_location(&w).map(|p| p.x), Some(1700));
+        h.gv.move_window_output_step(true);
+        assert_eq!(h.gv.workspaces.membership(&w), Some((left, 0)));
     }
     #[test]
     fn output_removal_migrates_tile_and_mode_restores_including_minimized_windows() {

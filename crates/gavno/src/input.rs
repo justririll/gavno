@@ -73,6 +73,10 @@ pub enum Action {
     WindowHints,
     CheatSheet,
     PanelControls(crate::panel_controls::Page),
+    /// Mod+. / Mod+, : the next (true) or previous output.
+    FocusOutput(bool),
+    /// Mod+Shift+. / Mod+Shift+, : send the focused window there.
+    MoveToOutput(bool),
 }
 
 impl Gavno {
@@ -118,6 +122,14 @@ impl Gavno {
                 }
                 _ => {}
             }
+        }
+        // The lid decides about the panel even behind the lock screen.
+        if let InputEvent::SwitchToggle { event } = &event {
+            use smithay::backend::input::{Switch, SwitchState, SwitchToggleEvent};
+            if event.switch() == Some(Switch::Lid) {
+                crate::backend::udev::set_lid(self, event.state() == SwitchState::On);
+            }
+            return;
         }
         if self.lock.internal() && !matches!(&event, InputEvent::Keyboard { .. } | InputEvent::PointerMotion { .. }
             | InputEvent::PointerMotionAbsolute { .. } | InputEvent::PointerButton { .. }) { return; }
@@ -593,6 +605,17 @@ impl Gavno {
         if matches!(sym, keysyms::KEY_Tab | keysyms::KEY_ISO_Left_Tab) { return Some(Action::WorkspaceStep(mods.shift)); }
         if mods.ctrl && matches!(sym, keysyms::KEY_Page_Up | keysyms::KEY_Page_Down) { return Some(Action::WorkspaceStep(sym == keysyms::KEY_Page_Up)); }
         if matches!(sym, keysyms::KEY_a | keysyms::KEY_A) { return Some(Action::ToggleOverview); }
+        // Shift turns period/comma into greater/less on most layouts.
+        if !mods.ctrl {
+            let next = match sym {
+                keysyms::KEY_period | keysyms::KEY_greater => Some(true),
+                keysyms::KEY_comma | keysyms::KEY_less => Some(false),
+                _ => None,
+            };
+            if let Some(next) = next {
+                return Some(if mods.shift { Action::MoveToOutput(next) } else { Action::FocusOutput(next) });
+            }
+        }
         if let Some(dir) = arrow_direction(sym) {
             return Some(self.direction_action(dir, mods));
         }
@@ -667,6 +690,8 @@ impl Gavno {
             Action::ToggleMaximize => self.toggle_window_mode(WindowMode::Maximized),
             Action::ToggleFullscreen => self.toggle_window_mode(WindowMode::Fullscreen),
             Action::Snap(dir) => self.snap_direction(dir),
+            Action::FocusOutput(next) => self.focus_output_step(next),
+            Action::MoveToOutput(next) => self.move_window_output_step(next),
             Action::FocusDirection(dir) => self.focus_direction(dir),
             Action::Swap(dir) => self.swap_direction(dir),
             Action::Resize(dir) => self.resize_direction(dir),

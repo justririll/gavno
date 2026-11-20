@@ -73,13 +73,15 @@ pub struct DisplayConfig {
     pub night_light_temperature: u32,
     /// Startup-only: when false the session exports GTK_A11Y=none and NO_AT_BRIDGE=1.
     pub accessibility: bool,
+    /// Turn the internal panel off while this many external outputs are on (0 = never).
+    pub internal_off_with: u32,
     #[serde(flatten)]
     unknown: toml::Table,
 }
 
 impl Default for DisplayConfig {
     fn default() -> Self {
-        Self { off_after_idle_secs: 600, brightness_control: Default::default(), direct_scanout: true, night_light: true, night_light_temperature: crate::night_light::DEFAULT_K, accessibility: false, unknown: Default::default() }
+        Self { off_after_idle_secs: 600, brightness_control: Default::default(), direct_scanout: true, night_light: true, night_light_temperature: crate::night_light::DEFAULT_K, accessibility: false, internal_off_with: 2, unknown: Default::default() }
     }
 }
 
@@ -91,6 +93,8 @@ pub struct OutputConfig {
     pub scale: Option<f64>,
     pub hdr: Option<bool>,
     pub enabled: Option<bool>,
+    /// Logical top-left corner; absent outputs are placed left to right.
+    pub position: Option<[i32; 2]>,
     #[serde(flatten)]
     unknown: toml::Table,
 }

@@ -956,6 +956,8 @@ fn action_label(action: &Action) -> (&'static str, &'static str) {
         FocusDirection(_) => ("Focus and swap", "focus"),
         Swap(_) => ("Focus and swap", "swap"),
         Snap(_) => ("Snap", "snap / move tile"),
+        FocusOutput(_) => ("Monitors", "focus monitor"),
+        MoveToOutput(_) => ("Monitors", "move to monitor"),
         Resize(_) => ("Resize", "resize"),
         ResizeMode => ("Resize", "resize mode"),
         Workspace(_) => ("Workspaces", "switch workspace"),

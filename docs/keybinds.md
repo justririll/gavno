@@ -42,6 +42,17 @@ it first before it hides. The bind does nothing while the session is locked. See
 | Mod+Ctrl+F | Toggle maximize. |
 | Mod+Shift+F | Toggle fullscreen. |
 
+## Monitors
+
+| Keys | Action |
+|---|---|
+| Mod+. | Focus the next monitor (the pointer jumps to its centre). |
+| Mod+, | Focus the previous monitor. |
+| Mod+Shift+. | Move the focused window to the next monitor. |
+| Mod+Shift+, | Move the focused window to the previous monitor. |
+
+Monitors are ordered left to right; the last one wraps to the first.
+
 ## Snap
 
 | Keys | Action |

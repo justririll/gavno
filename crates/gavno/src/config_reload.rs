@@ -175,6 +175,7 @@ pub(crate) fn apply(gv: &mut Gavno, prepared: Prepared) -> Result<Value, String>
         || gv.config.theme.latitude != config.theme.latitude
         || gv.config.theme.longitude != config.theme.longitude;
     let scanout_changed = gv.config.display.direct_scanout != config.display.direct_scanout;
+    let panel_changed = gv.config.display.internal_off_with != config.display.internal_off_with;
     let pins_changed = gv.config.dock.pinned != config.dock.pinned;
     let scheme_changed = gv.config.theme.app_color_scheme != config.theme.app_color_scheme;
     let classic_changed = gv.config.classic != config.classic;
@@ -261,6 +262,9 @@ pub(crate) fn apply(gv: &mut Gavno, prepared: Prepared) -> Result<Value, String>
     gv.enforce_classic_floating();
     if night_light_changed {
         gv.refresh_theme_clock();
+    }
+    if panel_changed {
+        crate::backend::udev::reconcile_panel(gv);
     }
     if white_changed {
         crate::backend::udev::set_sdr_white(gv, gv.config.sdr_white_nits);

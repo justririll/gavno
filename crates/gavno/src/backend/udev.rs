@@ -49,7 +49,7 @@ use smithay::{
         },
         wayland_server::backend::GlobalId,
     },
-    utils::{DeviceFd, Monotonic, Time, Transform},
+    utils::{DeviceFd, Monotonic, Point, Time, Transform},
     wayland::{
         dmabuf::{DmabufFeedbackBuilder, DmabufGlobal},
         presentation::Refresh,
@@ -114,6 +114,12 @@ struct Gpu {
     probe_again: bool,
     surfaces: HashMap<crtc::Handle, Surface>,
     disabled_outputs: HashMap<String, Output>,
+    /// Every connected connector, lit or not, so the panel can come back.
+    connected: HashMap<String, (connector::Info, crtc::Handle)>,
+    /// Last layout position per connector, reused when it reappears.
+    positions: HashMap<String, Point<i32, smithay::utils::Logical>>,
+    /// Lid switch state from libinput.
+    lid_closed: bool,
 }
 
 struct AdvertisedPreferred(Vec<WlMode>);
@@ -428,6 +434,9 @@ fn open_gpu(gv: &mut Gavno, node: DrmNode, path: &Path) -> Result<(), Box<dyn st
         probe_again: false,
         surfaces: HashMap::new(),
         disabled_outputs: HashMap::new(),
+        connected: HashMap::new(),
+        positions: HashMap::new(),
+        lid_closed: false,
     });
     Ok(())
 }
@@ -594,6 +603,16 @@ fn scan_cached_connectors(gv: &mut Gavno, node: DrmNode, probed: Option<&Connect
             !internal_connector(connector),
         ),
     });
+    // Known before any output is lit, so a panel that should stay dark
+    // behind external monitors is never modeset at all.
+    if let Some(gpu) = udev(gv).and_then(|d| d.gpu.as_mut()) {
+        for event in &events {
+            if let DrmScanEvent::Connected { connector, crtc: Some(crtc) } = event {
+                let name = format!("{}-{}", connector.interface().as_str(), connector.interface_id());
+                gpu.connected.insert(name, (connector.clone(), *crtc));
+            }
+        }
+    }
     for event in events {
         match event {
             DrmScanEvent::Connected {
@@ -607,12 +626,78 @@ fn scan_cached_connectors(gv: &mut Gavno, node: DrmNode, probed: Option<&Connect
             _ => {}
         }
     }
+    reconcile_panel(gv);
+    release_unused_crtcs(gv);
+}
+
+fn release_unused_crtcs(gv: &mut Gavno) {
     if let Some(gpu) = udev(gv).and_then(|data| data.gpu.as_ref()) {
         let active: HashSet<_> = gpu.surfaces.keys().copied().collect();
         if let Err(error) = crate::hdr::startup::clear_unused_outputs(gpu.manager.device(), &active) {
             warn!(%error, "could not disable inherited unused outputs");
         }
     }
+}
+
+/// Whether the internal panel `name` should be lit given the connected
+/// externals. An explicit `[outputs.<panel>] enabled` keeps the old path.
+fn panel_wanted(gv: &mut Gavno, name: &str) -> bool {
+    let threshold = gv.config.display.internal_off_with;
+    let explicit = gv.config.outputs.get(name).and_then(|o| o.enabled);
+    if explicit.is_some() { return true; }
+    let disabled: HashSet<String> = gv.config.outputs.iter()
+        .filter(|(_, o)| o.enabled == Some(false)).map(|(n, _)| n.clone()).collect();
+    let Some(gpu) = udev(gv).and_then(|d| d.gpu.as_ref()) else { return true };
+    let externals_on = gpu.connected.iter()
+        .filter(|(other, (info, _))| !internal_connector(info) && !disabled.contains(*other))
+        .count();
+    crate::output_layout::panel_wanted(crate::output_layout::PanelInputs {
+        threshold, externals_on, lid_closed: gpu.lid_closed, explicit: None,
+    })
+}
+
+/// Lights or darkens the internal panel after outputs, the lid or the
+/// configuration changed. Windows on a darkened panel move to the remaining
+/// outputs in `refresh_workspaces` and come back when it lights again.
+pub fn reconcile_panel(gv: &mut Gavno) {
+    if udev(gv).is_some_and(|d| !d.session.is_active()) { return; }
+    let threshold = gv.config.display.internal_off_with;
+    let explicit: HashSet<String> = gv.config.outputs.iter()
+        .filter(|(_, o)| o.enabled.is_some()).map(|(n, _)| n.clone()).collect();
+    let Some(gpu) = udev(gv).and_then(|d| d.gpu.as_ref()) else { return };
+    let Some((name, (info, crtc))) = gpu.connected.iter()
+        .find(|(_, (info, _))| internal_connector(info))
+        .map(|(name, entry)| (name.clone(), entry.clone())) else { return };
+    if explicit.contains(&name) { return; }
+    let lit = gpu.surfaces.iter().find(|(_, s)| s.output.name() == name).map(|(crtc, _)| *crtc);
+    let externals_on = gpu.surfaces.values().filter(|s| s.output.name() != name).count();
+    let want = crate::output_layout::panel_wanted(crate::output_layout::PanelInputs {
+        threshold,
+        externals_on,
+        lid_closed: gpu.lid_closed,
+        explicit: None,
+    });
+    match (want, lit) {
+        (true, None) => {
+            info!(name, externals_on, "lighting the internal panel");
+            connector_connected(gv, info, crtc);
+        }
+        (false, Some(crtc)) => {
+            info!(name, externals_on, "turning the internal panel off");
+            remove_surface(gv, crtc);
+            release_unused_crtcs(gv);
+        }
+        _ => {}
+    }
+}
+
+/// libinput lid switch: closed darkens the panel when another output is lit.
+pub fn set_lid(gv: &mut Gavno, closed: bool) {
+    let Some(gpu) = udev(gv).and_then(|d| d.gpu.as_mut()) else { return };
+    if gpu.lid_closed == closed { return; }
+    gpu.lid_closed = closed;
+    info!(closed, "lid switch");
+    reconcile_panel(gv);
 }
 
 fn device_removed(gv: &mut Gavno, node: DrmNode) {
@@ -675,6 +760,13 @@ fn connector_connected(gv: &mut Gavno, connector: connector::Info, crtc: crtc::H
     crate::perf::startup_output("udev.output.begin", &name);
     let internal = internal_connector(&connector);
     let (requested, scale, hdr_requested, enabled) = gv.config.output_settings(&name, internal);
+    if let Some(gpu) = udev(gv).and_then(|d| d.gpu.as_mut()) {
+        gpu.connected.insert(name.clone(), (connector.clone(), crtc));
+    }
+    if internal && !panel_wanted(gv, &name) {
+        info!(name, "internal panel stays off while external outputs are lit");
+        return;
+    }
 
     let modes: Vec<_> = connector.modes().iter().map(|m| {
         let wl = WlMode::from(*m);
@@ -690,7 +782,8 @@ fn connector_connected(gv: &mut Gavno, connector: connector::Info, crtc: crtc::H
     }
     let white_nits = gv.config.sdr_white_nits;
 
-    // Outputs are placed left to right in connection order.
+    // Outputs are placed left to right in connection order; the final
+    // position is settled once the mode, and so the size, is known.
     let x = gv
         .space
         .outputs()
@@ -698,6 +791,8 @@ fn connector_connected(gv: &mut Gavno, connector: connector::Info, crtc: crtc::H
         .map(|g| g.loc.x + g.size.w)
         .max()
         .unwrap_or(0);
+    let requested_position = gv.config.outputs.get(&name).and_then(|o| o.position)
+        .or_else(|| udev(gv).and_then(|d| d.gpu.as_ref()).and_then(|g| g.positions.get(&name)).map(|p| [p.x, p.y]));
 
     crate::perf::startup_output("udev.output.identity.begin", &name);
     let (make, model) = connector_identity(gv, &connector).unwrap_or_else(|| ("Unknown".into(), name.clone()));
@@ -831,6 +926,19 @@ fn connector_connected(gv: &mut Gavno, connector: connector::Info, crtc: crtc::H
     };
     crate::perf::startup_output("udev.output.initialize.ready", &name);
     let wl_mode = WlMode::from(connector.modes()[index]);
+    {
+        let size = wl_mode.size.to_f64().to_logical(scale).to_i32_round();
+        let others: Vec<_> = gv.space.outputs().filter(|o| **o != output)
+            .filter_map(|o| gv.space.output_geometry(o)).collect();
+        let location = crate::output_layout::place(requested_position, size, &others);
+        if location != Point::from((x, 0)) {
+            output.change_current_state(None, None, None, Some(location));
+            gv.space.map_output(&output, location);
+        }
+        if let Some(gpu) = udev(gv).and_then(|d| d.gpu.as_mut()) { gpu.positions.insert(name.clone(), location); }
+    }
+    let Backend::Udev(data) = &mut gv.backend else { return };
+    let Some(gpu) = data.gpu.as_mut() else { return };
     // Preferred flags come from the connector, not the selected timing.
     info!(name, width = wl_mode.size.w, height = wl_mode.size.h,
         refresh_hz = f64::from(wl_mode.refresh) / 1000.0, scale, "selected output mode");
@@ -871,8 +979,16 @@ fn connector_connected(gv: &mut Gavno, connector: connector::Info, crtc: crtc::H
 
 fn connector_disconnected(gv: &mut Gavno, connector: connector::Info, crtc: crtc::Handle) {
     if let Some(gpu) = udev(gv).and_then(|d| d.gpu.as_mut()) {
-        gpu.disabled_outputs.remove(&format!("{}-{}", connector.interface().as_str(), connector.interface_id()));
+        let name = format!("{}-{}", connector.interface().as_str(), connector.interface_id());
+        gpu.disabled_outputs.remove(&name);
+        gpu.connected.remove(&name);
     }
+    info!(?connector, "output disconnected");
+    remove_surface(gv, crtc);
+}
+
+/// Releases one lit output; the connector itself may stay connected.
+fn remove_surface(gv: &mut Gavno, crtc: crtc::Handle) {
     let Some(mut surface) = udev(gv).and_then(|d| d.gpu.as_mut()).and_then(|g| g.surfaces.remove(&crtc)) else {
         return;
     };
@@ -880,7 +996,7 @@ fn connector_disconnected(gv: &mut Gavno, connector: connector::Info, crtc: crtc
         gv.loop_handle.remove(token);
     }
     if let Ok(color) = &mut surface.color { let _ = color.restore(); }
-    info!(output = surface.output.name(), ?connector, "output disconnected");
+    info!(output = surface.output.name(), "output released");
     crate::handlers::layer_shell::close_layers(&surface.output);
     gv.space.unmap_output(&surface.output);
     gv.protocols.screencopy.output_removed(&surface.output);
