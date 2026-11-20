@@ -372,7 +372,7 @@ fn pill(c: &mut Canvas, renderer: &mut GlesRenderer, text: &str, x: i32, y: i32,
     let x = x.clamp(8, (bounds.0 - pw - 8).max(8));
     let r = rect(x, y, pw, ph);
     c.shadow(r, 10.0);
-    c.rect(r, 10.0, GLASS, 1.0, LINE);
+    c.glass(r, 10.0, crate::ui::glass::tone::THICK, GLASS, 1.0, LINE);
     c.styled_label(renderer, text, x + 13, y + 8, tw + 4, style);
     r
 }

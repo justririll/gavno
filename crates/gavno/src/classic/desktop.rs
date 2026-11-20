@@ -668,7 +668,7 @@ impl Desktop {
         if self.overlay_prepared != Some(key) {
             self.overlay.begin(scale);
             self.overlay
-                .panel(panel, crate::ui::style::radius::ROW, crate::ui::style::PANEL_BG, 1.0);
+                .glass(panel, crate::ui::style::radius::ROW, crate::ui::style::PANEL_BG);
             if let Some(menu) = &self.menu {
                 for (i, (_, label)) in menu.actions().iter().enumerate() {
                     self.overlay.label(

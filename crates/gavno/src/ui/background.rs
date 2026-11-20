@@ -1011,6 +1011,7 @@ mod tests {
             &mut gv.polkit,
             &mut gv.background,
             &mut gv.tty,
+            &mut gv.glass,
             None,
         )
     }
@@ -1425,6 +1426,7 @@ mod tests {
                     &mut gv.polkit,
                     &mut gv.background,
                     &mut gv.tty,
+                    &mut gv.glass,
                     None,
                 );
                 assert!(scene.len() > 1, "the artifact includes shell chrome");

@@ -92,6 +92,8 @@ pub struct Gavno {
     pub(crate) code_mode_saved: Vec<(Output, u64, bool)>,
     /// The console look layered on the GAVNO shell; see `tty_mode.rs`.
     pub tty: crate::tty_mode::Tty,
+    /// Liquid glass backdrops of the outputs.
+    pub glass: crate::ui::glass::Glass,
     /// The mode last written by `session_mode`.
     pub(crate) persisted_mode: Option<crate::session_mode::Mode>,
     /// The pointer is hidden until the next pointer activity.
@@ -239,6 +241,7 @@ impl Gavno {
             code_mode: config_code_mode && !start_classic,
             code_mode_saved: Vec::new(),
             tty: crate::tty_mode::Tty::default(),
+            glass: Default::default(),
             persisted_mode: None,
             pointer_hidden: false,
             pointer_image: CursorImageStatus::default_named(),
@@ -265,7 +268,28 @@ impl Gavno {
         state.sync_bar_hints();
         #[cfg(not(test))]
         state.start_classic_window_store();
+        #[cfg(not(test))]
+        state.start_glass_channel();
         state
+    }
+
+    /// The glass blur worker hands its results back over this channel.
+    #[cfg(not(test))]
+    fn start_glass_channel(&mut self) {
+        let (tx, rx) = smithay::reexports::calloop::channel::channel::<crate::ui::glass::Blurred>();
+        match self.loop_handle.insert_source(rx, |event, _, gv| {
+            if let smithay::reexports::calloop::channel::Event::Msg(blurred) = event {
+                if gv.glass.accept(blurred) {
+                    gv.queue_redraw_all();
+                }
+            }
+        }) {
+            Ok(token) => {
+                self.glass.set_sender(tx);
+                self.glass.source = Some(token);
+            }
+            Err(error) => tracing::warn!(%error, "cannot register the glass channel"),
+        }
     }
 
     fn init_wayland_listener(display: Display<Gavno>, event_loop: &mut EventLoop<'static, Gavno>) -> OsString {

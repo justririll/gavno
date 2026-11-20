@@ -36,11 +36,14 @@ struct Label {
 #[derive(Clone)]
 enum Primitive {
     Box(Rect, f32, [f32; 4], f32),
+    /// A liquid glass card (falls back to the colour without glass).
+    Glass(Rect, f32, [f32; 4]),
     Image(Rect, Image),
 }
 enum Drawing {
     Memory(MemoryRenderBufferRenderElement<GlesRenderer>),
     Shader(PixelShaderElement),
+    Glass(crate::ui::glass::GlassElement),
 }
 #[derive(Clone)]
 pub struct CachedElement(std::sync::Arc<Drawing>);
@@ -57,6 +60,7 @@ impl CachedElement {
         match self.0.as_ref() {
             Drawing::Memory(e) => e,
             Drawing::Shader(e) => e,
+            Drawing::Glass(e) => e,
         }
     }
 }
@@ -114,6 +118,7 @@ impl smithay::backend::renderer::element::RenderElement<GlesRenderer> for Cached
             Drawing::Shader(e) => {
                 RenderElement::<GlesRenderer>::draw(e, frame, src, dst, damage, opaque)
             }
+            Drawing::Glass(e) => RenderElement::<GlesRenderer>::draw(e, frame, src, dst, damage, opaque),
         }
     }
 }
@@ -157,6 +162,10 @@ impl Layer {
         {
             self.preparations += 1;
         }
+    }
+    /// A liquid glass card; `fallback` fills it while there is no glass.
+    pub fn glass(&mut self, r: Rect, radius: f32, fallback: [f32; 4]) {
+        self.primitives.push(Primitive::Glass(r, radius, fallback));
     }
     pub fn panel(&mut self, r: Rect, radius: f32, color: [f32; 4], border: f32) {
         self.primitives
@@ -323,7 +332,8 @@ impl Layer {
                 text.clear_images();
             }
         }
-        let key = (self.revision, p.to_bits(), self.scale.to_bits());
+        // The glass texture is part of the picture: a new one rebuilds.
+        let key = (self.revision ^ crate::ui::glass::generation().rotate_left(32), p.to_bits(), self.scale.to_bits());
         if self.key != Some(key) {
             self.canvas.begin(renderer, self.scale);
             self.canvas.alpha = p as f32;
@@ -334,6 +344,14 @@ impl Layer {
                     Primitive::Box(r, radius, color, border) => {
                         self.canvas.rect(*r, *radius, *color, *border, LINE)
                     }
+                    Primitive::Glass(r, radius, fallback) => self.canvas.glass(
+                        *r,
+                        *radius,
+                        crate::ui::glass::tone::REGULAR,
+                        *fallback,
+                        1.0,
+                        [1.0, 1.0, 1.0, 0.10],
+                    ),
                     Primitive::Image(r, image) => {
                         let r = self.canvas.mapped(*r);
                         if let Ok(e) = MemoryRenderBufferRenderElement::from_buffer(
@@ -363,6 +381,9 @@ impl Layer {
                     GavnoRenderElement::Shader(e) => {
                         Some(CachedElement(std::sync::Arc::new(Drawing::Shader(e))))
                     }
+                    GavnoRenderElement::Glass(e) => {
+                        Some(CachedElement(std::sync::Arc::new(Drawing::Glass(e))))
+                    }
                     _ => None,
                 })
                 .collect();
@@ -380,7 +401,7 @@ impl Layer {
         self.primitives
             .iter()
             .filter_map(|p| match p {
-                Primitive::Box(r, _, c, _) => Some((*r, *c)),
+                Primitive::Box(r, _, c, _) | Primitive::Glass(r, _, c) => Some((*r, *c)),
                 _ => None,
             })
             .collect()

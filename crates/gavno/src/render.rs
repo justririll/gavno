@@ -58,6 +58,7 @@ render_elements! {
     Thumbnail = crate::overview::ThumbnailElement,
     Plain = RelocateRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>,
     Texture = TextureRenderElement<GlesTexture>,
+    Glass = crate::ui::glass::GlassElement,
 }
 
 /// Dmabuf feedback for one output: what to prefer for composition and what
@@ -143,9 +144,10 @@ pub fn output_elements(
     polkit: &mut crate::polkit::Polkit,
     background: &mut crate::ui::background::Background,
     tty: &mut crate::tty_mode::Tty,
+    glass: &mut crate::ui::glass::Glass,
     stall: Option<&mut crate::perf::Stall<'_>>,
 ) -> Vec<GavnoRenderElement> {
-    output_elements_colored(renderer, space, output, pointer_pos, cursor_status, cursor, time, greeter, lock, overlay, window_decor, animations, locks, workspaces, overview, dock, topbar, config, features, osd, launcher, classic, polkit, background, tty, stall)
+    output_elements_colored(renderer, space, output, pointer_pos, cursor_status, cursor, time, greeter, lock, overlay, window_decor, animations, locks, workspaces, overview, dock, topbar, config, features, osd, launcher, classic, polkit, background, tty, glass, stall)
 }
 
 fn output_elements_colored(
@@ -174,6 +176,7 @@ fn output_elements_colored(
     polkit: &mut crate::polkit::Polkit,
     background: &mut crate::ui::background::Background,
     tty: &mut crate::tty_mode::Tty,
+    glass: &mut crate::ui::glass::Glass,
     mut stall: Option<&mut crate::perf::Stall<'_>>,
 ) -> Vec<GavnoRenderElement> {
     if let Some(stall) = stall.as_deref_mut() {
@@ -198,7 +201,7 @@ fn output_elements_colored(
         if let Some(surface) = locks.surface(output) { with_surfaces_surface_tree(surface, |s, states| collect(s, states)); }
     }
     if let Some(stall) = stall.as_deref_mut() { stall.mark("elements.state"); }
-    let elements = output_elements_inner(renderer, space, output, pointer_pos, cursor_status, cursor, time, greeter, lock, overlay, window_decor, animations, locks, workspaces, overview, dock, topbar, config, features, osd, launcher, classic, polkit, background, tty, stall.as_deref_mut());
+    let elements = output_elements_inner(renderer, space, output, pointer_pos, cursor_status, cursor, time, greeter, lock, overlay, window_decor, animations, locks, workspaces, overview, dock, topbar, config, features, osd, launcher, classic, polkit, background, tty, glass, stall.as_deref_mut());
     if descriptions.is_empty() { crate::hdr::surface::reset(output); return elements; }
     let hdr = crate::handlers::color_management::is_hdr(output);
     if !hdr { descriptions.retain(|_, d| d.tf != crate::color::Transfer::Srgb || d.primaries != crate::color::SRGB); }
@@ -255,6 +258,7 @@ fn output_elements_inner(
     polkit: &mut crate::polkit::Polkit,
     background: &mut crate::ui::background::Background,
     tty: &mut crate::tty_mode::Tty,
+    glass: &mut crate::ui::glass::Glass,
     mut stall: Option<&mut crate::perf::Stall<'_>>,
 ) -> Vec<GavnoRenderElement> {
     let mut elements: Vec<GavnoRenderElement> = Vec::new();
@@ -286,7 +290,7 @@ fn output_elements_inner(
                 // on a worker and arrives as a small texture a frame or two later.
                 lock.set_capturing(true);
                 let open = crate::handlers::session_lock::Locks::default();
-                let desktop = output_elements_inner(renderer, space, output, pointer_pos, cursor_status, cursor, time, None, lock, overlay, window_decor, animations, &open, workspaces, overview, dock, topbar, config, features, osd, launcher, classic, polkit, background, tty, None);
+                let desktop = output_elements_inner(renderer, space, output, pointer_pos, cursor_status, cursor, time, None, lock, overlay, window_decor, animations, &open, workspaces, overview, dock, topbar, config, features, osd, launcher, classic, polkit, background, tty, glass, None);
                 lock.set_capturing(false);
                 let physical = (
                     (output_geo.size.w as f64 * scale.x).round() as i32,
@@ -323,6 +327,24 @@ fn output_elements_inner(
     }
 
     if let Some(stall) = stall.as_deref_mut() { stall.mark("elements.lock"); }
+    // The wallpaper is built first: liquid glass surfaces drawn below sample
+    // a blurred copy of it. It is appended last, at the back.
+    let mut backdrop = background_elements(renderer, output, smithay::wayland::shell::wlr_layer::Layer::Bottom);
+    let bottom_layers = backdrop.len();
+    backdrop.extend(background_elements(renderer, output, smithay::wayland::shell::wlr_layer::Layer::Background));
+    if greeter.is_none() && !crate::ui::background::has_wallpaper(output, output_geo.size) {
+        let sky = features.call(Feature::Theme, None, || {
+            background.elements(renderer, output, output_geo.size, scale.x, &config.theme, time)
+        });
+        backdrop.push(sky.unwrap_or_else(|| background.solid(output, output_geo.size, config.theme.solid())));
+    }
+    let glass_frame = if greeter.is_none() && !locks.locked {
+        let moving = background.active();
+        glass.frame(renderer, &output.name(), output_geo.size, scale.x, time, &backdrop, moving)
+    } else {
+        None
+    };
+    let _glass = crate::ui::glass::enter(glass_frame);
     if !cursor.hidden && !locks.locked && output_geo.to_f64().contains(pointer_pos) {
         if let CursorImageStatus::Surface(surface) = cursor_status {
             if !surface.alive() {
@@ -520,16 +542,11 @@ fn output_elements_inner(
             return elements;
         }
     }
-    elements.extend(background_elements(renderer, output, smithay::wayland::shell::wlr_layer::Layer::Bottom));
+    let rest = backdrop.split_off(bottom_layers);
+    elements.extend(backdrop);
     background.record_visibility(output, &elements, output_geo.size, scale.x);
-    elements.extend(background_elements(renderer, output, smithay::wayland::shell::wlr_layer::Layer::Background));
+    elements.extend(rest);
     if let Some(stall) = stall.as_deref_mut() { stall.mark("elements.layers.back"); }
-    if !crate::ui::background::has_wallpaper(output, output_geo.size) {
-        let sky = features.call(Feature::Theme, None, || {
-            background.elements(renderer, output, output_geo.size, scale.x, &config.theme, time)
-        });
-        elements.push(sky.unwrap_or_else(|| background.solid(output, output_geo.size, config.theme.solid())));
-    }
     if let Some(stall) = stall.as_deref_mut() { stall.mark("elements.background"); }
     elements
 }

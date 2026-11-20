@@ -447,7 +447,7 @@ impl Dock {
         let c = &mut v.canvas;
         c.begin(renderer, output.current_scale().fractional_scale());
         c.shadow(panel.to_i32_round(), 20.0);
-        c.rect(panel.to_i32_round(), 20.0, GLASS, 1.0, LINE);
+        c.glass(panel.to_i32_round(), 20.0, crate::ui::glass::tone::CLEAR, GLASS, 1.0, LINE);
         v.hits.clear();
         v.menu_rect = None;
         let mut x = left + 9.0 * fit;

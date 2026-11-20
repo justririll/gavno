@@ -328,7 +328,7 @@ impl Taskbar {
             r.loc.y += dy;
             r
         };
-        c.rect(shift(l.bar), 0.0, GLASS, 0.0, LINE);
+        c.glass(shift(l.bar), 0.0, crate::ui::glass::tone::CLEAR, GLASS, 0.0, LINE);
         c.rect(shift(rect(0, l.bar.loc.y, size.w, 1)), 0.0, LINE, 0.0, LINE);
         v.hits.push((shift(l.bar), Hit::Consume));
         let mut button = |c: &mut Canvas, r: Rect, hit: Hit| {

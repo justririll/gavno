@@ -301,7 +301,7 @@ impl Session {
             1.0,
         ];
         view.canvas.shadow(p, 16.0);
-        view.canvas.rect(p, 16.0, GLASS, 1.0, LINE);
+        view.canvas.glass(p, 16.0, crate::ui::glass::tone::REGULAR, GLASS, 1.0, LINE);
         view.hits.push((p, Hit::Panel));
         if w >= 240 && p.size.h >= 300 {
             let lay = Layout::new(p, self.state.shuffle.is_some() && self.state.repeat.is_some());

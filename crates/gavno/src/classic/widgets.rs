@@ -232,7 +232,11 @@ impl Widgets {
         size: Size<i32, Logical>,
     ) -> impl Iterator<Item = (&'a str, Rect)> + 'a {
         let mut y = 16;
-        self.enabled.iter().map(move |name| {
+        // "media" (any player) and "music" (the music daemon) would show the
+        // same thing twice: keep the one that can play something here.
+        let both = self.enabled.iter().any(|n| n == "media") && self.enabled.iter().any(|n| n == "music");
+        let hidden = if !both { "" } else if self.music_available { "media" } else { "music" };
+        self.enabled.iter().filter(move |name| name.as_str() != hidden).map(move |name| {
             let height = widget_height(name);
             let p = positions.get(name).copied().unwrap_or([size.w - 296, y]);
             let r = rect(
@@ -254,7 +258,7 @@ impl Widgets {
         theme: &str,
     ) {
         for (name, r) in self.layouts(positions, size) {
-            layer.panel(
+            layer.glass(
                 r,
                 if name == "music" || name == "media" {
                     16.0
@@ -262,7 +266,6 @@ impl Widgets {
                     14.0
                 },
                 [0.065, 0.075, 0.10, 0.90],
-                1.0,
             );
             if name == "clock" {
                 layer.label(

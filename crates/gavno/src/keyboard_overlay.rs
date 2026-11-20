@@ -115,7 +115,7 @@ impl KeyboardOverlay {
             let panel = Rectangle::new((x, y).into(), (width, height).into());
             self.canvas.shadow(panel, 18.0);
             self.canvas
-                .rect(panel, 18.0, crate::topbar::GLASS, 1.0, crate::topbar::LINE);
+                .glass(panel, 18.0, crate::ui::glass::tone::THICK, crate::topbar::GLASS, 1.0, crate::topbar::LINE);
             self.canvas.label(
                 renderer,
                 "Keyboard shortcuts · any key closes",

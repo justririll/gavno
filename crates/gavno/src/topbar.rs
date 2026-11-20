@@ -27,6 +27,10 @@ use std::{
 /// Sentinel for `Canvas::colored_icon`: draw the icon untinted.
 pub(crate) const FULL_COLOR: [u8; 3] = [1, 2, 3];
 pub const PANEL: i32 = 32;
+/// The bar is a floating island inside its `PANEL` band.
+const ISLAND_INSET_X: i32 = 4;
+const ISLAND_INSET_Y: i32 = 2;
+const ISLAND_RADIUS: f32 = 14.0;
 pub const GLASS: [f32; 4] = [0.055, 0.065, 0.09, 0.90];
 pub const LINE: [f32; 4] = [1.0, 1.0, 1.0, 0.14];
 #[path = "bar/calendar.rs"]
@@ -225,6 +229,28 @@ impl Canvas {
             )));
         }
         self.used += 1;
+    }
+    /// A liquid glass surface (see `ui::glass`) with an optional hairline;
+    /// `fallback` fills it while the output has no glass yet.
+    pub fn glass(
+        &mut self,
+        rect: Rectangle<i32, Logical>,
+        radius: f32,
+        tone: crate::ui::glass::Tone,
+        fallback: [f32; 4],
+        border: f32,
+        line: [f32; 4],
+    ) {
+        let mapped = self.mapped(rect);
+        match crate::ui::glass::element(mapped, radius * self.zoom as f32, tone, self.alpha, self.scale) {
+            Some(element) => {
+                self.elements.push(element);
+                if border > 0.0 {
+                    self.rect(rect, radius, [0.0; 4], border, line);
+                }
+            }
+            None => self.rect(rect, radius, fallback, border, line),
+        }
     }
     pub fn shadow(&mut self, rect: Rectangle<i32, Logical>, radius: f32) {
         let rect = self.mapped(rect);
@@ -750,14 +776,8 @@ impl TopBar {
         let strip = geometry::workspace_strip(8, cap, &specs);
         let (l, media) = media_layout(&self.now_playing, width, strip.rect.size.w, self.multiple_layouts, self.music_panel, features, battery);
         if self.shell_progress < 0.999 {
-        c.rect(rect(0, 0, width, PANEL), 0.0, GLASS, 0.0, LINE);
-        c.rect(
-            rect(0, PANEL - 1, width, 1),
-            0.0,
-            [self.accent[0], self.accent[1], self.accent[2], 0.22],
-            0.0,
-            LINE,
-        );
+        // A floating liquid glass island, inset from the screen edges.
+        c.glass(rect(ISLAND_INSET_X, ISLAND_INSET_Y, width - 2 * ISLAND_INSET_X, PANEL - 2 * ISLAND_INSET_Y), ISLAND_RADIUS, crate::ui::glass::tone::CLEAR, GLASS, 1.0, [1.0, 1.0, 1.0, 0.10]);
         capsule(c, l.workspaces, false);
         for pill in &strip.pills {
             let info = &workspaces[pill.index];

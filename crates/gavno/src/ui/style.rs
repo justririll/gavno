@@ -102,7 +102,7 @@ pub fn on_accent(accent: [f32; 4]) -> [f32; 4] {
 /// A popover card: shadow, then the panel with its hairline border.
 pub fn card(c: &mut Canvas, area: Rect, radius: f32) {
     c.shadow(area, radius);
-    c.rect(area, radius, PANEL_BG, 1.0, LINE);
+    c.glass(area, radius, crate::ui::glass::tone::THICK, PANEL_BG, 1.0, LINE);
 }
 /// A row-shaped button or list item; `hover` lights it up.
 pub fn row_bg(c: &mut Canvas, area: Rect, hover: bool) {

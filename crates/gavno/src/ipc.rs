@@ -604,7 +604,7 @@ mod classic_tests {
             &mut gv.cursor, time, None, &mut gv.lock, &mut gv.overlay, &mut gv.window_decor,
             &mut gv.window_animations, &gv.protocols.locks, &mut gv.workspaces, &mut gv.overview,
             &mut gv.dock, &mut gv.topbar, &gv.config, &mut gv.features, &mut gv.media.osd,
-            &mut gv.launcher, &mut gv.classic, &mut gv.polkit, &mut gv.background, &mut gv.tty, None);
+            &mut gv.launcher, &mut gv.classic, &mut gv.polkit, &mut gv.background, &mut gv.tty, &mut gv.glass, None);
         let elements = draw(&mut h.gv, &mut renderer, Duration::from_secs(1));
         assert!(elements.iter().any(|e| e.geometry(1.0.into()) == Rectangle::new((0, 878).into(), (1646, 48).into())));
         assert!(h.gv.dock.elements(&mut renderer, &output, (1646, 926).into(), (0.0, 0.0).into(), Duration::from_secs(1), true).is_empty());
@@ -624,7 +624,8 @@ mod classic_tests {
         h.gv.set_shell_mode(ShellMode::Gavno);
         h.event_loop.dispatch(Duration::ZERO, &mut h.gv).unwrap();
         let elements = draw(&mut h.gv, &mut renderer, Duration::from_secs(3));
-        assert!(elements.iter().any(|e| e.geometry(1.0.into()) == Rectangle::from_size((1646, 32).into())));
+        // The bar is back: its floating island, inset from the screen edges.
+        assert!(elements.iter().any(|e| e.geometry(1.0.into()) == Rectangle::new((4, 2).into(), (1638, 28).into())));
         assert!(!elements.iter().any(|e| e.geometry(1.0.into()) == Rectangle::new((0, 878).into(), (1646, 48).into())));
         assert_eq!(h.gv.classic.mode, ShellMode::Gavno);
         assert_eq!(h.gv.dock.shell_progress, 0.0);

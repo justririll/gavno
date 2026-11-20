@@ -139,7 +139,7 @@ impl ResizeMode {
         let panel = Rectangle::new((x, y).into(), (width, height).into());
         self.canvas.shadow(panel, 16.0);
         self.canvas
-            .rect(panel, 16.0, crate::topbar::GLASS, 1.0, crate::topbar::LINE);
+            .glass(panel, 16.0, crate::ui::glass::tone::THICK, crate::topbar::GLASS, 1.0, crate::topbar::LINE);
         self.canvas.label(
             renderer,
             &format!("{} × {}", s.rect.size.w, s.rect.size.h),
