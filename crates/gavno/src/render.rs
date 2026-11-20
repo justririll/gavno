@@ -145,11 +145,7 @@ pub fn output_elements(
     tty: &mut crate::tty_mode::Tty,
     stall: Option<&mut crate::perf::Stall<'_>>,
 ) -> Vec<GavnoRenderElement> {
-    let elements = output_elements_colored(renderer, space, output, pointer_pos, cursor_status, cursor, time, greeter, lock, overlay, window_decor, animations, locks, workspaces, overview, dock, topbar, config, features, osd, launcher, classic, polkit, background, tty, stall);
-    match space.output_geometry(output) {
-        Some(geo) if tty.on && !locks.locked => tty.crt_wrap(renderer, elements, geo.size, output.current_scale().fractional_scale(), time),
-        _ => elements,
-    }
+    output_elements_colored(renderer, space, output, pointer_pos, cursor_status, cursor, time, greeter, lock, overlay, window_decor, animations, locks, workspaces, overview, dock, topbar, config, features, osd, launcher, classic, polkit, background, tty, stall)
 }
 
 fn output_elements_colored(
@@ -410,6 +406,12 @@ fn output_elements_inner(
         }
     }
 
+    // TTY look: 0 GAVNO .. 1 console. Mid way both are drawn: the GAVNO chrome
+    // slides away while the console black and status line come in.
+    tty.progress.advance(time);
+    let look = tty.look();
+    let console = tty.settled_console();
+    let blend = !console && tty.in_transition();
     if !tty.on && !locks.locked && !lock.shell_hidden() {
         let accent = topbar.accent();
         let media_on = features.on(Feature::Media);
@@ -427,9 +429,10 @@ fn output_elements_inner(
         classic.advance(time);
         classic.progress.value.clamp(0.0, 1.0)
     });
-    topbar.shell_progress = p;
+    // The bar and the dock leave for TTY the way they leave for Classic.
+    topbar.shell_progress = p.max(look);
     topbar.shell_height = output_geo.size.h;
-    dock.shell_progress = p;
+    dock.shell_progress = p.max(look);
     window_decor.classic = features.on(Feature::Classic) && classic.settled == crate::classic::ShellMode::Classic;
     window_decor.pointer = pointer_pos;
     let [r, g, b, _] = topbar.accent();
@@ -462,10 +465,10 @@ fn output_elements_inner(
     let focused = classic.taskbar.focused.clone();
     features.call(Feature::Classic, (), || classic.start.append(renderer, output, output_geo.size, time, config.classic.align, accent, &config.dock.icon_theme, &mut elements));
     features.call(Feature::Classic, (), || classic.taskbar.append(renderer, output, output_geo.size, p, config.classic.align, focused.as_ref(), topbar.status(), accent, &config.dock.icon_theme, shell_visible, &mut elements));
-    if !tty.on { elements.extend(features.read(Feature::Bar, Vec::new(), || topbar.elements(renderer, output, output_geo.size.w, workspaces.get(output), time, shell_visible || (p > 0.0 && topbar.menu.as_ref() == Some(output)), features))); }
+    if !console { elements.extend(features.read(Feature::Bar, Vec::new(), || topbar.elements(renderer, output, output_geo.size.w, workspaces.get(output), time, shell_visible || (p > 0.0 && topbar.menu.as_ref() == Some(output)), features))); }
     // Above the dock and every window, beneath the bar and its popovers.
     elements.extend(overlay.dropdown.elements(renderer, window_decor, output, output_geo, work_area, &config.dropdown, time));
-    if !tty.on { elements.extend(features.call(Feature::Dock, Vec::new(), || dock.elements(renderer, output, output_geo.size, pointer_pos - output_geo.loc.to_f64(), time, shell_visible))); }
+    if !console { elements.extend(features.call(Feature::Dock, Vec::new(), || dock.elements(renderer, output, output_geo.size, pointer_pos - output_geo.loc.to_f64(), time, shell_visible))); }
     // Workspace ownership and transitions are core; overview only adds its zoom.
     let mut scene = if tty.on {
         None
@@ -504,15 +507,18 @@ fn output_elements_inner(
     }));
     features.call(Feature::Classic, (), || classic.desktop.append(renderer, output, &mut elements, p, scale.x, accent, &config.dock.icon_theme));
     if let Some(stall) = stall.as_deref_mut() { stall.mark("elements.desktop"); }
-    if tty.on {
-        // The console: no wallpaper, no sky, only the static vignette.
+    if console || blend {
+        // The console: no wallpaper, no sky, only the static vignette. Mid
+        // transition the vignette fades over the wallpaper below.
         let mod_label = match config.mod_key { crate::config::ModKey::Super => "Super", crate::config::ModKey::Alt => "Alt" };
         let frame = crate::tty_mode::draw::Frame { workspaces: &*workspaces, space, status: topbar.status(), accent, mod_label, icon_theme: &config.dock.icon_theme };
-        let front = tty.front(renderer, output, output_geo.size, scale.x, time, &frame);
+        let front = tty.front(renderer, output, output_geo.size, scale.x, time, &frame, look);
         elements.splice(0..0, front);
-        elements.extend(tty.back(renderer, output, output_geo.size, scale.x, &frame));
-        if let Some(stall) = stall.as_deref_mut() { stall.mark("elements.background"); }
-        return elements;
+        elements.extend(tty.back(renderer, output, output_geo.size, scale.x, &frame, look));
+        if console {
+            if let Some(stall) = stall.as_deref_mut() { stall.mark("elements.background"); }
+            return elements;
+        }
     }
     elements.extend(background_elements(renderer, output, smithay::wayland::shell::wlr_layer::Layer::Bottom));
     background.record_visibility(output, &elements, output_geo.size, scale.x);

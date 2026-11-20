@@ -370,7 +370,12 @@ impl Gavno {
                 }
                 Axis::Vertical => {
                     let value = position.y;
-                    if s.vertical == Some(crate::classic::VerticalRoute::Mode) {
+                    if s.vertical == Some(crate::classic::VerticalRoute::Tty) {
+                        // The look follows the fingers: toward the console when
+                        // entering, back to GAVNO when leaving.
+                        gv.tty.held = true;
+                        gv.tty.progress.follow(if in_tty { 1.0 - value } else { value }, now);
+                    } else if s.vertical == Some(crate::classic::VerticalRoute::Mode) {
                         gv.features.call(crate::module::Feature::Classic, (), || gv.classic.progress.follow(value, now));
                     } else if s.vertical == Some(crate::classic::VerticalRoute::Overview) {
                     if !gv.features.on(crate::module::Feature::Overview) { return; }
@@ -450,10 +455,13 @@ impl Gavno {
                     gv.overview.progress.set(if s.overview_origin { 1.0 } else { 0.0 });
                 });
                 // The same commit rule as the Classic switch: position plus projected velocity.
-                if !event.cancelled() && s.vertical == Some(crate::classic::VerticalRoute::Tty)
-                    && release_target(s.last_value.y, velocity.y, 1) == 1 {
-                    let enable = !gv.tty.active();
-                    gv.set_tty_mode(enable);
+                if s.vertical == Some(crate::classic::VerticalRoute::Tty) {
+                    let in_tty = gv.tty.active();
+                    if !event.cancelled() && release_target(s.last_value.y, velocity.y, 1) == 1 {
+                        gv.set_tty_mode(!in_tty);
+                    } else {
+                        gv.tty_release(0.0);
+                    }
                 }
                 if !event.cancelled() && s.vertical == Some(crate::classic::VerticalRoute::ShowDesktop)
                     && release_target(s.last_value.y, velocity.y, 1) == 1 { gv.show_classic_desktop(true); }
