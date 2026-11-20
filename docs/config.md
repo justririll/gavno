@@ -68,6 +68,9 @@ default": see `terminal` and `launcher` below.
 | `[dropdown] height` | float, 0.2-0.9 | `0.45` | none |
 | `[dropdown] width` | float, 0.3-1.0 | `1.0` | none |
 | `[dropdown] hide_on_focus_loss` | boolean | `true` | none |
+| `[tty] start` | boolean | `false` | none |
+| `[tty] font` | string | `"monospace"` | none |
+| `[tty] autostart_terminal` | boolean | `true` | none |
 | `[appearance] dim_inactive` | float, 0.0-0.5 | `0.06` | none |
 | `[appearance] focus_border` | boolean | `true` | none |
 
@@ -304,6 +307,15 @@ at the next login. The service runs on its own thread and costs nothing when idl
 `history_size` text and image copies, in memory only, and enables Mod+V. Setting
 it to `false` clears the history and frees the chord. See
 [screenshots.md](screenshots.md).
+
+## TTY mode
+
+`[tty] start = true` starts in TTY mode, the Linux-console look on top of the
+GAVNO shell; Mod+Shift+T and the quick-settings TTY chip toggle it. `font` is the
+fontconfig family used for every TTY mode text (default `monospace`, resolved once
+with `fc-match`; an unavailable family falls back to a bundled monospace file).
+`autostart_terminal = true` runs the configured `terminal` once when you switch
+to an empty console. All three apply live. See [tty.md](tty.md).
 
 ## Dropdown terminal
 
@@ -731,6 +743,9 @@ name such as `eDP-1`. Numeric steps describe the editor increments.
 | `keyboard.options` | string | `"grp:alt_shift_toggle"` | yes |
 | `keyboard.code_mode` | bool | `false` | yes |
 | `keyboard.bar_hints` | bool | `true` | yes |
+| `tty.start` | bool | `false` | yes |
+| `tty.font` | string | `"monospace"` | yes |
+| `tty.autostart_terminal` | bool | `true` | yes |
 | `modules.dock` | bool | `true` | yes |
 | `modules.bar` | bool | `true` | yes |
 | `modules.overview` | bool | `true` | yes |

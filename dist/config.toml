@@ -99,6 +99,13 @@
 # width = 1.0
 # hide_on_focus_loss = true
 
+# TTY mode (Mod+Shift+T): a black, keyboard-first console look. Alt+F1..F6 switch
+# consoles (workspaces); an empty console starts the terminal once.
+# [tty]
+# start = false
+# font = "monospace"
+# autostart_terminal = true
+
 # Local AI in the launcher (type a request, press Enter on the Ask AI row).
 # Needs the llama-gavno unit from scripts/install-greeter.sh. Nothing runs and no
 # memory is used until you ask.
