@@ -1,5 +1,5 @@
 //! Everything TTY mode draws: the status line on top, pane dividers, the
-//! static vignette, the console switch dip and the CRT power animation.
+//! static vignette and the console switch dip.
 
 use std::time::Duration;
 
@@ -7,14 +7,11 @@ use smithay::{
     backend::{
         allocator::Fourcc,
         renderer::{
-            damage::OutputDamageTracker,
             element::{
                 memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement},
-                texture::{TextureBuffer, TextureRenderElement},
                 Kind,
             },
-            gles::{GlesRenderer, GlesTexture},
-            Bind, Offscreen,
+            gles::GlesRenderer,
         },
     },
     desktop::{Space, Window},
@@ -22,7 +19,7 @@ use smithay::{
     utils::{Logical, Point, Rectangle, Size, Transform},
 };
 
-use super::{crt_shape, fade_cover, Tty, BAR_HEIGHT, CRT_TIME};
+use super::{fade_cover, Tty, BAR_HEIGHT};
 use crate::{
     icons::Icons,
     render::GavnoRenderElement,
@@ -178,17 +175,21 @@ impl Tty {
         scale: f64,
         now: Duration,
         frame: &Frame,
+        reveal: f64,
     ) -> Vec<Elem> {
         let cover = self.fade.map_or(0.0, |start| fade_cover(start, now));
+        // The status line slides down from above the screen as the look turns
+        // into the console.
+        let oy = (-(1.0 - crate::ui::style::ease_out(reveal.clamp(0.0, 1.0))) * (BAR_HEIGHT + 2) as f64).round() as i32;
         let Some(owner) = frame.workspaces.get(output) else { return Vec::new() };
         let position = self.view.tab_position(&output.name(), owner.list.active, now);
         let view = &mut self.view;
         let c = &mut view.front;
         c.begin(renderer, scale);
         let w = size.w;
-        c.rect(rect(0, 0, w, BAR_HEIGHT), 0.0, BAR_BG, 0.0, [0.0; 4]);
-        c.rect(rect(0, BAR_HEIGHT - 1, w, 1), 0.0, HAIRLINE, 0.0, [0.0; 4]);
-        let text_y = (BAR_HEIGHT - 1 - TEXT_HEIGHT) / 2;
+        c.rect(rect(0, oy, w, BAR_HEIGHT), 0.0, BAR_BG, 0.0, [0.0; 4]);
+        c.rect(rect(0, oy + BAR_HEIGHT - 1, w, 1), 0.0, HAIRLINE, 0.0, [0.0; 4]);
+        let text_y = oy + (BAR_HEIGHT - 1 - TEXT_HEIGHT) / 2;
         let accent = [frame.accent[0], frame.accent[1], frame.accent[2], 1.0];
 
         // Tabs on the left.
@@ -211,7 +212,7 @@ impl Tty {
             let t = p - lo as f64;
             let pill_x = tabs[lo].0 as f64 + (tabs[hi].0 - tabs[lo].0) as f64 * t;
             let pill_w = tabs[lo].1 as f64 + (tabs[hi].1 - tabs[lo].1) as f64 * t;
-            c.rect(rect(pill_x.round() as i32, 4, pill_w.round() as i32, BAR_HEIGHT - 9), 5.0, accent, 0.0, [0.0; 4]);
+            c.rect(rect(pill_x.round() as i32, oy + 4, pill_w.round() as i32, BAR_HEIGHT - 9), 5.0, accent, 0.0, [0.0; 4]);
         }
         let on_accent = crate::ui::style::on_accent(accent);
         for (index, (tab_x, width, text, digits, empty)) in tabs.iter().enumerate() {
@@ -226,7 +227,7 @@ impl Tty {
 
         // Status segments on the right, from the right edge.
         let mut right = w - PAD;
-        let divider = |c: &mut Canvas, x: i32| c.rect(rect(x, 8, 1, BAR_HEIGHT - 17), 0.0, HAIRLINE, 0.0, [0.0; 4]);
+        let divider = |c: &mut Canvas, x: i32| c.rect(rect(x, oy + 8, 1, BAR_HEIGHT - 17), 0.0, HAIRLINE, 0.0, [0.0; 4]);
         let time = crate::ui::theme::LocalTime::now();
         let clock = format!("{} {:02} {} {:02}:{:02}", &time.weekday_name()[..3], time.day, &time.month_name()[..3], time.hour, time.minute);
         let clock_w = c.text.measure(&clock, style(TEXT)).ceil() as i32;
@@ -258,7 +259,7 @@ impl Tty {
             c.styled_label(renderer, text, right, text_y, text_w + 4, style(text_color));
             right -= 4 + ICON;
             let refs: Vec<&str> = names.iter().map(String::as_str).collect();
-            let icon = rect(right, (BAR_HEIGHT - 1 - ICON) / 2, ICON, ICON);
+            let icon = rect(right, oy + (BAR_HEIGHT - 1 - ICON) / 2, ICON, ICON);
             c.colored_icon(renderer, &mut view.icons, &refs, frame.icon_theme, icon, Some(*color));
             let _ = FULL_COLOR;
             divider(c, right - segment_gap / 2 - 1);
@@ -298,8 +299,15 @@ impl Tty {
         size: Size<i32, Logical>,
         scale: f64,
         frame: &Frame,
+        look: f64,
     ) -> Vec<Elem> {
         let mut elements = Vec::new();
+        if look < 0.999 {
+            // Mid transition: only the console black, rising over the
+            // wallpaper; the panes still have their GAVNO frames.
+            elements.push(self.vignette(renderer, size, scale, look as f32));
+            return elements;
+        }
         let origin = frame.space.output_geometry(output).unwrap_or_default().loc;
         let accent = [frame.accent[0], frame.accent[1], frame.accent[2], 1.0];
         let panes: Vec<Rectangle<i32, Logical>> = frame
@@ -328,11 +336,11 @@ impl Tty {
             c.rect(outer, 0.0, [0.0; 4], 1.0, color);
         }
         elements.extend(c.finish());
-        elements.push(self.vignette(renderer, size, scale));
+        elements.push(self.vignette(renderer, size, scale, 1.0));
         elements
     }
 
-    fn vignette(&mut self, renderer: &mut GlesRenderer, size: Size<i32, Logical>, _scale: f64) -> Elem {
+    fn vignette(&mut self, renderer: &mut GlesRenderer, size: Size<i32, Logical>, _scale: f64, alpha: f32) -> Elem {
         let width = 480;
         let height = ((width as f64 * size.h as f64 / size.w.max(1) as f64).round() as i32).max(8);
         if self.view.vignette.as_ref().is_none_or(|(key, _)| *key != (width, height)) {
@@ -351,7 +359,7 @@ impl Tty {
             renderer,
             (0.0, 0.0),
             buffer,
-            Some(1.0),
+            Some(alpha),
             Some(Rectangle::from_size((width as f64, height as f64).into())),
             Some(size),
             Kind::Unspecified,
@@ -363,84 +371,10 @@ impl Tty {
                 smithay::backend::renderer::element::Id::new(),
                 Rectangle::from_size(size.to_physical_precise_round(1)),
                 smithay::backend::renderer::utils::CommitCounter::default(),
-                [0.04, 0.04, 0.05, 1.0],
+                [0.04, 0.04, 0.05, alpha],
                 Kind::Unspecified,
             )),
         }
     }
-
-    /// Wraps the finished frame in the CRT animation: the picture collapses
-    /// to a bright line (power off) or grows out of one (power on). Returns
-    /// `elements` untouched when no animation runs.
-    pub(crate) fn crt_wrap(
-        &mut self,
-        renderer: &mut GlesRenderer,
-        elements: Vec<Elem>,
-        size: Size<i32, Logical>,
-        scale: f64,
-        now: Duration,
-    ) -> Vec<Elem> {
-        let Some((start, power_on)) = self.crt else { return elements };
-        let t = (now.saturating_sub(start).as_secs_f64() / CRT_TIME.as_secs_f64()).clamp(0.0, 1.0);
-        if power_on && t >= 1.0 {
-            return elements;
-        }
-        let position = if power_on { t } else { 1.0 - t };
-        let (fraction, line_alpha) = crt_shape(position);
-        let physical = (
-            (size.w as f64 * scale).round() as i32,
-            (size.h as f64 * scale).round() as i32,
-        );
-        let mut result = Vec::new();
-        let c = &mut self.view.front;
-        c.begin(renderer, scale);
-        // Drawn first, so it ends up behind everything.
-        c.rect(rect(0, 0, size.w, size.h), 0.0, [0.0, 0.0, 0.0, 1.0], 0.0, [0.0; 4]);
-        let middle = size.h / 2;
-        if line_alpha > 0.0 {
-            let line = rect(0, middle - 1, size.w, 2);
-            c.glow(rect(size.w / 8, middle - 1, size.w * 3 / 4, 2), 1.0, 14, [0.85, 0.9, 1.0, 0.55 * line_alpha]);
-            c.rect(line, 0.0, [0.92, 0.95, 1.0, line_alpha], 0.0, [0.0; 4]);
-        }
-        let backdrop = c.finish();
-        let height = (size.h as f64 * fraction).round() as i32;
-        if height >= 1 {
-            if let Some(texture) = render_texture(renderer, &elements, physical, scale) {
-                let buffer = TextureBuffer::from_texture(renderer, texture, 1, Transform::Normal, None);
-                let top = ((size.h - height) as f64 / 2.0 * scale).round();
-                result.push(GavnoRenderElement::Texture(TextureRenderElement::from_texture_buffer(
-                    Point::from((0.0, top)),
-                    &buffer,
-                    Some(1.0),
-                    Some(Rectangle::from_size((physical.0 as f64, physical.1 as f64).into())),
-                    Some((size.w, height).into()),
-                    Kind::Unspecified,
-                )));
-            }
-        }
-        // The line is in front of the picture, the black behind it.
-        let mut backdrop = backdrop.into_iter();
-        let (front, back): (Vec<_>, Vec<_>) = {
-            let all: Vec<_> = backdrop.by_ref().collect();
-            let count = all.len();
-            let mut all = all.into_iter();
-            let front: Vec<_> = all.by_ref().take(count.saturating_sub(1)).collect();
-            (front, all.collect())
-        };
-        let mut out = front;
-        out.extend(result);
-        out.extend(back);
-        out
-    }
 }
 
-/// Draws `elements` into a texture of `size` physical pixels.
-fn render_texture(renderer: &mut GlesRenderer, elements: &[Elem], size: (i32, i32), scale: f64) -> Option<GlesTexture> {
-    let mut texture: GlesTexture = renderer.create_buffer(Fourcc::Abgr8888, size.into()).ok()?;
-    {
-        let mut target = renderer.bind(&mut texture).ok()?;
-        let mut tracker = OutputDamageTracker::new(size, scale, Transform::Normal);
-        tracker.render_output(renderer, &mut target, 0, elements, [0.0; 4]).ok()?;
-    }
-    Some(texture)
-}

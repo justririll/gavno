@@ -16,8 +16,11 @@ and it resumes when the GAVNO shell returns. Gesture strip: TTY - GAVNO - Classi
 - `[tty] start = true` forces it at start; otherwise the last mode is remembered,
   see [config.md](config.md#start-mode).
 
-Entering plays a CRT power-on (200 ms): the screen grows out of a bright line.
-Leaving plays it backwards. The animation costs frames only while it runs.
+Entering and leaving is one transition, like the Classic switch: the bar and the
+dock slide away, the wallpaper sinks into the console black and the status line
+slides in from the top. A Super swipe drags it under the fingers and springs
+back if released early; Mod+Shift+T plays it on its own. The mode itself (tiling,
+no mouse) switches at once. The transition costs frames only while it moves.
 
 ## The status line
 

@@ -4,9 +4,13 @@
 //! workspace tiles its windows like tmux panes with 1 px dividers. There is no
 //! mouse, dock, decoration or wallpaper. Classic never enters it.
 //!
-//! Nothing here costs anything while the screen is settled: the only timers
-//! are the minute-aligned clock tick, a one-shot that ends the power-off
-//! animation, and the springs and fades while they move.
+//! Entering and leaving is one spring, `progress` (0 = GAVNO, 1 = console),
+//! that a Super swipe drags like the Classic switch: the bar and the dock
+//! slide away, the wallpaper sinks into the console black and the status line
+//! slides in. The mode itself (tiling, no mouse) switches at once.
+//!
+//! Nothing here costs anything while the screen is settled: the only timer
+//! is the minute-aligned clock tick; springs and fades only while they move.
 
 use std::time::Duration;
 
@@ -18,12 +22,13 @@ use smithay::{
     },
 };
 
-use crate::Gavno;
+use crate::{
+    ui::spring::{Spring, SpringParams},
+    Gavno,
+};
 
 pub(crate) mod draw;
 
-/// CRT power-on and power-off, in total.
-pub const CRT_TIME: Duration = Duration::from_millis(200);
 /// The dip through black after a console switch.
 pub const FADE_TIME: Duration = Duration::from_millis(120);
 /// Height of the status line on top, in logical pixels.
@@ -39,28 +44,16 @@ pub(crate) fn fade_cover(start: Duration, now: Duration) -> f32 {
     (1.0 - t).powi(2) as f32
 }
 
-/// CRT shape at animation position `p` (0 = dark, 1 = fully on): the height
-/// of the picture as a fraction of the screen and the brightness of the line.
-pub(crate) fn crt_shape(p: f64) -> (f64, f32) {
-    const LINE_ONLY: f64 = 0.3;
-    let p = p.clamp(0.0, 1.0);
-    if p < LINE_ONLY {
-        return (0.0, 1.0);
-    }
-    let q = (p - LINE_ONLY) / (1.0 - LINE_ONLY);
-    (crate::ui::style::ease_out(q), (1.0 - q * 1.6).clamp(0.0, 1.0) as f32)
-}
 
 pub struct Tty {
     /// The mode itself; false while Classic owns the shell.
     pub(crate) on: bool,
     /// Tiling of every workspace before TTY mode forced it.
     pub(crate) saved: Vec<(Output, u64, bool)>,
-    /// The power-off animation runs; the mode ends when it is over.
-    pub(crate) closing: bool,
-    /// Start of the running CRT animation and whether it powers on.
-    crt: Option<(Duration, bool)>,
-    crt_timer: Option<RegistrationToken>,
+    /// How far the screen is in the console look: 0 GAVNO, 1 console.
+    pub(crate) progress: Spring,
+    /// A swipe holds `progress` under the fingers.
+    pub(crate) held: bool,
     /// Start of the console switch fade.
     fade: Option<Duration>,
     /// The clock of the status line wakes once per minute.
@@ -77,9 +70,8 @@ impl Default for Tty {
         Self {
             on: false,
             saved: Vec::new(),
-            closing: false,
-            crt: None,
-            crt_timer: None,
+            progress: Spring::new(0.0, SpringParams::SMOOTH),
+            held: false,
             fade: None,
             clock_timer: None,
             last_spawn: None,
@@ -91,24 +83,37 @@ impl Default for Tty {
 }
 
 impl Tty {
-    /// The mode is on and not on its way out.
+    /// The mode is on.
     pub(crate) fn active(&self) -> bool {
-        self.on && !self.closing
+        self.on
+    }
+    /// The look, 0 GAVNO .. 1 console, clamped.
+    pub(crate) fn look(&self) -> f64 {
+        self.progress.value.clamp(0.0, 1.0)
+    }
+    /// The screen is the console and nothing of GAVNO shows any more.
+    pub(crate) fn settled_console(&self) -> bool {
+        self.on && !self.held && !self.progress.is_active() && self.look() > 0.999
+    }
+    /// Part of the console look shows over GAVNO, or the other way round.
+    pub(crate) fn in_transition(&self) -> bool {
+        !self.settled_console() && (self.held || self.progress.is_active() || self.look() > 0.001)
     }
     /// The status line shows, so the status worker should run.
     pub(crate) fn status_wanted(&self) -> bool {
         self.on
     }
     pub(crate) fn animating(&self, now: Duration) -> bool {
-        self.on
-            && (self.crt.is_some_and(|(start, _)| now < start + CRT_TIME)
-                || self.fade.is_some_and(|start| now < start + FADE_TIME)
-                || self.view.tabs_active())
+        self.held
+            || self.progress.is_active()
+            || (self.on
+                && (self.fade.is_some_and(|start| now < start + FADE_TIME)
+                    || self.view.tabs_active()))
     }
     /// Timers currently armed, for the zero-idle-cost checks.
     #[cfg(test)]
     pub(crate) fn timers_armed(&self) -> bool {
-        self.clock_timer.is_some() || self.crt_timer.is_some()
+        self.clock_timer.is_some()
     }
     /// The SPAWN_GUARD check, recording the spawn when it is allowed.
     fn may_spawn(&mut self, now: Duration) -> bool {
@@ -142,68 +147,44 @@ impl Gavno {
     }
 
     /// Turns TTY mode on or off. In Classic the request is only remembered and
-    /// applied when the shell returns. Leaving plays the power-off animation
-    /// first, so the mode ends 200 ms after the request.
+    /// applied when the shell returns. The mode switches at once; the look
+    /// follows on the `progress` spring.
     pub fn set_tty_mode(&mut self, enable: bool) {
         if !self.tty.on && (self.classic_mode() || self.classic.windows.in_classic()) {
             self.classic.windows.set_tty_resume(enable);
             return;
         }
         let now = self.start_time.elapsed();
-        if enable {
-            if self.tty.closing {
-                self.cancel_tty_leave();
-                self.tty.crt = Some((now, true));
-                self.queue_redraw_all();
-                return;
-            }
-            if self.tty.on {
-                return;
-            }
-            self.apply_tty_mode(true);
-            if self.tty_animates() {
-                self.tty.crt = Some((now, true));
-            }
-            self.tty_console_entered(now);
-            self.queue_redraw_all();
+        self.tty.held = false;
+        let target = if enable { 1.0 } else { 0.0 };
+        if self.tty_animates() {
+            self.tty.progress.advance(now);
+            self.tty.progress.set(target);
         } else {
-            if !self.tty.on || self.tty.closing {
-                return;
-            }
-            if !self.tty_animates() {
-                self.apply_tty_mode(false);
-                return;
-            }
-            self.tty.closing = true;
-            self.tty.crt = Some((now, false));
-            self.tty.crt_timer = self
-                .loop_handle
-                .insert_source(Timer::from_duration(CRT_TIME), |_, _, gv| {
-                    let _stall = crate::perf::Stall::new("timer.tty_power_off");
-                    gv.tty.crt_timer = None;
-                    gv.finish_tty_leave();
-                    TimeoutAction::Drop
-                })
-                .ok();
-            if self.tty.crt_timer.is_none() {
-                self.finish_tty_leave();
-                return;
-            }
-            self.queue_redraw_all();
+            self.tty.progress.jump(target);
         }
+        if self.tty.on != enable {
+            self.apply_tty_mode(enable);
+            if enable {
+                self.tty_console_entered(now);
+            }
+        }
+        self.queue_redraw_all();
     }
 
-    fn cancel_tty_leave(&mut self) {
-        self.tty.closing = false;
-        if let Some(token) = self.tty.crt_timer.take() {
-            self.loop_handle.remove(token);
-        }
+    /// The swipe ended without switching: spring back to where it started.
+    pub(crate) fn tty_release(&mut self, velocity: f64) {
+        let now = self.start_time.elapsed();
+        self.tty.held = false;
+        self.tty.progress.end_follow(velocity, now);
+        self.tty.progress.set(if self.tty.on { 1.0 } else { 0.0 });
+        self.queue_redraw_all();
     }
 
-    /// Ends the mode at once: the end of the power-off animation, and Classic.
+    /// Ends the mode at once, without animation (Classic took over).
     pub(crate) fn finish_tty_leave(&mut self) {
-        self.cancel_tty_leave();
-        self.tty.crt = None;
+        self.tty.held = false;
+        self.tty.progress.jump(0.0);
         self.apply_tty_mode(false);
         self.queue_redraw_all();
     }
@@ -310,8 +291,8 @@ impl Gavno {
         if !self.tty.on {
             return None;
         }
-        self.cancel_tty_leave();
-        self.tty.crt = None;
+        self.tty.held = false;
+        self.tty.progress.jump(0.0);
         self.tty.on = false;
         self.tty_reset_view();
         self.sync_tty_flags();
@@ -382,7 +363,7 @@ impl Gavno {
     /// Per refresh pass: the clock tick and the pointer focus, which stays on
     /// the focused window so that scrolling reaches it without a mouse.
     pub(crate) fn refresh_tty(&mut self) {
-        let wanted = self.tty.on && !self.tty.closing && !self.power.is_off();
+        let wanted = self.tty.on && !self.power.is_off();
         match (wanted, self.tty.clock_timer.is_some()) {
             (true, false) => {
                 let second = crate::ui::theme::LocalTime::now().second as u64;

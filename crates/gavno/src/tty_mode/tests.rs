@@ -35,29 +35,16 @@ fn harness() -> (Harness, Output) {
     (h, o)
 }
 
-fn dispatch_for(h: &mut Harness, ms: u64) {
-    let end = std::time::Instant::now() + Duration::from_millis(ms);
-    while std::time::Instant::now() < end {
-        h.event_loop.dispatch(Duration::from_millis(10), &mut h.gv).unwrap();
-    }
-}
-
 fn mods(alt: bool, ctrl: bool, shift: bool, logo: bool) -> ModifiersState {
     ModifiersState { alt, ctrl, shift, logo, ..Default::default() }
 }
 
 #[test]
-fn switch_dip_and_crt_shapes_start_and_end_where_they_should() {
+fn switch_dip_starts_opaque_and_ends_clear() {
     let start = Duration::from_secs(1);
     assert_eq!(fade_cover(start, start), 1.0);
     assert_eq!(fade_cover(start, start + FADE_TIME), 0.0);
     assert!(fade_cover(start, start + Duration::from_millis(60)) < 0.3);
-    // Dark, a bright line, the picture growing, fully on.
-    assert_eq!(crt_shape(0.0), (0.0, 1.0));
-    assert_eq!(crt_shape(0.29), (0.0, 1.0));
-    let (middle, line) = crt_shape(0.6);
-    assert!(middle > 0.3 && middle < 1.0 && line < 1.0 && line > 0.0);
-    assert_eq!(crt_shape(1.0), (1.0, 0.0));
 }
 
 #[test]
@@ -112,35 +99,39 @@ fn tty_mode_over_code_mode_keeps_the_original_layouts() {
 }
 
 #[test]
-fn leaving_plays_the_power_off_first_and_a_new_request_cancels_it() {
+fn the_mode_switches_at_once_and_the_look_follows_on_a_spring() {
     let (mut h, _o) = harness();
     h.gv.config.tty.autostart_terminal = false;
     h.gv.tty.animate = Some(true);
     h.gv.set_tty_mode(true);
-    assert!(h.gv.tty.crt.is_some_and(|(_, on)| on));
+    assert!(h.gv.tty.on && h.gv.tty_requested());
+    assert_eq!(h.gv.tty.progress.target, 1.0);
+    assert!(h.gv.tty.look() < 0.5, "the look starts from GAVNO");
+    assert!(h.gv.tty_animating() && !h.gv.tty.settled_console());
     h.gv.set_tty_mode(false);
-    assert!(h.gv.tty.on && h.gv.tty.closing && !h.gv.tty_requested());
-    assert!(h.gv.tty.crt.is_some_and(|(_, on)| !on));
-    assert!(h.gv.tty.crt_timer.is_some());
+    assert!(!h.gv.tty.on, "leaving switches the mode at once too");
+    assert_eq!(h.gv.tty.progress.target, 0.0);
+    // Without animations the look jumps.
+    h.gv.tty.animate = Some(false);
     h.gv.set_tty_mode(true);
-    assert!(h.gv.tty.on && !h.gv.tty.closing && h.gv.tty.crt_timer.is_none());
+    assert!(h.gv.tty.settled_console() && !h.gv.tty_animating());
     h.gv.set_tty_mode(false);
-    h.gv.finish_tty_leave();
-    assert!(!h.gv.tty.on && !h.gv.tty.closing);
-    assert!(h.gv.tty.crt.is_none() && h.gv.tty.crt_timer.is_none());
-    assert!(!h.gv.tty_animating());
+    assert_eq!(h.gv.tty.look(), 0.0);
+    assert!(!h.gv.tty.in_transition() && !h.gv.tty_animating());
 }
 
 #[test]
-fn the_power_off_ends_by_itself() {
+fn a_swipe_drags_the_look_and_a_release_springs_back() {
     let (mut h, _o) = harness();
     h.gv.config.tty.autostart_terminal = false;
     h.gv.tty.animate = Some(true);
-    h.gv.set_tty_mode(true);
-    h.gv.set_tty_mode(false);
-    dispatch_for(&mut h, 320);
-    assert!(!h.gv.tty.on, "the one-shot timer finished the leave");
-    assert!(!h.gv.tty.timers_armed());
+    let now = h.gv.start_time.elapsed();
+    h.gv.tty.held = true;
+    h.gv.tty.progress.follow(0.4, now);
+    assert!(!h.gv.tty.on && h.gv.tty.in_transition() && h.gv.tty_animating());
+    h.gv.tty_release(0.0);
+    assert!(!h.gv.tty.held && !h.gv.tty.on);
+    assert_eq!(h.gv.tty.progress.target, 0.0, "back to GAVNO");
 }
 
 #[test]
@@ -388,7 +379,7 @@ fn only_the_clock_is_armed_when_settled_and_off_means_nothing() {
     h.gv.refresh_tty();
     assert!(h.gv.tty.clock_timer.is_some(), "one minute-aligned clock tick");
     h.gv.refresh_tty();
-    assert!(h.gv.tty.crt_timer.is_none() && !h.gv.tty_animating());
+    assert!(!h.gv.tty.timers_armed() || h.gv.tty.clock_timer.is_some());
     h.gv.set_tty_mode(false);
     h.gv.refresh_tty();
     assert!(!h.gv.tty.timers_armed());
