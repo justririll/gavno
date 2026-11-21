@@ -168,8 +168,9 @@ const KEYS: &[Key] = &[
     Key { elev: -8.0, top: 0x101b3f, bottom: 0x3a2f5c, a: 0x5b2f6b, b: 0x1d3d6b, glow: 0x9a7bd0, glow_k: 0.18 },
     Key { elev: -2.0, top: 0x1f3570, bottom: 0xc26b5a, a: 0x8a3f6e, b: 0x2c5a8f, glow: 0xff9a6a, glow_k: 0.45 },
     Key { elev: 6.0, top: 0x3c6fb0, bottom: 0xf2a65e, a: 0xe0785c, b: 0x6aa7d8, glow: 0xffd08a, glow_k: 0.55 },
-    Key { elev: 20.0, top: 0x2f6fd6, bottom: 0x9cc9f5, a: 0x76b3ff, b: 0xb9e3ff, glow: 0xfff3d6, glow_k: 0.35 },
-    Key { elev: 60.0, top: 0x2563c9, bottom: 0x8fc2f2, a: 0x5ea2f5, b: 0xc8ecff, glow: 0xffffff, glow_k: 0.30 },
+    // Daytime stays a deep, calm blue: bright pastel skies glared behind windows.
+    Key { elev: 20.0, top: 0x1e4f9c, bottom: 0x4f86c2, a: 0x3d78c8, b: 0x6fa3d6, glow: 0xffe6c4, glow_k: 0.24 },
+    Key { elev: 60.0, top: 0x1a4690, bottom: 0x4677b2, a: 0x346bb8, b: 0x6797c9, glow: 0xfff1dc, glow_k: 0.20 },
 ];
 
 /// Season tint: warmer in summer, cooler and paler in winter.
