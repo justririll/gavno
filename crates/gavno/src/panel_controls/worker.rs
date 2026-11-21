@@ -90,7 +90,7 @@ fn signals(
                         .header()
                         .path()
                         .is_some_and(|p| p.as_str().contains("/AccessPoint/"));
-                    if noisy && !visible.load(Ordering::Relaxed) {
+                    if (noisy || (service == "org.freedesktop.NetworkManager" && crate::topbar::status::nm_noise(&message))) && !visible.load(Ordering::Relaxed) {
                         continue;
                     }
                     if sender.send(Command::Refresh).is_err() {

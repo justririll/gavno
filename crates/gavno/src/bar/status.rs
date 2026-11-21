@@ -36,6 +36,36 @@ pub fn parse_wpctl(text: &str) -> Option<Volume> {
         muted: !tail.is_empty(),
     })
 }
+/// NetworkManager properties that change on every background Wi-Fi scan but
+/// never change what the bar or the closed panel shows.
+const NM_NOISE: &[&str] = &["LastScan", "AccessPoints", "LastSeen", "RefreshRateMs", "TxBytes", "RxBytes", "Bitrate", "Frequency", "HwAddress", "Flags", "WpaFlags", "RsnFlags", "Mode", "MaxBitrate", "BandwidthMhz"];
+/// The property names of a `PropertiesChanged` signal, `None` for any other
+/// message or a body that does not parse.
+fn changed_properties(message: &zbus::Message) -> Option<(std::collections::HashMap<String, zbus::zvariant::OwnedValue>, Vec<String>)> {
+    let header = message.header();
+    if header.member().is_none_or(|m| m.as_str() != "PropertiesChanged") {
+        return None;
+    }
+    let (_, changed, invalidated) = message
+        .body()
+        .deserialize::<(String, std::collections::HashMap<String, zbus::zvariant::OwnedValue>, Vec<String>)>()
+        .ok()?;
+    Some((changed, invalidated))
+}
+/// Whether a NetworkManager signal only carries scan bookkeeping.
+pub(crate) fn nm_noise(message: &zbus::Message) -> bool {
+    changed_properties(message).is_some_and(|(changed, invalidated)| {
+        invalidated.is_empty() && !changed.is_empty() && changed.keys().all(|k| NM_NOISE.contains(&k.as_str()))
+    })
+}
+/// The new strength when an access point signal changes only that (and noise).
+fn strength_only(message: &zbus::Message) -> Option<u8> {
+    let (changed, invalidated) = changed_properties(message)?;
+    if !invalidated.is_empty() || changed.keys().any(|k| k != "Strength" && !NM_NOISE.contains(&k.as_str())) {
+        return None;
+    }
+    u8::try_from(changed.get("Strength")?.clone()).ok()
+}
 pub fn strength_icon(strength: u8) -> &'static str {
     match strength {
         80.. => "network-wireless-signal-excellent-symbolic",
@@ -306,7 +336,12 @@ fn fallback_network() -> Network {
 }
 /// Reads the active power profile. Absent daemon or bus means no profile row.
 fn read_power_profile() -> Option<String> {
-    let connection = Connection::system().ok()?;
+    // One system bus connection for the life of the status thread instead of
+    // a new one (Hello, AddMatch, …) every refresh.
+    thread_local! {
+        static SYSTEM: std::cell::OnceCell<Option<Connection>> = const { std::cell::OnceCell::new() };
+    }
+    let connection = SYSTEM.with(|c| c.get_or_init(|| Connection::system().ok()).clone())?;
     let proxy = Builder::<Proxy>::new(&connection)
         .destination("net.hadess.PowerProfiles")
         .ok()?
@@ -639,6 +674,21 @@ fn network_worker(commands: &Sender<Command>) -> zbus::Result<()> {
         if !owner_changed && !property_changed {
             continue;
         }
+        if property_changed && nm_noise(&message) {
+            continue;
+        }
+        // The active access point's strength moves constantly: take it from
+        // the signal instead of re-reading NetworkManager.
+        if let (Some(strength), Some(Network::Wifi { ssid, .. })) = (strength_only(&message).filter(|_| property_changed), previous.as_ref()) {
+            let network = Some(Network::Wifi { ssid: ssid.clone(), strength });
+            if previous.as_ref().map(Network::icon) != network.as_ref().map(Network::icon) {
+                if commands.send(Command::Network(network.clone())).is_err() {
+                    break;
+                }
+                previous = network;
+            }
+            continue;
+        }
         let network = match network_snapshot(&connection) {
             Ok((network, new_paths)) => {
                 paths = new_paths;
@@ -663,6 +713,26 @@ fn network_worker(commands: &Sender<Command>) -> zbus::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn properties_changed(changed: &[(&str, zbus::zvariant::Value<'_>)]) -> zbus::Message {
+        let map: std::collections::HashMap<String, zbus::zvariant::Value<'_>> = changed.iter().map(|(k, v)| (k.to_string(), v.try_clone().unwrap())).collect();
+        zbus::Message::signal("/org/freedesktop/NetworkManager/AccessPoint/1", "org.freedesktop.DBus.Properties", "PropertiesChanged")
+            .unwrap()
+            .build(&("org.freedesktop.NetworkManager.AccessPoint", map, Vec::<String>::new()))
+            .unwrap()
+    }
+    #[test]
+    fn scan_bookkeeping_is_noise_and_strength_comes_from_the_signal() {
+        use zbus::zvariant::Value;
+        let scan = properties_changed(&[("LastScan", Value::I64(123)), ("AccessPoints", Value::from(Vec::<String>::new()))]);
+        assert!(nm_noise(&scan));
+        assert_eq!(strength_only(&scan), None, "no strength in it");
+        let strength = properties_changed(&[("Strength", Value::U8(61)), ("LastSeen", Value::I32(9))]);
+        assert!(!nm_noise(&strength));
+        assert_eq!(strength_only(&strength), Some(61));
+        let state = properties_changed(&[("Strength", Value::U8(61)), ("State", Value::U32(100))]);
+        assert!(!nm_noise(&state));
+        assert_eq!(strength_only(&state), None, "anything else re-reads NetworkManager");
+    }
     #[test]
     fn volume_click_needs_sound_on_audible_and_a_gap() {
         let now = Instant::now();
