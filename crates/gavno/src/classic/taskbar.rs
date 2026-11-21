@@ -328,7 +328,11 @@ impl Taskbar {
             r.loc.y += dy;
             r
         };
-        c.glass(shift(l.bar), 0.0, crate::ui::glass::tone::CLEAR, GLASS, 0.0, LINE);
+        // A soft shadow rising above the bar separates it from windows and a
+        // bright wallpaper; the wash is a little deeper than the clear tone.
+        c.glow(shift(rect(l.bar.loc.x, l.bar.loc.y + 6, l.bar.size.w, l.bar.size.h)), 0.0, 22, [0.0, 0.0, 0.0, 0.34]);
+        let tone = crate::ui::glass::Tone { wash: [0.035, 0.04, 0.06, 0.46], ..crate::ui::glass::tone::CLEAR };
+        c.glass(shift(l.bar), 0.0, tone, GLASS, 0.0, LINE);
         c.rect(shift(rect(0, l.bar.loc.y, size.w, 1)), 0.0, LINE, 0.0, LINE);
         v.hits.push((shift(l.bar), Hit::Consume));
         let mut button = |c: &mut Canvas, r: Rect, hit: Hit| {
