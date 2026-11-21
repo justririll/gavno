@@ -130,7 +130,9 @@ pub fn read_battery(root: &Path) -> Option<Battery> {
             })?
             .min(100) as u8;
         let status = read(&path, "status").unwrap_or_default();
-        let number = |key: &str| read(&path, key).and_then(|v| v.parse::<u64>().ok());
+        // Some firmware (Qualcomm battmgr) reports power and current signed,
+        // negative while discharging; only the magnitude matters here.
+        let number = |key: &str| read(&path, key).and_then(|v| v.parse::<i64>().ok()).map(i64::unsigned_abs);
         // Energy (µWh) over power (µW), or charge (µAh) over current (µA).
         let (now, full, rate) = if number("energy_now").is_some() {
             (number("energy_now"), number("energy_full"), number("power_now"))

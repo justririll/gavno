@@ -435,6 +435,10 @@ fn battery_summary_and_estimates_from_sysfs() {
     }
     let b = crate::topbar::read_battery(&root).unwrap();
     assert_eq!((b.minutes, b.milliwatts, b.power().as_deref()), (Some(150), Some(10000), Some("10.0 W")));
+    std::fs::write(dir.join("power_now"), "-10000000").unwrap();
+    let b = crate::topbar::read_battery(&root).unwrap();
+    assert_eq!((b.minutes, b.milliwatts), (Some(150), Some(10000)), "signed power_now (Qualcomm)");
+    std::fs::write(dir.join("power_now"), "10000000").unwrap();
     std::fs::write(dir.join("status"), "Charging").unwrap();
     assert_eq!(crate::topbar::read_battery(&root).unwrap().minutes, Some(150));
     std::fs::write(dir.join("power_now"), "0").unwrap();
