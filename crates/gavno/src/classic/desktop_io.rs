@@ -522,7 +522,7 @@ impl Gavno {
                                 Some(index) => {
                                     self.classic.desktop.selection.items = std::iter::once(index).collect();
                                     self.classic.desktop.selection.anchor = Some(index);
-                                    self.start_desktop_rename(index, true);
+                                    self.start_desktop_rename(index);
                                 }
                                 None => self.classic.desktop.pending_rename = Some(name),
                             }
@@ -889,9 +889,6 @@ pub fn create_entry(paths: &Paths, kind: &super::desktop_menu::NewKind, template
         let name = if n == 1 { base.clone() } else { format!("{stem} {n}{ext}") };
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
-        if *kind == NewKind::Script {
-            options.mode(0o755);
-        }
         match options.open(paths.desktop.join(&name)) {
             Ok(mut file) => {
                 file.write_all(source.as_deref().unwrap_or(kind.contents().as_bytes()))?;
@@ -1092,11 +1089,9 @@ mod menu_io_tests {
         let p = paths("new");
         assert_eq!(create_entry(&p, &NewKind::Text, None).unwrap(), "New text document.txt");
         assert_eq!(create_entry(&p, &NewKind::Text, None).unwrap(), "New text document 2.txt");
-        assert_eq!(create_entry(&p, &NewKind::Cpp, None).unwrap(), "main.cpp");
-        assert!(fs::read_to_string(p.desktop.join("main.cpp")).unwrap().contains("int main()"));
-        let script = create_entry(&p, &NewKind::Script, None).unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        assert_eq!(fs::metadata(p.desktop.join(script)).unwrap().permissions().mode() & 0o111, 0o111);
+        assert_eq!(create_entry(&p, &NewKind::File, None).unwrap(), "New file");
+        assert_eq!(create_entry(&p, &NewKind::File, None).unwrap(), "New file 2");
+        assert!(fs::read(p.desktop.join("New file")).unwrap().is_empty());
         fs::create_dir_all(p.home.join("Templates")).unwrap();
         fs::write(p.home.join("Templates/Lab.cpp"), "// lab\n").unwrap();
         let made = create_entry(&p, &NewKind::Template("Lab.cpp".into()), Some(&p.home.join("Templates"))).unwrap();

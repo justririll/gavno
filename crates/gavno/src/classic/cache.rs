@@ -228,6 +228,10 @@ impl Layer {
             },
         ));
     }
+    /// Width in logical pixels of `value` drawn by `label` at `size`.
+    pub fn measure(&mut self, value: &str, size: f32) -> f32 {
+        self.text.get_or_insert_with(TextRenderer::new).measure(value, label_style(size))
+    }
     pub fn label(&mut self, value: &str, r: Rect, size: f32, lines: usize, center: bool) {
         self.styled_label(value, r, label_style(size), lines, center);
     }

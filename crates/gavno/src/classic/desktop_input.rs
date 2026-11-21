@@ -454,10 +454,10 @@ impl Gavno {
         })
     }
     fn rename_desktop_item(&mut self, index: usize) {
-        self.start_desktop_rename(index, false);
+        self.start_desktop_rename(index);
     }
-    /// `stem`: select the name without its extension, as after creating it.
-    pub(super) fn start_desktop_rename(&mut self, index: usize, stem: bool) {
+    /// Starts renaming with the whole name selected, extension included.
+    pub(super) fn start_desktop_rename(&mut self, index: usize) {
         if let Some(item) = self
             .classic
             .desktop
@@ -465,11 +465,7 @@ impl Gavno {
             .get(index)
             .filter(|item| item.real())
         {
-            let select_to = if stem && item.kind == Kind::File {
-                desktop_io::split_name(&item.name).0.len()
-            } else {
-                item.name.len()
-            };
+            let select_to = item.name.len();
             self.classic.desktop.rename = Some(Rename {
                 index,
                 value: item.name.clone(),

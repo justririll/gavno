@@ -19,11 +19,9 @@ const PAD: i32 = 6;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NewKind {
     Folder,
+    /// An empty file without an extension: type the whole name, `main.cpp`.
+    File,
     Text,
-    Cpp,
-    C,
-    Markdown,
-    Script,
     /// A file from `~/Templates`.
     Template(String),
 }
@@ -33,42 +31,27 @@ impl NewKind {
     pub fn base_name(&self) -> String {
         match self {
             NewKind::Folder => "New folder".into(),
+            NewKind::File => "New file".into(),
             NewKind::Text => "New text document.txt".into(),
-            NewKind::Cpp => "main.cpp".into(),
-            NewKind::C => "main.c".into(),
-            NewKind::Markdown => "New document.md".into(),
-            NewKind::Script => "script.sh".into(),
             NewKind::Template(name) => name.clone(),
         }
     }
     pub fn contents(&self) -> &'static str {
-        match self {
-            NewKind::Cpp => "#include <iostream>\n\nint main() {\n    std::cout << \"Hello\\n\";\n    return 0;\n}\n",
-            NewKind::C => "#include <stdio.h>\n\nint main(void) {\n    printf(\"Hello\\n\");\n    return 0;\n}\n",
-            NewKind::Markdown => "# \n",
-            NewKind::Script => "#!/bin/sh\nset -eu\n\n",
-            _ => "",
-        }
+        ""
     }
     fn label(&self) -> String {
         match self {
             NewKind::Folder => "Folder".into(),
+            NewKind::File => "Empty file".into(),
             NewKind::Text => "Text document".into(),
-            NewKind::Cpp => "C++ source".into(),
-            NewKind::C => "C source".into(),
-            NewKind::Markdown => "Markdown".into(),
-            NewKind::Script => "Shell script".into(),
             NewKind::Template(name) => name.clone(),
         }
     }
     fn icon(&self) -> &'static str {
         match self {
             NewKind::Folder => "folder",
+            NewKind::File => "text-x-generic",
             NewKind::Text | NewKind::Template(_) => "text-x-generic",
-            NewKind::Cpp => "text-x-c++src",
-            NewKind::C => "text-x-csrc",
-            NewKind::Markdown => "text-markdown",
-            NewKind::Script => "text-x-script",
         }
     }
 }
@@ -245,7 +228,7 @@ impl Menu {
     pub fn sub_rows(&self, sub: Sub) -> Vec<Row> {
         match sub {
             Sub::New => {
-                let mut kinds = vec![NewKind::Folder, NewKind::Text, NewKind::Cpp, NewKind::C, NewKind::Markdown, NewKind::Script];
+                let mut kinds = vec![NewKind::Folder, NewKind::File, NewKind::Text];
                 let mut rows: Vec<Row> = kinds.drain(..).map(|k| {
                     let (label, icon) = (k.label(), k.icon());
                     Row::action(MenuAction::New(k), label, icon, "")
@@ -439,8 +422,8 @@ mod tests {
         assert_eq!(m.sub, Some((Sub::New, 0)));
         let sub = m.sub_rect(bounds()).unwrap();
         assert!(sub.loc.x >= panel.loc.x + panel.size.w - 4, "opens to the right");
-        let cpp = Point::from((f64::from(sub.loc.x + 40), f64::from(sub.loc.y + PAD + 2 * ROW + 10)));
-        assert_eq!(m.click(cpp, bounds()), Ok(Some(MenuAction::New(NewKind::Cpp))));
+        let file = Point::from((f64::from(sub.loc.x + 40), f64::from(sub.loc.y + PAD + ROW + 10)));
+        assert_eq!(m.click(file, bounds()), Ok(Some(MenuAction::New(NewKind::File))));
         // Templates follow after a separator.
         let rows = m.sub_rows(Sub::New);
         assert!(rows.iter().any(|r| r.action == Some(MenuAction::New(NewKind::Template("Report.odt".into())))));
@@ -478,8 +461,8 @@ mod tests {
     #[test]
     fn new_kinds_have_sensible_names_and_templates() {
         assert_eq!(NewKind::Folder.base_name(), "New folder");
-        assert!(NewKind::Cpp.contents().contains("int main()"));
-        assert!(NewKind::Script.contents().starts_with("#!/bin/sh"));
+        assert_eq!(NewKind::File.base_name(), "New file");
+        assert!(NewKind::File.contents().is_empty());
         assert_eq!(NewKind::Template("a.odt".into()).base_name(), "a.odt");
     }
 }

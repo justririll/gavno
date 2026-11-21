@@ -548,27 +548,7 @@ impl Desktop {
                 self.layer
                     .icon(&item.icon, theme, rect(r.loc.x + 24, r.loc.y + 6, 48, 48));
                 if let Some(rename) = self.rename.as_ref().filter(|rename| rename.index == i) {
-                    self.layer.panel(
-                        rect(r.loc.x, r.loc.y + 58, 96, 44),
-                        3.0,
-                        if rename.select_all {
-                            [accent[0] * 0.4, accent[1] * 0.4, accent[2] * 0.4, 1.0]
-                        } else {
-                            [0.04, 0.05, 0.07, 1.0]
-                        },
-                        1.0,
-                    );
-                    self.layer.label(
-                        &format!(
-                            "{}▏{}",
-                            &rename.value[..rename.cursor],
-                            &rename.value[rename.cursor..]
-                        ),
-                        rect(r.loc.x + 3, r.loc.y + 60, 90, 40),
-                        11.5,
-                        2,
-                        true,
-                    );
+                    draw_rename_field(&mut self.layer, rename, r, accent);
                 } else {
                     self.layer.label(
                         &item.label,
@@ -627,6 +607,40 @@ impl Desktop {
         self.overlay.append(renderer, out, 1.0, (0.0, 0.0).into());
     }
 }
+/// The inline rename box: one line under the icon, an accent outline, the
+/// selection behind the text and a thin caret, wider for longer names.
+fn draw_rename_field(layer: &mut Layer, rename: &Rename, icon: Rect, accent: [f32; 4]) {
+    const SIZE: f32 = 12.0;
+    const MAX_INNER: i32 = 150;
+    let value = rename.value.as_str();
+    let cursor = rename.cursor.min(value.len());
+    // Scroll a long name so the caret stays inside the box.
+    let mut start = 0;
+    while start < cursor && layer.measure(&value[start..cursor], SIZE) > (MAX_INNER - 4) as f32 {
+        start += value[start..].chars().next().map_or(1, char::len_utf8);
+    }
+    let shown = &value[start..];
+    let inner = (layer.measure(shown, SIZE).ceil() as i32 + 4).clamp(56, MAX_INNER);
+    let width = inner + 14;
+    let field = rect(icon.loc.x + 48 - width / 2, icon.loc.y + 60, width, 24);
+    let outline = if rename.error.is_some() { [0.95, 0.36, 0.36, 0.95] } else { [accent[0], accent[1], accent[2], 0.95] };
+    layer.panel(rect(field.loc.x - 1, field.loc.y - 1, field.size.w + 2, field.size.h + 2), 8.0, outline, 1.0);
+    layer.panel(field, 7.0, [0.09, 0.10, 0.13, 0.97], 1.0);
+    let text_x = field.loc.x + 7;
+    if rename.select_all && !value.is_empty() {
+        let end = rename.select_to.min(value.len()).max(start);
+        let selected = layer.measure(&value[start..end], SIZE).ceil() as i32;
+        if selected > 0 {
+            layer.panel(rect(text_x - 1, field.loc.y + 4, (selected + 2).min(inner), 16), 3.0, [accent[0], accent[1], accent[2], 0.55], 1.0);
+        }
+    }
+    layer.label(shown, rect(text_x, field.loc.y + 4, inner, 18), SIZE, 1, false);
+    if !rename.select_all {
+        let x = text_x + layer.measure(&value[start..cursor], SIZE).round() as i32;
+        layer.panel(rect(x.min(text_x + inner), field.loc.y + 5, 2, 15), 1.0, [1.0, 1.0, 1.0, 0.92], 1.0);
+    }
+}
+
 pub fn valid_name(name: &str) -> bool {
     !name.trim().is_empty()
         && !matches!(name, "." | "..")
