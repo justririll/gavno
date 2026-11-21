@@ -317,6 +317,13 @@ impl Dock {
         // Remove sources as soon as a launched instance maps its first window.
         // Tokens are handed back to Gavno below, since Dock does not own the loop.
     }
+    /// Each running window with its app's desktop-entry icon name.
+    pub(crate) fn window_icons(&self) -> impl Iterator<Item = (Window, String)> + '_ {
+        self.apps
+            .iter()
+            .filter(|a| !a.icon.is_empty())
+            .flat_map(|a| a.windows.iter().map(|w| (w.clone(), a.icon.clone())))
+    }
     pub(crate) fn canonical(&mut self, id: &str) -> String {
         self.entries
             .resolve(id)

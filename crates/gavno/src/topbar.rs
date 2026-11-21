@@ -1375,6 +1375,8 @@ impl Gavno {
         self.guard(crate::module::Feature::Dock, (), |gv| {
             gv.dock.refresh(&gv.config.dock, &gv.workspaces, &gv.space, gv.start_time.elapsed());
             gv.dock.drop_stale_menu(&outputs);
+            gv.window_decor.app_icons.clear();
+            gv.window_decor.app_icons.extend(gv.dock.window_icons());
         });
         if self.topbar.menu.as_ref().is_some_and(|o| !outputs.contains(o)) {
             self.topbar.menu = None;

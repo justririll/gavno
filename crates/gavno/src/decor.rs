@@ -515,6 +515,65 @@ pub struct WindowDecor {
     pub style: FocusStyle,
     pub classic: bool,
     pub pointer: smithay::utils::Point<f64, smithay::utils::Logical>,
+    /// Icon names of mapped windows from their desktop entries (the dock
+    /// resolves them outside rendering), for Classic title bars.
+    pub app_icons: Vec<(Window, String)>,
+}
+
+/// A Classic title bar: rounded top corners matching the window, the app's
+/// own colour icon, the title dimmed when unfocused, and symbolic window
+/// buttons with soft hover pills (red for close).
+#[allow(clippy::too_many_arguments)]
+fn draw_title_bar(
+    renderer: &mut GlesRenderer,
+    cache: &mut Cache,
+    window: &Window,
+    r: crate::topbar::geometry::Rect,
+    mode: WindowMode,
+    focused: bool,
+    icon: Option<&str>,
+    hover: Option<crate::classic::decor::Part>,
+    opacity: f32,
+    scale: f64,
+) {
+    use crate::classic::decor::Part;
+    use crate::topbar::geometry::rect;
+    let radius = corner_radius(mode);
+    let fill = if focused { [0.125, 0.135, 0.17, 1.0] } else { [0.085, 0.09, 0.115, 1.0] };
+    let c = &mut cache.titlebar;
+    c.begin(renderer, scale);
+    c.alpha = opacity;
+    if radius > 0.0 {
+        c.rect(r, radius, fill, 0.0, [0.0; 4]);
+        // Square off the lower half so only the top corners stay round.
+        let half = r.size.h / 2;
+        c.rect(rect(r.loc.x, r.loc.y + half, r.size.w, r.size.h - half), 0.0, fill, 0.0, [0.0; 4]);
+    } else {
+        c.rect(r, 0.0, fill, 0.0, [0.0; 4]);
+    }
+    c.rect(rect(r.loc.x, r.loc.y + r.size.h - 1, r.size.w, 1), 0.0, [1.0, 1.0, 1.0, 0.06], 0.0, [0.0; 4]);
+    let (title, app) = crate::overlay::window_labels(window);
+    cache.icons.nonblocking_apps();
+    let icon_rect = rect(r.loc.x + 10, r.loc.y + 8, 16, 16);
+    let names: Vec<&str> = icon.into_iter().chain([app.as_str()]).filter(|n| !n.is_empty()).collect();
+    if !c.colored_icon(renderer, &mut cache.icons, &names, "Adwaita", icon_rect, Some(crate::topbar::FULL_COLOR)) {
+        c.icon(renderer, &mut cache.icons, &["application-x-executable-symbolic"], "Adwaita", icon_rect);
+    }
+    let mut style = crate::topbar::label_style(12.5);
+    style.color = if focused { [0.94, 0.94, 0.97, 1.0] } else { [0.62, 0.63, 0.68, 1.0] };
+    c.styled_label(renderer, &title, r.loc.x + 34, r.loc.y + 8, r.size.w - 34 - 150, style);
+    let maximize = if mode == WindowMode::Maximized { "window-restore-symbolic" } else { "window-maximize-symbolic" };
+    for (i, (part, glyph)) in [(Part::Minimize, "window-minimize-symbolic"), (Part::Maximize, maximize), (Part::Close, "window-close-symbolic")].into_iter().enumerate() {
+        let slot = rect(r.loc.x + r.size.w - 138 + i as i32 * 46, r.loc.y, 46, r.size.h);
+        let hovered = hover == Some(part);
+        if hovered {
+            let color = if part == Part::Close { [0.86, 0.20, 0.24, 1.0] } else { [1.0, 1.0, 1.0, 0.12] };
+            c.rect(rect(slot.loc.x + 7, slot.loc.y + 5, slot.size.w - 14, slot.size.h - 10), 7.0, color, 0.0, [0.0; 4]);
+        }
+        c.alpha = opacity * if hovered || focused { 1.0 } else { 0.55 };
+        c.icon(renderer, &mut cache.icons, &[glyph], "Adwaita", rect(slot.loc.x + 15, slot.loc.y + 8, 16, 16));
+        c.alpha = opacity;
+    }
 }
 
 fn transformed_rect(
@@ -1082,7 +1141,16 @@ impl WindowDecor {
             let focused = self.fade.focused() == Some(window);
             let ssd = self.classic && crate::classic::decor::ssd(window);
             let draw = FocusDraw::new(self.style, mode, ssd, self.fade.level(window, time), self.fade.focused().is_some());
-            let radius = if ssd { 0.0 } else { corner_radius(mode) * scale.x as f32 };
+            let titled = ssd && mode != WindowMode::Fullscreen;
+            let radius = corner_radius(mode) * scale.x as f32;
+            // A title bar sits on top: lift the rounding rectangle one radius
+            // above the content so only its bottom corners are rounded.
+            let clip = if titled && radius > 0.0 {
+                let lift = radius.ceil() as i32 + 1;
+                Rectangle::new((target.loc.x, target.loc.y - lift).into(), (target.size.w, target.size.h + lift).into())
+            } else {
+                target
+            };
             let Some(toplevel) = window.toplevel() else {
                 continue;
             };
@@ -1136,7 +1204,7 @@ impl WindowDecor {
                     Content::Surface(Arc::new(e)),
                     Appearance {
                         geometry: geo,
-                        clip: target,
+                        clip,
                         radius: if round { radius } else { 0.0 },
                         opacity,
                     },
@@ -1153,29 +1221,24 @@ impl WindowDecor {
                 .trackers
                 .retain(|id, _| content.iter().any(|e| e.id() == id));
             cache.last = content.clone();
+            // Border and shadow wrap the title bar and the content as one frame.
+            let frame = if titled {
+                let h = f64::from(crate::classic::decor::HEIGHT);
+                Rectangle::new((shown.loc.x, shown.loc.y - h).into(), (shown.size.w, shown.size.h + h).into())
+            } else {
+                shown
+            };
             let (border, shadow) =
-                decorations(cache, shaders, shown, mode, focused, draw, accent, opacity, scale.x);
+                decorations(cache, shaders, frame, mode, focused, draw, accent, opacity, scale.x);
             // Popups must remain above the parent's focus ring.
             result.extend(content.drain(..popup_count).map(GavnoRenderElement::Window));
             result.extend(border);
-            if ssd && mode != WindowMode::Fullscreen {
+            if titled {
                 let r = crate::classic::decor::title_rect(shown.to_i32_round());
-                let c = &mut cache.titlebar;
-                c.begin(renderer, scale.x);
-                c.alpha = opacity;
-                c.rect(r, 0.0, [0.065, 0.075, 0.10, 1.0], 0.0, crate::topbar::LINE);
-                let (title, app) = crate::overlay::window_labels(window);
-                cache.icons.nonblocking_apps();
-                // App IDs commonly double as themed icon names; use the same fallback as the dock.
-                c.icon(renderer, &mut cache.icons, &[&app, "application-x-executable-symbolic"], "Adwaita", crate::topbar::geometry::rect(r.loc.x + 8, r.loc.y + 7, 18, 18));
-                c.label(renderer, &title, r.loc.x + 34, r.loc.y + 9, r.size.w - 180, 12.0);
+                let icon = self.app_icons.iter().find(|(w, _)| w == window).map(|(_, icon)| icon.as_str());
                 let hover = crate::classic::decor::part(r, self.pointer - output_geo.loc.to_f64());
-                for (i, (part, glyph)) in [(crate::classic::decor::Part::Minimize, "−"), (crate::classic::decor::Part::Maximize, if mode == WindowMode::Maximized { "❐" } else { "□" }), (crate::classic::decor::Part::Close, "×")].into_iter().enumerate() {
-                    let button = crate::topbar::geometry::rect(r.loc.x + r.size.w - 138 + i as i32 * 46, r.loc.y, 46, 32);
-                    if hover == Some(part) { c.rect(button, 0.0, if part == crate::classic::decor::Part::Close { [0.85, 0.12, 0.16, 1.0] } else { [1.0, 1.0, 1.0, 0.12] }, 0.0, crate::topbar::LINE); }
-                    c.label(renderer, glyph, button.loc.x + 17, button.loc.y + 7, 24, 16.0);
-                }
-                result.extend(c.finish());
+                draw_title_bar(renderer, cache, window, r, mode, focused, icon, hover, opacity, scale.x);
+                result.extend(cache.titlebar.finish());
             }
             result.extend(content.into_iter().map(GavnoRenderElement::Window));
             result.extend(shadow);
