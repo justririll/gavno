@@ -283,6 +283,7 @@ pub fn handle_commit(gv: &mut Gavno, surface: &WlSurface) {
         .iter()
         .chain(gv.space.elements())
         .chain(gv.workspaces.all().map(|o| &o.window))
+        .chain(gv.workspaces.stashed().map(|o| &o.window))
         .find(|w| w.toplevel().is_some_and(|t| t.wl_surface() == surface))
         .cloned();
     if let Some(window) = window {

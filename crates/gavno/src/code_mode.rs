@@ -22,24 +22,24 @@ impl Gavno {
         self.code_mode = enable;
         if enable {
             self.code_mode_saved.clear();
+            // Code mode belongs to the GUI world, hidden while TTY mode is on.
+            let tty = self.tty.on;
             for owner in &mut self.workspaces.outputs {
                 let output = owner.output.clone();
-                for workspace in &mut owner.list.items {
-                    let original = if self.tty.on {
-                        self.tty.saved.iter().find(|(o, id, _)| *o == output && *id == workspace.id).map_or(workspace.tiling, |(_, _, t)| *t)
-                    } else {
-                        workspace.tiling
-                    };
-                    self.code_mode_saved.push((output.clone(), workspace.id, original));
+                let Some(list) = (if tty { owner.other.as_mut() } else { Some(&mut owner.list) }) else { continue };
+                for workspace in &mut list.items {
+                    self.code_mode_saved.push((output.clone(), workspace.id, workspace.tiling));
                     workspace.tiling = true;
                 }
             }
         } else {
             let saved = std::mem::take(&mut self.code_mode_saved);
+            let tty = self.tty.on;
             for owner in &mut self.workspaces.outputs {
                 let output = owner.output.clone();
-                let fallback = owner.list.default_tiling;
-                for workspace in &mut owner.list.items {
+                let Some(list) = (if tty { owner.other.as_mut() } else { Some(&mut owner.list) }) else { continue };
+                let fallback = list.default_tiling;
+                for workspace in &mut list.items {
                     workspace.tiling = saved
                         .iter()
                         .find(|(saved_output, id, _)| *saved_output == output && *id == workspace.id)
@@ -60,7 +60,7 @@ impl Gavno {
     /// Keeps workspaces created during code mode tiled. Called from the tiling
     /// reflow, so no extra idle callback or timer is needed.
     pub(crate) fn enforce_code_mode_tiling(&mut self) -> bool {
-        if !self.code_mode {
+        if !self.code_mode || self.tty.on {
             return false;
         }
         let mut changed = false;

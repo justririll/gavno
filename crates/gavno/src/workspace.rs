@@ -52,6 +52,22 @@ impl<T> Default for WorkspaceList<T> {
     }
 }
 impl<T> WorkspaceList<T> {
+    /// An empty list with `min_count` fixed workspaces.
+    pub fn fresh(tiling: bool, min_count: usize) -> Self {
+        Self::fresh_from(tiling, min_count, 0)
+    }
+    /// The same with workspace ids starting at `first_id`, so two worlds of
+    /// one output never share an id (saved layouts are keyed by it).
+    pub fn fresh_from(tiling: bool, min_count: usize, first_id: u64) -> Self {
+        let mut list = Self::default();
+        list.items[0].id = first_id;
+        list.next_id = first_id + 1;
+        list.default_tiling = tiling;
+        list.min_count = min_count;
+        list.items[0].tiling = tiling;
+        list.append_empty();
+        list
+    }
     fn push_empty(&mut self) {
         self.items.push(Workspace {
             id: self.next_id,
@@ -126,6 +142,9 @@ pub struct OwnedWindow {
 pub struct OutputWorkspaces {
     pub output: Output,
     pub list: WorkspaceList<OwnedWindow>,
+    /// The other world of this output: the GUI workspaces while TTY mode is
+    /// on, the consoles while it is off. Its windows are never mapped.
+    pub other: Option<WorkspaceList<OwnedWindow>>,
     pub position: Spring,
     pub held: bool,
 }
@@ -180,6 +199,7 @@ impl Workspaces {
         self.outputs.push(OutputWorkspaces {
             output: output.clone(),
             list,
+            other: None,
             position: Spring::new(0.0, SpringParams::SMOOTH),
             held: false,
         });
@@ -193,6 +213,17 @@ impl Workspaces {
             .iter()
             .flat_map(|o| &o.list.items)
             .flat_map(|w| &w.windows)
+    }
+    /// Windows of the hidden worlds (see `OutputWorkspaces::other`).
+    pub fn stashed(&self) -> impl Iterator<Item = &OwnedWindow> {
+        self.outputs
+            .iter()
+            .filter_map(|o| o.other.as_ref())
+            .flat_map(|l| &l.items)
+            .flat_map(|w| &w.windows)
+    }
+    pub fn is_stashed(&self, window: &Window) -> bool {
+        self.stashed().any(|v| &v.window == window)
     }
     pub fn membership(&self, window: &Window) -> Option<(Output, usize)> {
         self.outputs.iter().find_map(|o| {
@@ -216,6 +247,11 @@ impl Workspaces {
     }
     pub fn snapshot(&mut self, space: &Space<Window>) {
         for o in &mut self.outputs {
+            if let Some(other) = &mut o.other {
+                for ws in &mut other.items {
+                    ws.windows.retain(|w| w.window.alive());
+                }
+            }
             for ws in &mut o.list.items {
                 ws.windows.retain(|w| w.window.alive());
                 for w in &mut ws.windows {
@@ -316,6 +352,12 @@ impl Gavno {
                 let home = o.output.name();
                 for (index, ws) in o.list.items.iter_mut().enumerate() {
                     orphaned.extend(ws.windows.drain(..).map(|w| (w, origin, home.clone(), index)));
+                }
+                // The hidden world's windows must not be lost with the output.
+                if let Some(other) = &mut o.other {
+                    for (index, ws) in other.items.iter_mut().enumerate() {
+                        orphaned.extend(ws.windows.drain(..).map(|w| (w, origin, home.clone(), index)));
+                    }
                 }
                 false
             }
@@ -604,7 +646,7 @@ impl Gavno {
         self.cancel_window_gestures();
         self.guard(crate::module::Feature::Overview, (), |gv| gv.overview.forget(window));
         for o in &mut self.workspaces.outputs {
-            for ws in &mut o.list.items {
+            for ws in o.list.items.iter_mut().chain(o.other.iter_mut().flat_map(|l| l.items.iter_mut())) {
                 ws.windows.retain(|w| &w.window != window);
                 self.features.call(crate::module::Feature::Tiling, (), || ws.tree.remove(window));
             }

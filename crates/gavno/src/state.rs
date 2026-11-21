@@ -431,6 +431,7 @@ impl Gavno {
         self.space
             .elements()
             .chain(self.workspaces.all().map(|v| &v.window))
+            .chain(self.workspaces.stashed().map(|v| &v.window))
             .find(|w| w.toplevel().is_some_and(|t| t.wl_surface() == surface))
             .cloned()
     }
@@ -462,6 +463,8 @@ impl Gavno {
     /// `None` clears focus.
     pub fn focus_window(&mut self, window: Option<&Window>) {
         if self.protocols.locks.locked || self.greeter.is_some() { return; }
+        // A window of the hidden world waits for its shell to come back.
+        if window.is_some_and(|w| self.workspaces.is_stashed(w)) { return; }
         let serial = SERIAL_COUNTER.next_serial();
         if let Some(window) = window {
             self.classic.desktop.focused = false;
@@ -559,6 +562,19 @@ impl Gavno {
         self.space.map_element(window.clone(), loc, !urgent && !self.protocols.locks.locked);
         if self.greeter.is_none() {
             if let Some(output) = &output {
+                // A console only takes terminals: anything else opens in the
+                // GUI world of the output, hidden until TTY mode is left.
+                if self.shell_of(output).1 && !self.is_terminal_window(&window) {
+                    self.space.unmap_elem(&window);
+                    let owner = self.workspaces.ensure(output);
+                    let gui = owner.other.get_or_insert_with(|| crate::workspace::WorkspaceList::fresh(false, 0));
+                    let active = gui.active;
+                    gui.items[active].windows.push(crate::workspace::OwnedWindow { window: window.clone(), location: loc });
+                    tracing::info!(app = %crate::overlay::window_labels(&window).1, "GUI window opened from TTY mode waits in the GUI world");
+                    self.track_classic_map(&window);
+                    self.launch_mapped(&window);
+                    return;
+                }
                 let owner = self.workspaces.ensure(output);
                 owner.list.items[owner.list.active].windows.push(crate::workspace::OwnedWindow { window: window.clone(), location: loc });
                 owner.append_empty();

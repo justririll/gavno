@@ -160,6 +160,8 @@ pub struct Launcher {
     /// TTY mode draws the launcher as a console command line.
     pub(crate) tty: bool,
     loading: bool,
+    /// `desktop_entry::apps_stamp` when `apps` was loaded.
+    pub(crate) apps_stamp: u64,
     launch_after_load: bool,
     launch_action: Option<Instant>,
     query: String,
@@ -209,6 +211,7 @@ impl Default for Launcher {
             run_style: false,
             tty: false,
             loading: false,
+            apps_stamp: 0,
             launch_after_load: false,
             launch_action: None,
             query: String::new(),
@@ -854,8 +857,13 @@ impl Gavno {
                 gv.launcher.ai_enabled = gv.config.ai.enabled;
                 gv.launcher.windows = gv.launcher_windows();
                 gv.launcher.show(output);
-                if !gv.launcher.loading && gv.launcher.apps.as_ref().is_none_or(|apps| apps.is_empty()) {
+                let stamp = desktop_entry::apps_stamp();
+                let first = gv.launcher.apps.as_ref().is_none_or(|apps| apps.is_empty());
+                if !gv.launcher.loading && (first || gv.launcher.apps_stamp != stamp) {
+                    if !first { crate::icons::forget_misses(); }
+                    gv.launcher.apps_stamp = stamp;
                     gv.launcher.loading = true;
+                    let theme = gv.config.dock.icon_theme.clone();
                     let (tx,rx)=smithay::reexports::calloop::channel::channel();
                     let result=gv.loop_handle.insert_source(rx,|event,_,gv|{
                         let _stall = crate::perf::Stall::new("launcher.apps_reply");
@@ -873,8 +881,9 @@ impl Gavno {
                         }
                     });
                     if result.is_ok() { std::thread::spawn(move||{
-                        let entries = desktop_entry::load_all();
-                        let state = frecency::state_path().map(|path| { let table = frecency::Frecency::load(&path); (path, table) });
+                        let entries = desktop_entry::load_all_with_icons(&theme);
+                        // A reload after installs keeps the in-memory ranking.
+                        let state = if first { frecency::state_path().map(|path| { let table = frecency::Frecency::load(&path); (path, table) }) } else { None };
                         let _ = tx.send((entries, state));
                     }); }
                     else {gv.launcher.loading=false;}

@@ -197,6 +197,25 @@ fn cached_lookup(name: &str, theme: &str, checkpoint: bool) -> Option<PathBuf> {
     path
 }
 
+/// Forgets cached misses, so icons installed since show up. Called when the
+/// set of installed applications changed.
+pub fn forget_misses() {
+    paths().retain(|_, path| path.is_some());
+}
+
+/// Gives every entry an icon the theme can draw: its own when it exists, else
+/// the first stand-in from `icon_candidates`. Blocking, for worker threads.
+pub fn pick_entry_icons(entries: &mut [crate::desktop_entry::DesktopEntry], theme: &str) {
+    for entry in entries {
+        if !entry.icon.is_empty() && cached_lookup(&entry.icon, theme, false).is_some() {
+            continue;
+        }
+        if let Some(name) = entry.icon_candidates().into_iter().find(|name| cached_lookup(name, theme, false).is_some()) {
+            entry.icon = name;
+        }
+    }
+}
+
 /// Whether the icon theme can resolve `name`; blocking, for worker threads.
 pub(crate) fn exists(name: &str, theme: &str) -> bool {
     cached_lookup(name, theme, false).is_some()

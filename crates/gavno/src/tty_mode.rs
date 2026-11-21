@@ -33,6 +33,8 @@ pub(crate) mod draw;
 pub const FADE_TIME: Duration = Duration::from_millis(120);
 /// Height of the status line on top, in logical pixels.
 pub const BAR_HEIGHT: i32 = 28;
+/// Console workspaces count their ids from here, apart from the GUI ones.
+const CONSOLE_IDS: u64 = 1 << 40;
 /// A terminal is never started twice for one console within this time.
 const SPAWN_GUARD: Duration = Duration::from_secs(2);
 
@@ -197,28 +199,17 @@ impl Gavno {
         self.queue_redraw_all();
     }
 
-    /// The tiling a workspace had before a forced-tiling mode touched it.
-    pub(crate) fn tiling_before_forced(&self, output: &Output, id: u64, current: bool) -> bool {
-        let find = |saved: &[(Output, u64, bool)]| {
-            saved.iter().find(|(o, i, _)| o == output && *i == id).map(|(_, _, tiling)| *tiling)
-        };
-        find(&self.tty.saved).or_else(|| find(&self.code_mode_saved)).unwrap_or(current)
-    }
-
     /// The layout and session part of the switch, without animation.
     fn apply_tty_mode(&mut self, enable: bool) {
         if self.tty.on == enable {
             return;
         }
         self.tty.on = enable;
+        // The consoles are a world of their own: the GUI workspaces and their
+        // windows wait untouched until the mode is left.
+        self.swap_console_world(enable);
         if enable {
-            let mut saved = Vec::new();
-            for owner in &self.workspaces.outputs {
-                for workspace in &owner.list.items {
-                    saved.push((owner.output.clone(), workspace.id, self.tiling_before_forced(&owner.output, workspace.id, workspace.tiling)));
-                }
-            }
-            self.tty.saved = saved;
+            self.tty.saved.clear();
             self.hide_pointer();
             for owner in &mut self.workspaces.outputs {
                 for workspace in &mut owner.list.items {
@@ -226,20 +217,7 @@ impl Gavno {
                 }
             }
         } else {
-            let saved = std::mem::take(&mut self.tty.saved);
-            let code = self.code_mode;
-            for owner in &mut self.workspaces.outputs {
-                let output = owner.output.clone();
-                let fallback = owner.list.default_tiling;
-                for workspace in &mut owner.list.items {
-                    workspace.tiling = code
-                        || saved
-                            .iter()
-                            .find(|(o, id, _)| *o == output && *id == workspace.id)
-                            .map(|(_, _, tiling)| *tiling)
-                            .unwrap_or(fallback);
-                }
-            }
+            self.tty.saved.clear();
             self.tty_reset_view();
             if !self.code_mode {
                 self.show_pointer();
@@ -253,6 +231,54 @@ impl Gavno {
         self.refresh_tty();
         self.persist_mode();
         self.queue_redraw_all();
+    }
+
+    /// Shows the consoles (`console`) or the GUI workspaces of every output in
+    /// scope, keeping the other world hidden in `OutputWorkspaces::other`.
+    pub(crate) fn swap_console_world(&mut self, console: bool) {
+        self.workspaces.snapshot(&self.space);
+        self.end_window_grab();
+        let fixed = self.workspaces.fixed;
+        let focused = self.focused_window();
+        let space = &mut self.space;
+        for owner in &mut self.workspaces.outputs {
+            for w in &owner.list.items[owner.list.active].windows {
+                w.window.set_activated(false);
+                if let Some(t) = w.window.toplevel() {
+                    t.send_pending_configure();
+                }
+                space.unmap_elem(&w.window);
+            }
+            let default_tiling = owner.list.default_tiling;
+            let other = owner.other.take().unwrap_or_else(|| {
+                let first_id = if console { CONSOLE_IDS } else { 0 };
+                crate::workspace::WorkspaceList::fresh_from(console || default_tiling, fixed, first_id)
+            });
+            owner.other = Some(std::mem::replace(&mut owner.list, other));
+            owner.position.jump(owner.list.active as f64);
+            owner.held = false;
+            for w in &owner.list.items[owner.list.active].windows {
+                if !crate::window_mode::mode_state(&w.window).minimized {
+                    space.map_element(w.window.clone(), w.location, false);
+                }
+            }
+        }
+        if focused.as_ref().is_none_or(|w| self.workspaces.is_stashed(w)) {
+            self.focus_topmost();
+        }
+        self.mru.retain(|w| !self.workspaces.is_stashed(w));
+    }
+
+    /// Terminals are the only windows a console shows.
+    pub(crate) fn is_terminal_window(&self, window: &smithay::desktop::Window) -> bool {
+        let app = crate::overlay::window_labels(window).1.to_lowercase();
+        let configured = self.config.terminal.split_whitespace().next().unwrap_or("")
+            .rsplit('/').next().unwrap_or("").to_lowercase();
+        const TERMINALS: &[&str] = &["foot", "footclient", "kitty", "alacritty", "org.wezfurlong.wezterm",
+            "com.mitchellh.ghostty", "xterm", "org.gnome.console", "org.gnome.terminal", "org.kde.konsole",
+            "konsole", "wezterm", "ghostty", "st", "urxvt"];
+        // A window without an app id cannot be told apart; it stays.
+        app.is_empty() || TERMINALS.contains(&app.as_str()) || app == configured
     }
 
     /// Drops every timer and animation of the mode.
@@ -302,9 +328,12 @@ impl Gavno {
         self.tty.held = false;
         self.tty.progress.jump(0.0);
         self.tty.on = false;
+        // Classic shows the GUI world; the consoles come back with TTY mode.
+        self.swap_console_world(false);
         self.tty_reset_view();
         self.sync_tty_flags();
-        Some(std::mem::take(&mut self.tty.saved))
+        self.tty.saved.clear();
+        Some(Vec::new())
     }
 
     /// Alt+F<n>: console `n` (1-based). A console that does not exist yet

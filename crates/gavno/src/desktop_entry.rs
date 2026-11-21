@@ -19,6 +19,10 @@ pub struct DesktopEntry {
     pub comment: String,
     /// `NoDisplay=true`, or `OnlyShowIn`/`NotShowIn` excluding GAVNO.
     pub hidden_from_menus: bool,
+    /// `MimeType=`: what the app opens, for "Open with".
+    pub mime_types: Vec<String>,
+    /// `Categories=`, used to pick a stand-in icon.
+    pub categories: Vec<String>,
 }
 impl DesktopEntry {
     pub fn parse(id: &str, text: &str, path: Option<&Path>) -> Option<Self> {
@@ -57,8 +61,96 @@ impl DesktopEntry {
             keywords: fields.get("Keywords").unwrap_or(&"").replace(';', " "),
             comment: fields.get("Comment").unwrap_or(&"").to_string(),
             hidden_from_menus,
+            mime_types: list(fields.get("MimeType")),
+            categories: list(fields.get("Categories")),
         })
     }
+    /// The command that opens `files` (paths) with this app. An Exec without
+    /// a file field code gets the files appended, as file managers do.
+    pub fn command_with(&self, terminal: &str, files: &[String]) -> Option<String> {
+        let mut args = expand_exec_files(
+            &self.exec,
+            Some(self.name.as_str()).filter(|name| !name.is_empty()),
+            Some(self.icon.as_str()).filter(|icon| !icon.is_empty()),
+            self.path.as_deref(),
+            files,
+        )?;
+        if args.is_empty() {
+            return None;
+        }
+        if !has_file_code(&self.exec) {
+            args.extend(files.iter().cloned());
+        }
+        let command = args.iter().map(|s| shell_quote(s)).collect::<Vec<_>>().join(" ");
+        Some(if self.terminal { format!("{terminal} -e {command}") } else { command })
+    }
+    /// Icon names to try in order when `icon` is missing from the theme.
+    pub fn icon_candidates(&self) -> Vec<String> {
+        fn add(names: &mut Vec<String>, name: String) {
+            if !name.is_empty() && !names.contains(&name) {
+                names.push(name);
+            }
+        }
+        let mut names = Vec::new();
+        add(&mut names, self.icon.clone());
+        add(&mut names, self.id.clone());
+        add(&mut names, self.id.to_lowercase());
+        if let Some(last) = self.id.rsplit('.').next() {
+            add(&mut names, last.to_lowercase());
+        }
+        add(&mut names, self.startup_wm_class.to_lowercase());
+        if let Some(program) = self.arguments().and_then(|a| a.into_iter().next()) {
+            let base = program.rsplit('/').next().unwrap_or(&program).to_lowercase();
+            add(&mut names, base.trim_end_matches("-bin").to_owned());
+            add(&mut names, base);
+        }
+        // Strip variant suffixes: firefox-esr -> firefox.
+        for name in names.clone() {
+            if let Some((stem, _)) = name.split_once('-') {
+                add(&mut names, stem.to_owned());
+            }
+        }
+        for category in &self.categories {
+            let generic = match category.as_str() {
+                "WebBrowser" | "Network" => "web-browser",
+                "TerminalEmulator" => "utilities-terminal",
+                "TextEditor" => "accessories-text-editor",
+                "Development" | "IDE" => "applications-development",
+                "Graphics" | "Viewer" | "Photography" => "applications-graphics",
+                "AudioVideo" | "Audio" | "Video" | "Player" => "applications-multimedia",
+                "Game" => "applications-games",
+                "Office" => "applications-office",
+                "Settings" | "System" => "applications-system",
+                "Utility" => "applications-utilities",
+                "Science" | "Education" => "applications-science",
+                _ => continue,
+            };
+            add(&mut names, generic.into());
+        }
+        add(&mut names, "application-x-executable".into());
+        add(&mut names, "application-x-executable-symbolic".into());
+        names
+    }
+}
+
+fn list(value: Option<&&str>) -> Vec<String> {
+    value.map(|v| v.split(';').map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).collect()).unwrap_or_default()
+}
+
+fn has_file_code(exec: &str) -> bool {
+    let mut chars = exec.chars();
+    while let Some(c) = chars.next() {
+        if c == '%' {
+            match chars.next() {
+                Some('f' | 'F' | 'u' | 'U') => return true,
+                _ => {}
+            }
+        }
+    }
+    false
+}
+
+impl DesktopEntry {
     pub fn command(&self, terminal: &str) -> Option<String> {
         let args = self.arguments()?;
         if args.is_empty() {
@@ -98,6 +190,18 @@ fn expand_exec(
     name: Option<&str>,
     icon: Option<&str>,
     path: Option<&Path>,
+) -> Option<Vec<String>> {
+    expand_exec_files(exec, name, icon, path, &[])
+}
+
+/// `%f`/`%u` become the first file and `%F`/`%U` all of them, each a whole
+/// argument of its own.
+fn expand_exec_files(
+    exec: &str,
+    name: Option<&str>,
+    icon: Option<&str>,
+    path: Option<&Path>,
+    files: &[String],
 ) -> Option<Vec<String>> {
     let mut args = Vec::new();
     let mut arg = String::new();
@@ -146,6 +250,16 @@ fn expand_exec(
                         arg.push_str(&path.to_string_lossy());
                         started = true;
                     }
+                }
+                code @ ('f' | 'F' | 'u' | 'U') if !files.is_empty() => {
+                    if started {
+                        args.push(std::mem::take(&mut arg));
+                        started = false;
+                    }
+                    let take = if matches!(code, 'f' | 'u') { 1 } else { files.len() };
+                    args.extend(files.iter().take(take).map(|f| {
+                        if matches!(code, 'u' | 'U') { file_url(f) } else { f.clone() }
+                    }));
                 }
                 // File, URL and deprecated field codes are removed.
                 'f' | 'F' | 'u' | 'U' | 'd' | 'D' | 'n' | 'N' | 'v' | 'm' => {}
@@ -216,6 +330,40 @@ impl DesktopEntries {
     }
 }
 /// Every application entry on the system, highest-priority data dir first.
+/// `file://` URL for an absolute path, percent-encoding all but safe bytes.
+pub fn file_url(path: &str) -> String {
+    let mut url = String::from("file://");
+    for &b in path.as_bytes() {
+        if b.is_ascii_alphanumeric() || b"/-._~".contains(&b) {
+            url.push(b as char);
+        } else {
+            url.push_str(&format!("%{b:02X}"));
+        }
+    }
+    url
+}
+
+/// Changes when an application is installed or removed: the modification
+/// times of the `applications` directories. A few `stat` calls, so it is
+/// cheap enough to check whenever a menu opens.
+pub fn apps_stamp() -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for dir in data_dirs() {
+        let modified = std::fs::metadata(dir.join("applications")).and_then(|m| m.modified()).ok();
+        modified.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+/// Entries with icons the theme can draw (see `icons::pick_entry_icons`).
+/// Blocking, for worker threads.
+pub fn load_all_with_icons(theme: &str) -> Vec<DesktopEntry> {
+    let mut entries = load_all();
+    crate::icons::pick_entry_icons(&mut entries, theme);
+    entries
+}
+
 pub fn load_all() -> Vec<DesktopEntry> {
     load(&data_dirs())
 }

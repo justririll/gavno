@@ -22,6 +22,15 @@ slides in from the top. A Super swipe drags it under the fingers and springs
 back if released early; Mod+Shift+T plays it on its own. The mode itself (tiling,
 no mouse) switches at once. The transition costs frames only while it moves.
 
+## Its own windows
+
+TTY mode is a world of its own. Entering it hides the GUI windows of the
+monitor and shows its consoles; leaving it hides the consoles and brings the
+GUI windows back exactly as they were. Terminals opened in TTY mode never
+show up in GAVNO or Classic (not in the dock or Alt+Tab either). Any other
+app started from a console (Firefox from a shell, say) opens in the GUI world
+and is waiting there when you leave TTY mode.
+
 ## Several monitors
 
 The mode belongs to one monitor: Mod+Shift+T, the swipe and the chip act on

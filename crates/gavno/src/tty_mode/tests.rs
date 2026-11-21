@@ -412,3 +412,32 @@ fn alt_f7_to_f10_reach_fixed_consoles_on_a_fresh_output() {
     }
     assert_eq!(h.gv.workspaces.ensure(&o).list.items.len(), 10);
 }
+
+#[test]
+fn consoles_and_gui_windows_live_in_separate_worlds() {
+    let (mut h, o) = harness();
+    h.gv.config.tty.autostart_terminal = false;
+    let gui = h.window();
+    h.gv.map_new_window(gui.clone());
+    assert!(h.gv.space.element_location(&gui).is_some());
+    h.gv.set_tty_mode(true);
+    // The GUI window waits hidden; the console starts empty.
+    assert!(h.gv.space.element_location(&gui).is_none());
+    assert!(h.gv.workspaces.is_stashed(&gui));
+    assert!(h.gv.workspaces.ensure(&o).list.items.iter().all(|ws| ws.windows.is_empty()));
+    let term = h.window();
+    h.gv.map_new_window(term.clone());
+    assert_eq!(h.gv.workspaces.membership(&term).map(|(_, i)| i), Some(0));
+    h.gv.set_tty_mode(false);
+    // Back in GAVNO: only the GUI window, the terminal waits for the console.
+    assert!(h.gv.space.element_location(&gui).is_some());
+    assert!(h.gv.space.element_location(&term).is_none());
+    assert!(h.gv.workspaces.is_stashed(&term));
+    assert!(!h.gv.workspaces.all().any(|v| v.window == term), "the dock and switcher never see it");
+    h.gv.set_tty_mode(true);
+    assert!(h.gv.space.element_location(&term).is_some());
+    assert!(h.gv.space.element_location(&gui).is_none());
+    // Closing a hidden window forgets it.
+    h.gv.workspace_forget(&gui);
+    assert!(!h.gv.workspaces.is_stashed(&gui));
+}

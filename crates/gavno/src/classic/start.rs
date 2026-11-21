@@ -44,6 +44,8 @@ pub struct Start {
     opening: Spring,
     apps: Vec<App>,
     loading: bool,
+    /// `desktop_entry::apps_stamp` when `apps` was loaded.
+    apps_stamp: u64,
     query: String,
     selected: usize,
     results: Vec<usize>,
@@ -87,6 +89,7 @@ impl Default for Start {
             opening: Spring::new(0.0, SpringParams::SNAPPY),
             apps: Vec::new(),
             loading: false,
+            apps_stamp: 0,
             query: String::new(),
             selected: 0,
             results: Vec::new(),
@@ -207,6 +210,8 @@ impl Start {
                     keywords: String::new(),
                     comment: String::new(),
                     hidden_from_menus: false,
+                    mime_types: Vec::new(),
+                    categories: Vec::new(),
                 },
             });
         }
@@ -550,8 +555,13 @@ impl Gavno {
                 s.power = false;
                 s.filter();
                 s.opening.set(1.0);
-                if s.apps.is_empty() && !s.loading {
+                let stamp = crate::desktop_entry::apps_stamp();
+                let first = s.apps.is_empty();
+                if (first || s.apps_stamp != stamp) && !s.loading {
+                    if !first { crate::icons::forget_misses(); }
+                    s.apps_stamp = stamp;
                     s.loading = true;
+                    let theme = gv.config.dock.icon_theme.clone();
                     let (tx, rx) = channel::channel();
                     let result = gv.loop_handle.insert_source(rx, |event, _, gv| {
                         let _stall = crate::perf::Stall::new("classic.apps_reply");
@@ -569,7 +579,7 @@ impl Gavno {
                     });
                     if result.is_ok() {
                         std::thread::spawn(move || {
-                            let _ = tx.send(crate::desktop_entry::load_all());
+                            let _ = tx.send(crate::desktop_entry::load_all_with_icons(&theme));
                         });
                     } else {
                         gv.classic.start.loading = false;
