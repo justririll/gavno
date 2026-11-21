@@ -810,6 +810,7 @@ name such as `eDP-1`. Numeric steps describe the editor increments.
 | `dock.autohide` | bool | `false` | yes |
 | `dock.icon_theme` | string | `"Adwaita"` | yes |
 | `bar.enabled` | bool | `true` | yes |
+| `bar.volume_sound` | bool | `true` | yes |
 | `tiling.default` | bool | `false` | yes |
 | `lock.after_idle_secs` | int (0–4294967295, step 1) | `300` | yes |
 | `notifications.timeout_ms` | int (0–9223372036854775807, step 1) | `5000` | yes |

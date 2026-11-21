@@ -520,6 +520,14 @@ pub const SCHEMA: &[Key] = &[
         live: true,
     },
     Key {
+        path: "bar.volume_sound",
+        kind: Kind::Bool,
+        default: Default::Bool(true),
+        description: "Play a short sound when the volume keys change the volume.",
+        section: "Bar",
+        live: true,
+    },
+    Key {
         path: "tiling.default",
         kind: Kind::Bool,
         default: Default::Bool(false),

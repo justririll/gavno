@@ -12,8 +12,8 @@ use std::sync::mpsc::Receiver;
 pub fn status() -> crate::topbar::status::Snapshot {
     let battery = match std::env::var("GAVNO_PANEL_FAKE_BATTERY").as_deref() {
         Ok("none") => None,
-        Ok("low") => Some(crate::topbar::Battery { percent: 12, charging: false, minutes: Some(34) }),
-        _ => Some(crate::topbar::Battery { percent: 64, charging: true, minutes: Some(95) }),
+        Ok("low") => Some(crate::topbar::Battery { percent: 12, charging: false, minutes: Some(34), milliwatts: Some(6200) }),
+        _ => Some(crate::topbar::Battery { percent: 64, charging: true, minutes: Some(95), milliwatts: Some(18400) }),
     };
     crate::topbar::status::Snapshot {
         volume: None,

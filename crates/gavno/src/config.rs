@@ -128,11 +128,13 @@ impl Default for DockConfig {
 #[serde(default)]
 pub struct BarConfig {
     pub enabled: bool,
+    /// Play the theme's volume-change sound when the volume keys change it.
+    pub volume_sound: bool,
     #[serde(flatten)]
     unknown: toml::Table,
 }
 impl Default for BarConfig {
-    fn default() -> Self { Self { enabled: true, unknown: Default::default() } }
+    fn default() -> Self { Self { enabled: true, volume_sound: true, unknown: Default::default() } }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]

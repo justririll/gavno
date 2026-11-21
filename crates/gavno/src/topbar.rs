@@ -77,8 +77,15 @@ pub struct Battery {
     /// Minutes until empty (discharging) or full (charging), when the
     /// firmware reports a usable rate.
     pub minutes: Option<u32>,
+    /// Power flowing out of (or into, while charging) the battery, in
+    /// milliwatts, when the firmware reports it.
+    pub milliwatts: Option<u32>,
 }
 impl Battery {
+    /// "4.6 W" for the quick settings footer.
+    pub fn power(&self) -> Option<String> {
+        self.milliwatts.filter(|mw| *mw > 0).map(|mw| format!("{:.1} W", mw as f64 / 1000.0))
+    }
     /// "64%  ·  1 h 35 min left" for the quick settings footer.
     pub fn summary(&self) -> String {
         let time = self.minutes.map(|m| {
@@ -138,10 +145,18 @@ pub fn read_battery(root: &Path) -> Option<Battery> {
                 .then_some(minutes.min(99 * 60) as u32)
                 .filter(|m| *m > 0)
         });
+        // power_now is µW; otherwise current_now (µA) times voltage_now (µV).
+        let milliwatts = match number("power_now") {
+            Some(uw) => Some(uw / 1000),
+            None => number("current_now").zip(number("voltage_now")).map(|(ua, uv)| (ua as u128 * uv as u128 / 1_000_000_000) as u64),
+        }
+        .filter(|_| status == "Charging" || status == "Discharging")
+        .map(|mw| mw.min(u32::MAX as u64) as u32);
         Some(Battery {
             percent,
             charging: matches!(status.as_str(), "Charging" | "Full"),
             minutes,
+            milliwatts,
         })
     })
 }
@@ -1438,6 +1453,7 @@ impl Gavno {
             self.show_layout_osd(&layout);
         }
         self.topbar.enabled = self.config.bar.enabled;
+        crate::topbar::status::VOLUME_SOUND.store(self.config.bar.volume_sound, std::sync::atomic::Ordering::Relaxed);
         self.topbar.music_panel = self.config.media.music_panel;
         self.topbar.night_light = self.config.display.night_light;
         if self.topbar.icon_theme != self.config.dock.icon_theme {
@@ -1614,7 +1630,7 @@ mod tests {
             Some(Battery {
                 percent: 87,
                 charging: true,
-                minutes: None
+                minutes: None, milliwatts: None,
             })
         );
         std::fs::write(b.join("capacity"), "broken").unwrap();
@@ -1627,7 +1643,7 @@ mod tests {
             Some(Battery {
                 percent: 75,
                 charging: false,
-                minutes: None
+                minutes: None, milliwatts: None,
             })
         );
         std::fs::write(b.join("present"), "0").unwrap();

@@ -433,6 +433,8 @@ struct Paint<'a> {
     password: Option<usize>,
     error: Option<&'a str>,
     footer: &'a str,
+    /// Battery power draw, "4.6 W".
+    power: Option<&'a str>,
     profile: Option<&'a str>,
     media: &'a crate::media::Snapshot,
 }
@@ -502,6 +504,7 @@ impl State {
             .as_ref()
             .map(|b| b.summary())
             .unwrap_or_else(|| "On AC power".into());
+        let power = info.battery.as_ref().and_then(|b| b.power());
         let masked = self.password.as_ref().map(|(_, p)| "•".repeat(p.0.chars().count().min(48)));
         let error = self.error_for(page).map(str::to_owned);
         let from_error = from.as_ref().and_then(|(p, ..)| self.error_for(*p)).map(str::to_owned);
@@ -513,6 +516,7 @@ impl State {
             password: self.password.as_ref().map(|(_, p)| p.0.chars().count()),
             error: error.as_deref(),
             footer: &footer,
+            power: power.as_deref(),
             profile: info.profile.as_deref(),
             media,
         };
@@ -662,8 +666,14 @@ fn draw_main(c: &mut Canvas, icons: &mut Icons, r: &mut GlesRenderer, p: &Paint,
         Some("performance") => Some("Performance"),
         _ => None,
     };
-    if let Some(profile) = profile {
-        c.styled_label(r, profile, t.loc.x, t.loc.y + 18, t.size.w, style(10.5, Weight::Medium, dim(TEXT, 0.6)));
+    let second = match (profile, p.power) {
+        (Some(profile), Some(power)) => Some(format!("{profile} · {power}")),
+        (Some(profile), None) => Some(profile.to_owned()),
+        (None, Some(power)) => Some(power.to_owned()),
+        (None, None) => None,
+    };
+    if let Some(second) = second {
+        c.styled_label(r, &second, t.loc.x, t.loc.y + 18, t.size.w, style(10.5, Weight::Medium, dim(TEXT, 0.6)));
     }
 }
 #[allow(clippy::too_many_arguments)]

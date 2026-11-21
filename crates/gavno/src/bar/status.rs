@@ -193,6 +193,29 @@ fn read_volume(source: bool) -> Option<Volume> {
 /// Raising the volume unmutes, as in other desktops. The laptop's speaker
 /// sink also reports muted once its hardware level reaches zero, and stayed
 /// silent until mute was toggled by hand.
+/// `bar.volume_sound`, mirrored for the status thread.
+pub static VOLUME_SOUND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+const VOLUME_SOUND_FILE: &str = "/usr/share/sounds/freedesktop/stereo/audio-volume-change.oga";
+/// Whether a volume key press should click: enabled, audible, and not within
+/// `GAP` of the previous click, so held keys do not stack sounds.
+fn volume_click_due(enabled: bool, volume: Option<Volume>, last: Option<Instant>, now: Instant) -> bool {
+    const GAP: Duration = Duration::from_millis(90);
+    enabled && volume.is_some_and(|v| !v.muted && v.level > 0.0) && last.is_none_or(|t| now.duration_since(t) >= GAP)
+}
+/// Plays the click on its own thread, which also reaps the player.
+fn play_volume_click() {
+    if !Path::new(VOLUME_SOUND_FILE).is_file() {
+        return;
+    }
+    let _ = std::thread::Builder::new().name("volume-click".into()).spawn(|| {
+        let _ = Process::new("paplay")
+            .args(["--property=media.role=event", VOLUME_SOUND_FILE])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    });
+}
 fn unmute_sink(volume: Option<Volume>) {
     if volume.is_some_and(|v| v.muted) {
         run_wpctl(&["set-mute", "@DEFAULT_AUDIO_SINK@", "0"]);
@@ -326,6 +349,7 @@ pub fn spawn(handle: &LoopHandle<'static, Gavno>) -> Option<Sender<Command>> {
             let mut battery_at = Instant::now() + Duration::from_secs(60);
             let mut throttle = VolumeThrottle::default();
             let mut mic = None;
+            let mut last_click: Option<Instant> = None;
             refresh(&mut snapshot, false);
             if snapshot != previous {
                 let _ = events.send(Event::Status(snapshot.clone()));
@@ -431,6 +455,11 @@ pub fn spawn(handle: &LoopHandle<'static, Gavno>) -> Option<Sender<Command>> {
                                 unmute_sink(snapshot.volume);
                             }
                             snapshot.volume = read_volume(false);
+                            let now = Instant::now();
+                            if volume_click_due(VOLUME_SOUND.load(std::sync::atomic::Ordering::Relaxed), snapshot.volume, last_click, now) {
+                                last_click = Some(now);
+                                play_volume_click();
+                            }
                         }
                         Media::Mute => {
                             run_wpctl(&["set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"]);
@@ -615,6 +644,18 @@ fn network_worker(commands: &Sender<Command>) -> zbus::Result<()> {
 mod tests {
     use super::*;
     #[test]
+    fn volume_click_needs_sound_on_audible_and_a_gap() {
+        let now = Instant::now();
+        let loud = Some(Volume { level: 0.4, muted: false });
+        assert!(volume_click_due(true, loud, None, now));
+        assert!(!volume_click_due(false, loud, None, now), "bar.volume_sound = false");
+        assert!(!volume_click_due(true, Some(Volume { level: 0.4, muted: true }), None, now));
+        assert!(!volume_click_due(true, Some(Volume { level: 0.0, muted: false }), None, now));
+        assert!(!volume_click_due(true, None, None, now));
+        assert!(!volume_click_due(true, loud, Some(now), now + Duration::from_millis(40)), "held keys do not stack");
+        assert!(volume_click_due(true, loud, Some(now), now + Duration::from_millis(120)));
+    }
+    #[test]
     fn wpctl_parser() {
         assert_eq!(
             parse_wpctl("Volume: 0.45\n"),
@@ -667,7 +708,7 @@ mod tests {
             battery_icons(&Battery {
                 percent: 15,
                 charging: false,
-                minutes: None
+                minutes: None, milliwatts: None,
             }),
             [
                 "battery-level-10-symbolic",
@@ -679,7 +720,7 @@ mod tests {
             battery_icons(&Battery {
                 percent: 100,
                 charging: true,
-                minutes: None
+                minutes: None, milliwatts: None,
             })[0],
             "battery-level-100-charging-symbolic"
         );
@@ -687,7 +728,7 @@ mod tests {
             battery_icons(&Battery {
                 percent: 79,
                 charging: true,
-                minutes: None
+                minutes: None, milliwatts: None,
             })[1],
             "battery-good-charging-symbolic"
         );

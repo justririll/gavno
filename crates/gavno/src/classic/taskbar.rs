@@ -30,6 +30,8 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+/// Extra tray width for the battery percentage, "100%".
+const TRAY_PERCENT: i32 = 32;
 #[derive(Debug)]
 pub struct Layout {
     pub bar: Rect,
@@ -40,11 +42,13 @@ pub struct Layout {
     pub desktop: Rect,
 }
 impl Layout {
-    pub fn new(size: Size<i32, Logical>, count: usize, align: Align) -> Self {
+    /// `battery` widens the tray for the battery percentage.
+    pub fn new(size: Size<i32, Logical>, count: usize, align: Align, battery: bool) -> Self {
         let y = size.h - TASKBAR_HEIGHT;
         let desktop = rect(size.w - 8, y, 8, TASKBAR_HEIGHT);
         let clock = rect(desktop.loc.x - 104, y + 4, 100, 40);
-        let tray = rect(clock.loc.x - 108, y + 4, 104, 40);
+        let tray_w = if battery { 104 + TRAY_PERCENT } else { 104 };
+        let tray = rect(clock.loc.x - tray_w - 4, y + 4, tray_w, 40);
         let slots = ((tray.loc.x - 16) / 44).max(1) as usize;
         let count = count.min(slots.saturating_sub(1));
         let width = (count as i32 * 44 - 4).max(0);
@@ -277,7 +281,7 @@ impl Taskbar {
                 self.views.push(View {
                     output: output.clone(),
                     canvas: Default::default(),
-                    layout: Layout::new(size, 0, align),
+                    layout: Layout::new(size, 0, align, false),
                     hits: Vec::new(),
                     visible: false,
                     cached: Vec::new(),
@@ -317,7 +321,7 @@ impl Taskbar {
         v.hits.clear();
         v.visible = true;
         self.offset = self.offset.min(self.apps.len().saturating_sub(1));
-        v.layout = Layout::new(size, self.apps.len().saturating_sub(self.offset), align);
+        v.layout = Layout::new(size, self.apps.len().saturating_sub(self.offset), align, status.battery.is_some());
         let l = &v.layout;
         let dy = ((1.0 - p) * TASKBAR_HEIGHT as f64).round() as i32;
         let c = &mut v.canvas;
@@ -415,6 +419,11 @@ impl Taskbar {
         for (i, name) in slots.into_iter().enumerate() {
             let r = rect(tray.loc.x + 10 + i as i32 * 32, tray.loc.y + 12, 16, 16);
             c.icon(renderer, &mut self.icons, &[name], theme, r);
+        }
+        if let Some(b) = &status.battery {
+            let text = format!("{}%", b.percent);
+            let st = tstyle(tsize::CAPTION, Weight::SemiBold, if b.percent <= 15 && !b.charging { [1.0, 0.55, 0.5, 1.0] } else { TEXT });
+            look::tabular_label(c, renderer, &text, tray.loc.x + 10 + 2 * 32 + 20, tray.loc.y + 13, st);
         }
         let clock = button(c, l.clock, Hit::Clock);
         let time = crate::ui::theme::LocalTime::now();
@@ -733,7 +742,7 @@ mod tests {
         for width in [1280, 1646] {
             for align in [Align::Center, Align::Left] {
                 for count in [0, 4, 12, 128] {
-                    let l = Layout::new((width, 926).into(), count, align);
+                    let l = Layout::new((width, 926).into(), count, align, false);
                     assert_eq!(l.start.loc.x, 8);
                     if align == Align::Left {
                         assert!(l.apps.first().is_none_or(|r| r.loc.x == 52));

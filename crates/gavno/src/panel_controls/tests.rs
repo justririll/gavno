@@ -30,7 +30,7 @@ fn state(page: Page) -> State {
 }
 fn info() -> Info {
     Info {
-        battery: Some(crate::topbar::Battery { percent: 64, charging: true, minutes: Some(95) }),
+        battery: Some(crate::topbar::Battery { percent: 64, charging: true, minutes: Some(95), milliwatts: None }),
         profile: Some("balanced".into()),
         brightness: Some(0.7),
         code_available: true,
@@ -52,7 +52,7 @@ fn legacy_status_cannot_overwrite_panel_volume_or_resurrect_a_removed_output() {
     let legacy = status::Snapshot {
         volume: legacy_volume,
         brightness: Some(status::Brightness { name: "fake-panel".into(), value: 70, max: 100 }),
-        battery: Some(crate::topbar::Battery { percent: 42, charging: false, minutes: None }),
+        battery: Some(crate::topbar::Battery { percent: 42, charging: false, minutes: None, milliwatts: None }),
         network: status::Network::Wired,
         profile: None,
     };
@@ -416,7 +416,7 @@ fn stream_icons_resolve_through_desktop_entries_and_devices_get_proper_icons() {
 }
 #[test]
 fn battery_summary_and_estimates_from_sysfs() {
-    let b = |percent, charging, minutes| crate::topbar::Battery { percent, charging, minutes };
+    let b = |percent, charging, minutes| crate::topbar::Battery { percent, charging, minutes, milliwatts: None };
     assert_eq!(b(64, false, Some(95)).summary(), "64% · 1 h 35 min left");
     assert_eq!(b(64, true, Some(20)).summary(), "64% · 20 min until full");
     assert_eq!(b(100, true, None).summary(), "100%");
@@ -433,7 +433,8 @@ fn battery_summary_and_estimates_from_sysfs() {
     ] {
         std::fs::write(dir.join(key), value).unwrap();
     }
-    assert_eq!(crate::topbar::read_battery(&root).unwrap().minutes, Some(150));
+    let b = crate::topbar::read_battery(&root).unwrap();
+    assert_eq!((b.minutes, b.milliwatts, b.power().as_deref()), (Some(150), Some(10000), Some("10.0 W")));
     std::fs::write(dir.join("status"), "Charging").unwrap();
     assert_eq!(crate::topbar::read_battery(&root).unwrap().minutes, Some(150));
     std::fs::write(dir.join("power_now"), "0").unwrap();
@@ -441,6 +442,13 @@ fn battery_summary_and_estimates_from_sysfs() {
     std::fs::write(dir.join("status"), "Full").unwrap();
     std::fs::write(dir.join("power_now"), "1000").unwrap();
     assert_eq!(crate::topbar::read_battery(&root).unwrap().minutes, None);
+    assert_eq!(crate::topbar::read_battery(&root).unwrap().milliwatts, None, "a full battery draws nothing");
+    // Without power_now: current (µA) times voltage (µV).
+    std::fs::remove_file(dir.join("power_now")).unwrap();
+    std::fs::write(dir.join("status"), "Discharging").unwrap();
+    std::fs::write(dir.join("current_now"), "1500000").unwrap();
+    std::fs::write(dir.join("voltage_now"), "4000000").unwrap();
+    assert_eq!(crate::topbar::read_battery(&root).unwrap().milliwatts, Some(6000));
     std::fs::remove_dir_all(root).unwrap();
 }
 #[test]
