@@ -309,11 +309,21 @@ pub fn data_dirs() -> Vec<PathBuf> {
 #[derive(Default)]
 pub struct DesktopEntries {
     entries: Option<Vec<DesktopEntry>>,
+    stamp: u64,
 }
 impl DesktopEntries {
+    /// Drops the cached entries when applications were installed or removed
+    /// since they were read; the next `resolve` reads them again.
+    pub fn refresh_if_stale(&mut self) {
+        let stamp = apps_stamp();
+        if self.entries.is_some() && self.stamp != stamp {
+            self.entries = None;
+        }
+        self.stamp = stamp;
+    }
     #[cfg(test)]
     pub fn from_entries(entries: Vec<DesktopEntry>) -> Self {
-        Self { entries: Some(entries) }
+        Self { entries: Some(entries), stamp: 0 }
     }
     pub fn resolve(&mut self, app: &str) -> Option<DesktopEntry> {
         let entries = self.entries.get_or_insert_with(|| load(&data_dirs()));

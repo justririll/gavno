@@ -167,7 +167,7 @@ pub struct Dock {
     initialized: bool,
     config: DockConfig,
     pinned: Vec<String>,
-    entries: DesktopEntries,
+    pub(crate) entries: DesktopEntries,
     icons: Icons,
     apps: Vec<App>,
     order: Vec<ItemKey>,
@@ -689,6 +689,26 @@ fn bounce_offset(elapsed: Duration) -> f64 {
 }
 
 impl Gavno {
+    /// Saves pins changed from a menu. The taskbar shares the dock's list
+    /// unless `[classic] pinned` gives it one of its own.
+    pub(crate) fn save_pins(&mut self, taskbar: bool) {
+        let own_taskbar = self.config.classic.pinned.is_some();
+        if taskbar && own_taskbar {
+            let pins = self.classic.taskbar.pins.clone().unwrap_or_default();
+            self.config.classic.pinned = Some(pins.clone());
+            crate::config::write_list_in_background("classic", "pinned", pins);
+            return;
+        }
+        let pins = if taskbar { self.classic.taskbar.pins.clone().unwrap_or_default() } else { self.dock.pinned.clone() };
+        self.dock.pinned = pins.clone();
+        if !own_taskbar {
+            self.classic.taskbar.pins = Some(pins.clone());
+        }
+        self.config.dock.pinned = pins.clone();
+        crate::config::write_list_in_background("dock", "pinned", pins);
+    }
+}
+impl Gavno {
     pub fn shell_visible(&self, output: &Output) -> bool {
         self.greeter.is_none()
             && !self.protocols.locks.locked
@@ -801,12 +821,14 @@ impl Gavno {
                             }
                         }
                         2 => {
+                            gv.dock.entries.refresh_if_stale();
                             if let Some(i) = gv.dock.pinned.iter().position(|id| id == &menu.id) {
                                 gv.dock.pinned.remove(i);
                             } else {
-                                gv.dock.pinned.push(menu.id.clone());
+                                let id = gv.dock.canonical(&menu.id);
+                                gv.dock.pinned.push(id);
                             }
-                            tracing::info!(app=%menu.id,"dock pin changed in memory; config writing is not implemented");
+                            gv.save_pins(false);
                         }
                         _ => {}
                     }

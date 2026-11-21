@@ -657,12 +657,15 @@ impl Gavno {
                         }
                     }
                     Hit::Pin(id) => {
+                        gv.dock.entries.refresh_if_stale();
+                        let id = gv.dock.canonical(&id);
                         let pins = gv.classic.taskbar.pins.get_or_insert_with(Vec::new);
                         if let Some(i) = pins.iter().position(|p| p == &id) {
                             pins.remove(i);
                         } else {
                             pins.push(id);
                         }
+                        gv.save_pins(true);
                     }
                     Hit::Close(id) => {
                         if let Some(app) = gv.classic.taskbar.apps.iter().find(|a| a.id == id) {

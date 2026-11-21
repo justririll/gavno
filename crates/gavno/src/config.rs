@@ -444,6 +444,70 @@ impl Config {
     }
 }
 
+/// Writes `[table] key = [values]` into the user's config file on a worker
+/// thread, keeping its comments and layout. The file watcher then reloads it.
+pub(crate) fn write_list_in_background(table: &'static str, key: &'static str, values: Vec<String>) {
+    let Some(path) = config_path(|name| std::env::var_os(name)) else { return };
+    let spawned = std::thread::Builder::new().name("config-write".into()).spawn(move || {
+        if let Err(error) = write_list(&path, table, key, &values) {
+            tracing::warn!(%error, path = %path.display(), "cannot save the configuration");
+        }
+    });
+    if let Err(error) = spawned {
+        tracing::warn!(%error, "cannot start the configuration writer");
+    }
+}
+
+fn write_list(path: &std::path::Path, table: &str, key: &str, values: &[String]) -> Result<(), String> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e.to_string()),
+    };
+    let updated = set_list(&text, table, key, values)?;
+    if updated == text {
+        return Ok(());
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    let tmp = path.with_extension("toml.tmp");
+    std::fs::write(&tmp, updated).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, path).map_err(|e| e.to_string())
+}
+
+fn set_list(text: &str, table: &str, key: &str, values: &[String]) -> Result<String, String> {
+    let mut document: toml_edit::DocumentMut = text.parse().map_err(|e: toml_edit::TomlError| e.to_string())?;
+    let section = document.entry(table).or_insert(toml_edit::table());
+    let section = section.as_table_mut().ok_or_else(|| format!("[{table}] is not a table"))?;
+    let mut array = toml_edit::Array::new();
+    for value in values {
+        array.push(value.as_str());
+    }
+    match section.get_mut(key).and_then(|item| item.as_value_mut()) {
+        Some(existing) => {
+            let decor = existing.decor().clone();
+            *existing = toml_edit::Value::Array(array);
+            *existing.decor_mut() = decor;
+        }
+        None => {
+            section.insert(key, toml_edit::value(array));
+        }
+    }
+    Ok(document.to_string())
+}
+
+#[cfg(test)]
+#[test]
+fn set_list_keeps_comments_and_other_keys() {
+    let text = "# mine\n[dock]\n# pins\npinned = [\"foot\", \"firefox-bin\"] # old\nmagnify = true\n";
+    let out = set_list(text, "dock", "pinned", &["foot".into(), "firefox-esr".into()]).unwrap();
+    assert!(out.contains("# mine") && out.contains("# pins") && out.contains("magnify = true"));
+    assert!(out.contains("pinned = [\"foot\", \"firefox-esr\"]"));
+    let fresh = set_list("", "classic", "pinned", &["a".into()]).unwrap();
+    assert_eq!(toml::from_str::<toml::Table>(&fresh).unwrap()["classic"]["pinned"][0].as_str(), Some("a"));
+}
+
 fn config_path(env: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
     let path = |name| env(name).filter(|s| !s.is_empty()).map(PathBuf::from);
     path("GAVNO_CONFIG").or_else(|| {
