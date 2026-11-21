@@ -828,6 +828,34 @@ mod tests {
         h.gv.workspaces.ensure(&output);
         output
     }
+    #[test]
+    fn classic_title_bar_respects_clients_that_draw_their_own() {
+        use smithay::{
+            reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode,
+            wayland::shell::xdg::decoration::XdgDecorationHandler,
+        };
+        let mut h = Harness::new();
+        let _o = output(&mut h, "first", 0);
+        settle(&mut h, ShellMode::Classic);
+        let mode = |w: &Window| w.toplevel().unwrap().with_pending_state(|s| s.decoration_mode);
+        let native = h.window();
+        h.gv.new_decoration(native.toplevel().unwrap().clone());
+        let custom = h.window();
+        h.gv.new_decoration(custom.toplevel().unwrap().clone());
+        h.gv.request_mode(custom.toplevel().unwrap().clone(), Mode::ClientSide);
+        for w in [&native, &custom] {
+            crate::handlers::xdg_shell::prepare_initial_configure(&h.gv, w);
+            w.toplevel().unwrap().send_configure();
+            h.gv.map_new_window(w.clone());
+        }
+        assert_eq!(mode(&native), Some(Mode::ServerSide));
+        assert_eq!(mode(&custom), Some(Mode::ClientSide), "VS Code-style custom title bar keeps its own");
+        // Switching the custom title bar off later asks for ours.
+        h.gv.request_mode(custom.toplevel().unwrap().clone(), Mode::ServerSide);
+        assert_eq!(mode(&custom), Some(Mode::ServerSide));
+        h.gv.request_mode(native.toplevel().unwrap().clone(), Mode::ClientSide);
+        assert_eq!(mode(&native), Some(Mode::ClientSide));
+    }
     fn settle(h: &mut Harness, mode: ShellMode) {
         h.gv.set_shell_mode(mode);
         h.gv.classic.progress.jump(mode.progress());

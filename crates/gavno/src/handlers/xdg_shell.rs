@@ -234,7 +234,8 @@ pub(crate) fn prepare_initial_configure(gv: &Gavno, window: &Window) {
         && gv.classic.settled == crate::classic::ShellMode::Classic;
     // Negotiate the same style as sync_classic_decorations before sizing. Its
     // idle callback must not change decoration/size after the first configure.
-    let ssd = classic && gv.features.on(crate::module::Feature::Decorations) && gv.greeter.is_none();
+    let ssd = classic && gv.features.on(crate::module::Feature::Decorations) && gv.greeter.is_none()
+        && !crate::handlers::xdg_decoration::wants_client_side(toplevel.wl_surface());
     toplevel.with_pending_state(|state| {
         if state.decoration_mode.is_some() { state.decoration_mode = Some(if ssd { Mode::ServerSide } else { Mode::ClientSide }); }
     });

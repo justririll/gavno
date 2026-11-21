@@ -63,7 +63,8 @@ impl Gavno {
             .chain(self.workspaces.all().map(|v| &v.window))
         {
             // Each window takes the style of the output it lives on.
-            let desired = if enabled && self.window_shell(w).0 == super::ShellMode::Classic {
+            let own = w.toplevel().is_some_and(|t| crate::handlers::xdg_decoration::wants_client_side(t.wl_surface()));
+            let desired = if enabled && !own && self.window_shell(w).0 == super::ShellMode::Classic {
                 Mode::ServerSide
             } else {
                 Mode::ClientSide

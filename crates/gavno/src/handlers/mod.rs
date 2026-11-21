@@ -10,7 +10,7 @@ mod pointer_constraints;
 mod relative_pointer;
 pub mod session_lock;
 pub mod xdg_activation;
-mod xdg_decoration;
+pub(crate) mod xdg_decoration;
 mod compositor;
 pub mod layer_shell;
 pub mod xdg_shell;
