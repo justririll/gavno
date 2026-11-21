@@ -112,8 +112,28 @@ impl Brightness {
         self.value as f64 / self.max as f64
     }
 }
+/// Power draw samples kept for the quick settings graph: 40 reads, about
+/// 20 minutes while the bar is shown.
+pub const POWER_SAMPLES: usize = 40;
+/// Reads the battery and appends its power draw to the history, which
+/// restarts when the battery switches between charging and discharging.
+fn read_battery_sample(snapshot: &mut Snapshot) {
+    let battery = super::read_battery(Path::new("/sys/class/power_supply"));
+    if battery.as_ref().map(|b| b.charging) != snapshot.battery.as_ref().map(|b| b.charging) {
+        snapshot.power_history.clear();
+    }
+    if let Some(mw) = battery.as_ref().and_then(|b| b.milliwatts) {
+        if snapshot.power_history.len() >= POWER_SAMPLES {
+            snapshot.power_history.remove(0);
+        }
+        snapshot.power_history.push(mw);
+    }
+    snapshot.battery = battery;
+}
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Snapshot {
+    /// Battery power draw in milliwatts, oldest first.
+    pub power_history: Vec<u32>,
     pub volume: Option<Volume>,
     pub brightness: Option<Brightness>,
     pub battery: Option<Battery>,
@@ -306,7 +326,7 @@ fn refresh(snapshot: &mut Snapshot, fallback: bool) {
     snapshot.profile = read_power_profile();
     snapshot.volume = read_volume(false);
     snapshot.brightness = read_brightness(Path::new("/sys/class/backlight"));
-    snapshot.battery = super::read_battery(Path::new("/sys/class/power_supply"));
+    read_battery_sample(snapshot);
     if fallback {
         snapshot.network = fallback_network();
     }
@@ -382,7 +402,7 @@ pub fn spawn(handle: &LoopHandle<'static, Gavno>) -> Option<Sender<Command>> {
                 // Low battery warnings must also fire while the bar is hidden
                 // (fullscreen); only the battery is read then, once a minute.
                 if !visible && battery_at <= Instant::now() {
-                    snapshot.battery = super::read_battery(Path::new("/sys/class/power_supply"));
+                    read_battery_sample(&mut snapshot);
                     battery_at = Instant::now() + Duration::from_secs(60);
                 }
                 if snapshot != previous {

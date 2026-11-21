@@ -643,6 +643,7 @@ impl TopBar {
     pub(crate) fn quick_info(&self, classic: bool, media: bool) -> crate::panel_controls::Info {
         crate::panel_controls::Info {
             battery: self.status.battery.clone(),
+            power_history: self.status.power_history.clone(),
             profile: self.status.profile.clone(),
             brightness: self.status.brightness.as_ref().map(|b| b.level()),
             dnd: self.notification_dnd,

@@ -55,6 +55,7 @@ fn legacy_status_cannot_overwrite_panel_volume_or_resurrect_a_removed_output() {
         battery: Some(crate::topbar::Battery { percent: 42, charging: false, minutes: None, milliwatts: None }),
         network: status::Network::Wired,
         profile: None,
+        ..Default::default()
     };
     // Before a successful panel response, legacy volume remains the fallback.
     h.gv.panel_controls_event(worker::Event {
@@ -718,6 +719,19 @@ fn keyboard_selection_scrolls_the_mixer_without_drawing_outside_the_card() {
     }
     // The first row brings its section header back into view.
     assert_eq!(ui::scroll_to(&rows, 0, 5, viewport), 0);
+}
+#[test]
+fn power_graph_sits_between_sliders_and_footer_buttons() {
+    let s = state(Page::Main);
+    let rows = s.rows(Page::Main, &info());
+    let plain = ui::geometry(Page::Main, &rows, (1646, 926).into(), false, 0, extras(false));
+    let graph = ui::geometry(Page::Main, &rows, (1646, 926).into(), false, 0, ui::Extras { graph: true, ..Default::default() });
+    assert_eq!(plain.graph.size.h, 0);
+    assert!(graph.graph.size.h > 0);
+    assert!(graph.panel.size.h > plain.panel.size.h, "the panel grows for the graph");
+    assert!(graph.graph.loc.y + graph.graph.size.h <= graph.footer_text.loc.y);
+    let sliders = graph.cells.iter().filter(|c| rows[c.row].kind == super::RowKind::Slider).map(|c| c.area.loc.y + c.area.size.h).max().unwrap();
+    assert!(sliders <= graph.graph.loc.y);
 }
 #[test]
 fn main_page_hits_cover_tiles_chevrons_sliders_mute_and_footer() {

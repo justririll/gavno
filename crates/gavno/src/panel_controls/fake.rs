@@ -21,6 +21,7 @@ pub fn status() -> crate::topbar::status::Snapshot {
         battery,
         network: crate::topbar::status::Network::Offline,
         profile: Some("balanced".into()),
+        power_history: vec![4200, 3900, 5100, 7800, 12600, 9400, 6100, 4800, 4500, 6200],
     }
 }
 pub fn snapshots() -> (wifi::Snapshot, bluetooth::Snapshot, audio::Snapshot) {

@@ -28,6 +28,7 @@ const PAD: i32 = look::space::LG;
 const TILE_H: i32 = 72;
 const SLIDER_H: i32 = 28;
 const BUTTON: i32 = 32;
+const GRAPH_H: i32 = 76;
 const HEADER_H: i32 = 56;
 const ROW_H: i32 = 44;
 const SLIDER_ROW_H: i32 = 52;
@@ -65,6 +66,8 @@ pub(super) struct Extras {
     pub error: bool,
     pub password: bool,
     pub hints: bool,
+    /// The main page shows the power draw graph.
+    pub graph: bool,
 }
 impl Extras {
     fn height(self) -> i32 {
@@ -105,6 +108,8 @@ pub(super) struct Geometry {
     pub media: Option<[Rect; 4]>,
     /// Battery and power profile text on the main page.
     pub footer_text: Rect,
+    /// The power draw graph card on the main page.
+    pub graph: Rect,
     pub error: Rect,
     pub password: Rect,
     pub hints: Rect,
@@ -325,6 +330,10 @@ fn main_geometry(rows: &[Row], size: Size<i32, Logical>, classic: bool, extras: 
         });
         y += SLIDER_H + 12;
     }
+    if extras.graph {
+        g.graph = rect(PAD, y, inner, GRAPH_H);
+        y += GRAPH_H + 12;
+    }
     y += 4;
     let buttons: Vec<usize> = rows
         .iter()
@@ -367,6 +376,7 @@ fn shift(g: &mut Geometry, dx: i32, dy: i32) {
     }
     g.media = g.media.map(|m| m.map(s));
     g.footer_text = s(g.footer_text);
+    g.graph = s(g.graph);
     g.error = s(g.error);
     g.password = s(g.password);
     g.hints = s(g.hints);
@@ -435,6 +445,8 @@ struct Paint<'a> {
     footer: &'a str,
     /// Battery power draw, "4.6 W".
     power: Option<&'a str>,
+    /// Power draw history in milliwatts, oldest first.
+    history: &'a [u32],
     profile: Option<&'a str>,
     media: &'a crate::media::Snapshot,
 }
@@ -472,6 +484,7 @@ impl State {
             error: self.error_for(page).is_some(),
             password: page == Page::Wifi && self.password.is_some(),
             hints: self.keyboard || self.code_mode,
+            graph: page == Page::Main && info.power_history.len() >= 2,
         };
         if page != Page::Main {
             self.offset = scroll_to(&rows, self.selected, self.offset, viewport(size, classic, extras));
@@ -479,7 +492,7 @@ impl State {
         let geo = geometry(page, &rows, size, classic, self.offset, extras);
         let from = slide.map(|(from, t)| {
             let rows = self.rows(from, info);
-            let extras = Extras { hints: extras.hints, ..Default::default() };
+            let extras = Extras { hints: extras.hints, graph: from == Page::Main && extras.graph, ..Default::default() };
             let geo = geometry(from, &rows, size, classic, 0, extras);
             (from, rows, geo, t)
         });
@@ -517,6 +530,7 @@ impl State {
             error: error.as_deref(),
             footer: &footer,
             power: power.as_deref(),
+            history: &info.power_history,
             profile: info.profile.as_deref(),
             media,
         };
@@ -658,6 +672,9 @@ fn draw_main(c: &mut Canvas, icons: &mut Icons, r: &mut GlesRenderer, p: &Paint,
             _ => {}
         }
     }
+    if g.graph.size.w > 0 {
+        draw_power_graph(c, r, p, g.graph);
+    }
     let t = g.footer_text;
     c.styled_label(r, p.footer, t.loc.x, t.loc.y + 1, t.size.w, style(12.0, Weight::SemiBold, TEXT));
     let profile = match p.profile {
@@ -674,6 +691,38 @@ fn draw_main(c: &mut Canvas, icons: &mut Icons, r: &mut GlesRenderer, p: &Paint,
     };
     if let Some(second) = second {
         c.styled_label(r, &second, t.loc.x, t.loc.y + 18, t.size.w, style(10.5, Weight::Medium, dim(TEXT, 0.6)));
+    }
+}
+/// Bars of the recent battery power draw, scaled to at least 5 W so a calm
+/// idle stays low, with the latest value and the peak.
+fn draw_power_graph(c: &mut Canvas, r: &mut GlesRenderer, p: &Paint, area: Rect) {
+    c.rect(area, radius::TILE, SURFACE, 0.0, LINE);
+    let (x, y, w) = (area.loc.x + 12, area.loc.y, area.size.w - 24);
+    c.styled_label(r, "Power draw", x, y + 8, w / 2, style(11.0, Weight::SemiBold, dim(TEXT, 0.75)));
+    let watts = |mw: u32| format!("{:.1} W", mw as f64 / 1000.0);
+    let (Some(&last), Some(&peak)) = (p.history.last(), p.history.iter().max()) else { return };
+    let now = watts(last);
+    let st = style(12.0, Weight::SemiBold, TEXT);
+    let nw = look::tabular_width(c, &now, st);
+    look::tabular_label(c, r, &now, x + w - nw, y + 7, st);
+    let peak_text = format!("peak {}", watts(peak));
+    let pst = style(10.0, Weight::Medium, dim(TEXT, 0.5));
+    let pw = look::tabular_width(c, &peak_text, pst);
+    look::tabular_label(c, r, &peak_text, x + w - nw - pw - 10, y + 9, pst);
+    let chart = rect(x, y + 30, w, area.size.h - 30 - 10);
+    let scale = peak.max(5000) as f64;
+    let n = crate::topbar::status::POWER_SAMPLES as i32;
+    let slot = (chart.size.w / n).max(2);
+    let bar_w = (slot - 2).max(1);
+    let right = chart.loc.x + chart.size.w;
+    for (i, &mw) in p.history.iter().rev().enumerate() {
+        let h = ((mw as f64 / scale) * chart.size.h as f64).round().max(2.0) as i32;
+        let bx = right - (i as i32 + 1) * slot + (slot - bar_w);
+        if bx < chart.loc.x {
+            break;
+        }
+        let alpha = if i == 0 { 1.0 } else { 0.55 };
+        c.rect(rect(bx, chart.loc.y + chart.size.h - h, bar_w, h), 1.0, [p.accent[0], p.accent[1], p.accent[2], alpha], 0.0, LINE);
     }
 }
 #[allow(clippy::too_many_arguments)]

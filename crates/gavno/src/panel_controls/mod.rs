@@ -102,6 +102,8 @@ enum Action {
 #[derive(Clone, Debug, Default)]
 pub struct Info {
     pub battery: Option<crate::topbar::Battery>,
+    /// Battery power draw in milliwatts, oldest first, for the graph.
+    pub power_history: Vec<u32>,
     pub profile: Option<String>,
     /// Backlight or software dimming, 0.0..=1.0.
     pub brightness: Option<f64>,
