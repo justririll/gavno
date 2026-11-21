@@ -985,7 +985,6 @@ fn action_label(action: &Action) -> (&'static str, &'static str) {
                     ToggleMode => "switch shell",
                     Start => "Start",
                     ShowDesktop => "show desktop",
-                    MinimizeAll => "minimize all",
                     Settings => "settings",
                     TaskManager => "task manager",
                     Quick => "quick settings",

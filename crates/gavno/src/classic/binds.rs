@@ -12,7 +12,6 @@ pub enum ClassicAction {
     ToggleMode,
     Start,
     ShowDesktop,
-    MinimizeAll,
     Settings,
     TaskManager,
     Quick,
@@ -55,8 +54,8 @@ pub fn binding(
     }
     let action = match key {
         keysyms::KEY_e | keysyms::KEY_E => return None, // The normal bind already uses the configured file manager.
-        keysyms::KEY_d | keysyms::KEY_D => ShowDesktop,
-        keysyms::KEY_m | keysyms::KEY_M => MinimizeAll,
+        // Mod+D keeps opening the launcher, as in GAVNO mode.
+        keysyms::KEY_m | keysyms::KEY_M => ShowDesktop,
         keysyms::KEY_l | keysyms::KEY_L => return Some(Action::Lock),
         keysyms::KEY_i | keysyms::KEY_I => Settings,
         keysyms::KEY_r | keysyms::KEY_R => Run,
@@ -80,7 +79,6 @@ impl Gavno {
                 ToggleMode => gv.set_shell_mode(gv.classic.mode.other()),
                 Start => gv.toggle_start(),
                 ShowDesktop => gv.show_classic_desktop(true),
-                MinimizeAll => gv.show_classic_desktop(false),
                 Settings => gv.launch_shell(&gv.config.classic.settings_command.clone(), None),
                 TaskManager => gv.launch_shell(&gv.config.classic.task_manager.clone(), None),
                 Quick | Notifications => {
@@ -157,8 +155,7 @@ mod tests {
             );
             h.gv.classic.mode = crate::classic::ShellMode::Classic;
             for (key, expected) in [
-                (keysyms::KEY_d, ClassicAction::ShowDesktop),
-                (keysyms::KEY_m, ClassicAction::MinimizeAll),
+                (keysyms::KEY_m, ClassicAction::ShowDesktop),
                 (keysyms::KEY_i, ClassicAction::Settings),
                 (keysyms::KEY_r, ClassicAction::Run),
                 (keysyms::KEY_a, ClassicAction::Quick),
@@ -174,6 +171,11 @@ mod tests {
                     Some(Action::Classic(expected))
                 );
             }
+            assert_eq!(
+                h.gv.bind_for(Keysym::from(keysyms::KEY_d), &mods),
+                Some(h.gv.config.launcher.clone().map(Action::Spawn).unwrap_or(Action::ToggleLauncher)),
+                "Mod+D opens the launcher in Classic too"
+            );
             assert_eq!(
                 h.gv.bind_for(Keysym::from(keysyms::KEY_Return), &mods),
                 Some(Action::Spawn(h.gv.config.terminal.clone()))

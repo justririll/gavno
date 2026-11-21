@@ -487,7 +487,9 @@ it). The clock dot marks unread history. These controls belong to the optional
 
 `Mod+Shift+W` toggles the shell in either mode. It has no other default binding.
 The configured Mod key acts as Win. Its unaccompanied tap opens Start in
-Classic. Unlisted chords retain their normal GAVNO action.
+Classic. Unlisted chords retain their normal GAVNO action, so Mod+D still opens
+the launcher; Mod+M toggles show desktop (minimizes every window, then restores
+them). Classic draws no accent focus ring: title bars show focus.
 
 Classic leaves code mode and makes every workspace float. Former tiles,
 including those forced by code mode, keep their tiling arrangement as floating

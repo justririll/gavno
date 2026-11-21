@@ -67,7 +67,8 @@ struct FocusDraw {
     dim: f32,
 }
 impl FocusDraw {
-    /// `ssd`: Classic title bars show focus themselves. `any_focused`: with no
+    /// `ssd`: Classic title bars (GAVNO's or the app's own) show focus themselves,
+    /// so Classic draws no accent ring or dimming. `any_focused`: with no
     /// focused window (a layer surface has the keyboard) nothing is dimmed.
     fn new(style: FocusStyle, mode: WindowMode, ssd: bool, level: f32, any_focused: bool) -> Self {
         if ssd || mode == WindowMode::Fullscreen {
@@ -1140,7 +1141,7 @@ impl WindowDecor {
             let mode = mode_state(window).mode;
             let focused = self.fade.focused() == Some(window);
             let ssd = self.classic && crate::classic::decor::ssd(window);
-            let draw = FocusDraw::new(self.style, mode, ssd, self.fade.level(window, time), self.fade.focused().is_some());
+            let draw = FocusDraw::new(self.style, mode, ssd || self.classic, self.fade.level(window, time), self.fade.focused().is_some());
             let titled = ssd && mode != WindowMode::Fullscreen;
             let radius = corner_radius(mode) * scale.x as f32;
             // A title bar sits on top: lift the rounding rectangle one radius
