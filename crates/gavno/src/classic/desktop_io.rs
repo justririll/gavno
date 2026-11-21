@@ -34,6 +34,10 @@ pub enum Reply {
     Scan(io::Result<Scan>),
     Saved(io::Result<()>),
     Operation(io::Result<Option<(String, String)>>),
+    /// A new file or folder: its name, so its rename starts once it shows.
+    Created(io::Result<String>),
+    /// "Open with" candidates for the item named here.
+    OpenWith(String, super::desktop_menu::OpenWith),
     System(Sample),
 }
 pub fn paths() -> io::Result<Paths> {
@@ -511,6 +515,18 @@ impl Gavno {
                                 }
                             }
                         }
+                        // A file or folder just made from the menu: select it
+                        // and start renaming it, Windows style.
+                        if let Some(name) = self.classic.desktop.pending_rename.take() {
+                            match self.classic.desktop.items.iter().position(|item| item.name == name) {
+                                Some(index) => {
+                                    self.classic.desktop.selection.items = std::iter::once(index).collect();
+                                    self.classic.desktop.selection.anchor = Some(index);
+                                    self.start_desktop_rename(index, true);
+                                }
+                                None => self.classic.desktop.pending_rename = Some(name),
+                            }
+                        }
                         let repaired = self.classic.desktop.repair();
                         if repaired {
                             self.persist_desktop();
@@ -525,6 +541,24 @@ impl Gavno {
                 }
                 if std::mem::take(&mut self.classic.desktop.rescan) {
                     self.request_desktop_scan();
+                }
+            }
+            Reply::Created(result) => match result {
+                Ok(name) => {
+                    self.classic.desktop.pending_rename = Some(name);
+                    self.request_desktop_scan();
+                }
+                Err(error) => tracing::warn!(%error, "cannot create on the desktop"),
+            },
+            Reply::OpenWith(name, open_with) => {
+                let d = &mut self.classic.desktop;
+                let current = d.menu.as_ref().and_then(|m| m.item).and_then(|i| d.items.get(i)).map(|i| i.name.clone());
+                if current.as_deref() == Some(name.as_str()) {
+                    if let Some(menu) = &mut d.menu {
+                        menu.open_with = open_with;
+                    }
+                    d.changed();
+                    self.queue_redraw_all();
                 }
             }
             Reply::Saved(result) => {
@@ -835,5 +869,261 @@ pub(crate) mod tests {
         assert!(h.gv.classic.desktop.items.is_empty());
         std::thread::sleep(Duration::from_millis(30));
         let _ = fs::remove_dir_all(root);
+    }
+}
+
+/// Creates `kind` on the desktop under the first free name, from `templates`
+/// for a template, and returns that name.
+pub fn create_entry(paths: &Paths, kind: &super::desktop_menu::NewKind, templates: Option<&Path>) -> io::Result<String> {
+    use super::desktop_menu::NewKind;
+    if *kind == NewKind::Folder {
+        return new_folder(paths);
+    }
+    let base = kind.base_name();
+    let (stem, ext) = split_name(&base);
+    let source = match kind {
+        NewKind::Template(name) => Some(fs::read(templates.ok_or_else(|| io::Error::other("no templates"))?.join(name))?),
+        _ => None,
+    };
+    for n in 1..10000 {
+        let name = if n == 1 { base.clone() } else { format!("{stem} {n}{ext}") };
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        if *kind == NewKind::Script {
+            options.mode(0o755);
+        }
+        match options.open(paths.desktop.join(&name)) {
+            Ok(mut file) => {
+                file.write_all(source.as_deref().unwrap_or(kind.contents().as_bytes()))?;
+                return Ok(name);
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(io::Error::other("No free file name"))
+}
+
+/// `report.tar.gz` -> (`report`, `.tar.gz`); a leading dot is part of the stem.
+pub fn split_name(name: &str) -> (&str, &str) {
+    let start = usize::from(name.starts_with('.'));
+    match name[start..].find('.') {
+        Some(i) => name.split_at(start + i),
+        None => (name, ""),
+    }
+}
+
+/// `~/Templates` (or the XDG templates directory) and the files in it.
+pub fn templates() -> (Option<PathBuf>, Vec<String>) {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let dir = home.map(|h| h.join("Templates")).filter(|d| d.is_dir());
+    let mut names: Vec<String> = dir.as_ref().and_then(|d| fs::read_dir(d).ok()).into_iter().flatten().flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| !n.starts_with('.'))
+        .collect();
+    names.sort();
+    names.truncate(16);
+    (dir, names)
+}
+
+/// The MIME type of `path` from the shared-mime-info glob list, falling back
+/// to text/plain for text and application/octet-stream otherwise.
+pub fn mime_type(path: &Path) -> String {
+    use std::sync::LazyLock;
+    static GLOBS: LazyLock<(Vec<(String, String)>, Vec<(String, String)>)> = LazyLock::new(|| {
+        let mut suffixes = Vec::new();
+        let mut names = Vec::new();
+        for dir in crate::desktop_entry::data_dirs() {
+            let Ok(text) = fs::read_to_string(dir.join("mime/globs2")) else { continue };
+            for line in text.lines().filter(|l| !l.starts_with('#')) {
+                let mut parts = line.splitn(4, ':');
+                let (Some(_weight), Some(mime), Some(glob)) = (parts.next(), parts.next(), parts.next()) else { continue };
+                if let Some(suffix) = glob.strip_prefix('*') {
+                    if !suffix.contains(['*', '?', '[']) {
+                        suffixes.push((suffix.to_lowercase(), mime.to_owned()));
+                    }
+                } else if !glob.contains(['*', '?', '[']) {
+                    names.push((glob.to_owned(), mime.to_owned()));
+                }
+            }
+        }
+        // Longest suffix first, so .tar.gz beats .gz; ties keep file order.
+        suffixes.sort_by_key(|(s, _)| std::cmp::Reverse(s.len()));
+        (suffixes, names)
+    });
+    if path.is_dir() {
+        return "inode/directory".into();
+    }
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let (suffixes, names) = &*GLOBS;
+    if let Some((_, mime)) = names.iter().find(|(n, _)| *n == name) {
+        return mime.clone();
+    }
+    let lower = name.to_lowercase();
+    if let Some((_, mime)) = suffixes.iter().find(|(s, _)| lower.ends_with(s.as_str())) {
+        return mime.clone();
+    }
+    let mut head = [0u8; 512];
+    let read = fs::File::open(path).and_then(|mut f| f.read(&mut head)).unwrap_or(0);
+    if !head[..read].contains(&0) {
+        "text/plain".into()
+    } else {
+        "application/octet-stream".into()
+    }
+}
+
+fn mimeapps_default(mime: &str) -> Option<String> {
+    let mut files = Vec::new();
+    if let Some(config) = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config"))) {
+        files.push(config.join("mimeapps.list"));
+    }
+    files.push(PathBuf::from("/etc/xdg/mimeapps.list"));
+    for dir in crate::desktop_entry::data_dirs() {
+        files.push(dir.join("applications/mimeapps.list"));
+    }
+    for file in files {
+        let Ok(text) = fs::read_to_string(file) else { continue };
+        let mut section = false;
+        for line in text.lines().map(str::trim) {
+            if line.starts_with('[') {
+                section = line == "[Default Applications]";
+                continue;
+            }
+            if let Some(value) = line.strip_prefix(mime).and_then(|r| r.trim_start().strip_prefix('=')).filter(|_| section) {
+                if let Some(first) = value.split(';').map(str::trim).find(|v| !v.is_empty()) {
+                    return Some(first.trim_end_matches(".desktop").to_owned());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn open_with_state() -> Option<PathBuf> {
+    std::env::var_os("XDG_STATE_HOME").map(PathBuf::from).filter(|p| p.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state")))
+        .map(|p| p.join("gavno/open-with"))
+}
+
+/// `mime<TAB>id;id;id` lines: the last apps used per type, newest first.
+fn load_recent(path: &Path) -> Vec<(String, Vec<String>)> {
+    fs::read_to_string(path).unwrap_or_default().lines().filter_map(|line| {
+        let (mime, ids) = line.split_once('\t')?;
+        Some((mime.to_owned(), ids.split(';').filter(|s| !s.is_empty()).map(str::to_owned).collect()))
+    }).collect()
+}
+
+/// Puts `id` first among the last three apps used for `mime`.
+pub fn remember_open_with(mime: &str, id: &str) {
+    let Some(path) = open_with_state() else { return };
+    let mut table = load_recent(&path);
+    match table.iter_mut().find(|(m, _)| m == mime) {
+        Some((_, ids)) => {
+            ids.retain(|i| i != id);
+            ids.insert(0, id.to_owned());
+            ids.truncate(3);
+        }
+        None => table.push((mime.to_owned(), vec![id.to_owned()])),
+    }
+    table.truncate(256);
+    let text: String = table.iter().map(|(m, ids)| format!("{m}\t{}\n", ids.join(";"))).collect();
+    if let Some(dir) = path.parent() {
+        let _ = fs::create_dir_all(dir);
+    }
+    let tmp = path.with_extension("tmp");
+    if fs::write(&tmp, text).and_then(|_| fs::rename(&tmp, &path)).is_err() {
+        tracing::warn!(path = %path.display(), "cannot save the Open with history");
+    }
+}
+
+/// Apps for `path`: the last three used for its type first, else its default
+/// app, then every other app that declares the type. Blocking, for workers.
+pub fn open_with(path: &Path, theme: &str) -> super::desktop_menu::OpenWith {
+    let mime = mime_type(path);
+    let entries = crate::desktop_entry::load_all_with_icons(theme);
+    let recent = open_with_state().map(|p| load_recent(&p)).unwrap_or_default()
+        .into_iter().find(|(m, _)| *m == mime).map(|(_, ids)| ids).unwrap_or_default();
+    rank_open_with(&mime, entries, &recent, mimeapps_default(&mime).as_deref())
+}
+
+pub fn rank_open_with(mime: &str, entries: Vec<crate::desktop_entry::DesktopEntry>, recent: &[String], default: Option<&str>) -> super::desktop_menu::OpenWith {
+    let text = mime.starts_with("text/") || mime == "application/x-shellscript" || mime.ends_with("+xml") || mime == "application/json";
+    let fits = |e: &crate::desktop_entry::DesktopEntry| {
+        e.mime_types.iter().any(|m| m == mime)
+            || (text && e.mime_types.iter().any(|m| m == "text/plain"))
+            || (mime == "inode/directory" && e.categories.iter().any(|c| c == "TextEditor" || c == "IDE"))
+    };
+    let mut apps: Vec<_> = Vec::new();
+    for id in recent {
+        if let Some(e) = entries.iter().find(|e| &e.id == id) {
+            apps.push(e.clone());
+        }
+    }
+    let recent_count = apps.len();
+    if let Some(e) = default.and_then(|d| entries.iter().find(|e| e.id == d)) {
+        if !apps.contains(e) {
+            apps.push(e.clone());
+        }
+    }
+    let mut others: Vec<_> = entries.iter().filter(|e| fits(e) && !e.hidden_from_menus && !apps.contains(e)).cloned().collect();
+    others.sort_by_key(|e| e.name.to_lowercase());
+    apps.extend(others);
+    apps.truncate(10);
+    super::desktop_menu::OpenWith { mime: mime.to_owned(), apps, recent: recent_count, ready: true }
+}
+
+#[cfg(test)]
+mod menu_io_tests {
+    use super::*;
+    use crate::desktop_entry::DesktopEntry;
+
+    fn paths(tag: &str) -> Paths {
+        let root = std::env::temp_dir().join(format!("gavno-menu-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("Desktop")).unwrap();
+        Paths { desktop: root.join("Desktop"), state: root.join("state"), home: root }
+    }
+
+    #[test]
+    fn new_entries_get_free_names_contents_and_modes() {
+        use super::super::desktop_menu::NewKind;
+        let p = paths("new");
+        assert_eq!(create_entry(&p, &NewKind::Text, None).unwrap(), "New text document.txt");
+        assert_eq!(create_entry(&p, &NewKind::Text, None).unwrap(), "New text document 2.txt");
+        assert_eq!(create_entry(&p, &NewKind::Cpp, None).unwrap(), "main.cpp");
+        assert!(fs::read_to_string(p.desktop.join("main.cpp")).unwrap().contains("int main()"));
+        let script = create_entry(&p, &NewKind::Script, None).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(fs::metadata(p.desktop.join(script)).unwrap().permissions().mode() & 0o111, 0o111);
+        fs::create_dir_all(p.home.join("Templates")).unwrap();
+        fs::write(p.home.join("Templates/Lab.cpp"), "// lab\n").unwrap();
+        let made = create_entry(&p, &NewKind::Template("Lab.cpp".into()), Some(&p.home.join("Templates"))).unwrap();
+        assert_eq!(fs::read_to_string(p.desktop.join(made)).unwrap(), "// lab\n");
+        assert_eq!(create_entry(&p, &NewKind::Folder, None).unwrap(), "New folder");
+        assert_eq!(split_name("a.tar.gz"), ("a", ".tar.gz"));
+        assert_eq!(split_name(".bashrc"), (".bashrc", ""));
+        let _ = fs::remove_dir_all(&p.home);
+    }
+
+    fn app(id: &str, mimes: &str) -> DesktopEntry {
+        DesktopEntry::parse(id, &format!("[Desktop Entry]\nName={id}\nExec={id} %F\nMimeType={mimes}\n"), None).unwrap()
+    }
+
+    #[test]
+    fn open_with_puts_recent_apps_first_then_the_default_then_the_rest() {
+        let apps = vec![app("zathura", "application/pdf;"), app("evince", "application/pdf;"), app("code", "text/plain;"), app("mpv", "video/mp4;")];
+        let fresh = rank_open_with("application/pdf", apps.clone(), &[], Some("evince"));
+        assert_eq!(fresh.apps.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), ["evince", "zathura"]);
+        assert_eq!(fresh.recent, 0);
+        let used = rank_open_with("application/pdf", apps.clone(), &["zathura".into()], Some("evince"));
+        assert_eq!(used.apps[0].id, "zathura");
+        assert_eq!(used.recent, 1);
+        // Text types also reach plain-text editors.
+        let text = rank_open_with("text/x-c++src", apps, &[], None);
+        assert_eq!(text.apps.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), ["code"]);
+        let command = text.apps[0].command_with("foot", &["/home/me/a b.cpp".into()]).unwrap();
+        assert_eq!(command, "'code' '/home/me/a b.cpp'");
     }
 }

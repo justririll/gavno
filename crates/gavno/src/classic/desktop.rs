@@ -175,12 +175,16 @@ pub struct Rename {
     pub error: Option<String>,
     pub cursor: usize,
     pub select_all: bool,
+    /// The selection covers `value[..select_to]`: the whole name, or only the
+    /// part before the extension.
+    pub select_to: usize,
     pub pending: bool,
 }
 impl Rename {
     fn clear_selection(&mut self) -> bool {
         if self.select_all {
-            self.value.clear();
+            let end = self.select_to.min(self.value.len());
+            self.value.replace_range(..end, "");
             self.cursor = 0;
             self.select_all = false;
             true
@@ -231,7 +235,7 @@ impl Rename {
     }
     pub fn move_cursor(&mut self, right: bool) {
         if self.select_all {
-            self.cursor = if right { self.value.len() } else { 0 };
+            self.cursor = if right { self.select_to.min(self.value.len()) } else { 0 };
             self.select_all = false;
         } else if right {
             self.cursor += self.value[self.cursor..]
@@ -246,42 +250,7 @@ impl Rename {
         }
     }
 }
-pub struct Menu {
-    pub point: Point<i32, Logical>,
-    pub item: Option<usize>,
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MenuAction {
-    Open,
-    Reveal,
-    Rename,
-    Trash,
-    Terminal,
-    Files,
-    NewFolder,
-    Refresh,
-    Settings,
-}
-impl Menu {
-    pub fn actions(&self) -> &'static [(MenuAction, &'static str)] {
-        if self.item.is_some() {
-            &[
-                (MenuAction::Open, "Open"),
-                (MenuAction::Reveal, "Open in Files"),
-                (MenuAction::Rename, "Rename"),
-                (MenuAction::Trash, "Move to Trash"),
-            ]
-        } else {
-            &[
-                (MenuAction::Terminal, "Open terminal here"),
-                (MenuAction::Files, "Open in Files"),
-                (MenuAction::NewFolder, "New folder"),
-                (MenuAction::Refresh, "Refresh"),
-                (MenuAction::Settings, "Display settings"),
-            ]
-        }
-    }
-}
+pub use super::desktop_menu::{Menu, MenuAction};
 #[derive(Default)]
 pub struct Writer {
     pub sequence: AtomicU64,
@@ -306,6 +275,8 @@ pub struct Desktop {
     pub selection: Selection,
     pub drag: Option<Drag>,
     pub rename: Option<Rename>,
+    /// Name of an entry just created, renamed as soon as a scan shows it.
+    pub pending_rename: Option<String>,
     pub menu: Option<Menu>,
     pub focused: bool,
     pub output: Option<Output>,
@@ -338,6 +309,7 @@ impl Default for Desktop {
             drag: None,
             rename: None,
             menu: None,
+            pending_rename: None,
             focused: false,
             output: None,
             size: (0, 0).into(),
@@ -532,32 +504,9 @@ impl Desktop {
         self.changed();
         true
     }
-    pub fn menu_rect(&self) -> Option<Rect> {
-        let m = self.menu.as_ref()?;
-        let height = m.actions().len() as i32 * 30 + 12;
-        Some(rect(
-            m.point.x.min((self.size.w - 244).max(0)),
-            m.point
-                .y
-                .min((self.size.h - TASKBAR_HEIGHT - height - 8).max(0)),
-            240,
-            height,
-        ))
-    }
-    pub fn menu_action(&self, p: Point<f64, Logical>) -> Option<MenuAction> {
-        let r = self.menu_rect()?;
-        if !r.to_f64().contains(p) {
-            return None;
-        }
-        let i = ((p.y - r.loc.y as f64 - 6.0) / 30.0).floor() as isize;
-        if i < 0 {
-            return None;
-        }
-        self.menu
-            .as_ref()?
-            .actions()
-            .get(i as usize)
-            .map(|(action, _)| *action)
+    /// Where menus may go: the desktop above the taskbar.
+    pub fn menu_bounds(&self) -> Size<i32, Logical> {
+        (self.size.w, self.size.h - TASKBAR_HEIGHT).into()
     }
     pub fn append(
         &mut self,
@@ -657,28 +606,21 @@ impl Desktop {
         output: &Output,
         out: &mut Vec<GavnoRenderElement>,
         scale: f64,
+        accent: [f32; 4],
+        theme: &str,
     ) {
         if self.output.as_ref() != Some(output) {
             return;
         }
-        let Some(panel) = self.menu_rect() else {
+        if self.menu.is_none() {
             return;
-        };
+        }
         let key = (self.revision, scale.to_bits());
         if self.overlay_prepared != Some(key) {
             self.overlay.begin(scale);
-            self.overlay
-                .glass(panel, crate::ui::style::radius::ROW, crate::ui::style::PANEL_BG);
+            let bounds = self.menu_bounds();
             if let Some(menu) = &self.menu {
-                for (i, (_, label)) in menu.actions().iter().enumerate() {
-                    self.overlay.label(
-                        label,
-                        rect(panel.loc.x + 12, panel.loc.y + 13 + i as i32 * 30, 216, 20),
-                        12.0,
-                        1,
-                        false,
-                    );
-                }
+                menu.draw(&mut self.overlay, bounds, accent, theme);
             }
             self.overlay_prepared = Some(key);
         }
@@ -942,6 +884,7 @@ mod editor_tests {
             value: "old.txt".into(),
             cursor: 7,
             select_all: true,
+            select_to: 7,
             pending: false,
             error: None,
         };

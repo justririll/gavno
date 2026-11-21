@@ -55,6 +55,16 @@ impl Gavno {
         })
     }
     pub fn classic_desktop_motion(&mut self, pos: Point<f64, Logical>) {
+        if self.features.on(Feature::Classic) && self.classic.desktop.menu.is_some() {
+            if let Some(p) = self.classic_desktop_local(pos) {
+                let bounds = self.classic.desktop.menu_bounds();
+                if self.classic.desktop.menu.as_mut().is_some_and(|m| m.hover(p, bounds)) {
+                    self.classic.desktop.changed();
+                    self.queue_redraw_all();
+                }
+            }
+            return;
+        }
         if !self.features.on(Feature::Classic) || self.classic.desktop.drag.is_none() {
             return;
         }
@@ -153,15 +163,21 @@ impl Gavno {
                 if !pressed {
                     return true;
                 }
-                let action = gv
-                    .classic_desktop_local(pos)
-                    .and_then(|p| gv.classic.desktop.menu_action(p));
-                let item = gv.classic.desktop.menu.as_ref().and_then(|m| m.item);
-                gv.classic.desktop.menu = None;
-                if button == 0x110 {
-                    if let Some(action) = action {
-                        gv.desktop_action(action, item);
-                    }
+                let bounds = gv.classic.desktop.menu_bounds();
+                let local = gv.classic_desktop_local(pos);
+                let clicked = match (local, gv.classic.desktop.menu.as_mut()) {
+                    (Some(p), Some(menu)) if button == 0x110 => menu.click(p, bounds),
+                    _ => Ok(None),
+                };
+                let Ok(action) = clicked else {
+                    // A submenu row: it opens, the menu stays.
+                    gv.classic.desktop.changed();
+                    gv.queue_redraw_all();
+                    return true;
+                };
+                let menu = gv.classic.desktop.menu.take();
+                if let (Some(action), Some(menu)) = (action, menu) {
+                    gv.desktop_action(action, &menu);
                 }
                 gv.classic.desktop.changed();
                 gv.queue_redraw_all();
@@ -188,10 +204,24 @@ impl Gavno {
                         gv.classic.desktop.selection.click(i, false, false);
                     }
                 }
-                gv.classic.desktop.menu = Some(Menu {
-                    point: p.to_i32_round(),
-                    item,
-                });
+                let info = item.and_then(|i| gv.classic.desktop.items.get(i).map(|it| (i, it.real(), it.kind == Kind::Folder)));
+                let (_, templates) = desktop_io::templates();
+                gv.classic.desktop.menu = Some(Menu::new(
+                    p.to_i32_round(),
+                    info,
+                    super::desktop_menu::installed_editors(),
+                    templates,
+                ));
+                // "Open with" needs the app list and the file type: a worker
+                // fills it in while the menu is already showing.
+                if let (Some((i, true, _)), Some(paths)) = (info, gv.classic.desktop.paths.clone()) {
+                    let name = gv.classic.desktop.items[i].name.clone();
+                    let theme = gv.config.dock.icon_theme.clone();
+                    desktop_io::spawn_job(gv, move || {
+                        let found = desktop_io::open_with(&paths.desktop.join(&name), &theme);
+                        Reply::OpenWith(name, found)
+                    });
+                }
                 gv.classic.desktop.changed();
                 gv.queue_redraw_all();
                 return true;
@@ -377,6 +407,7 @@ impl Gavno {
                     keysyms::KEY_a | keysyms::KEY_A if mods.ctrl => {
                         if let Some(rename) = &mut gv.classic.desktop.rename {
                             rename.select_all = true;
+                            rename.select_to = rename.value.len();
                             rename.cursor = rename.value.len();
                         }
                     }
@@ -405,6 +436,7 @@ impl Gavno {
                     }
                 }
                 keysyms::KEY_Delete => gv.trash_desktop_selection(),
+                keysyms::KEY_F5 => gv.request_desktop_scan(),
                 keysyms::KEY_F2 => {
                     if let Some(i) = gv.classic.desktop.selection.items.iter().next().copied() {
                         gv.rename_desktop_item(i);
@@ -422,6 +454,10 @@ impl Gavno {
         })
     }
     fn rename_desktop_item(&mut self, index: usize) {
+        self.start_desktop_rename(index, false);
+    }
+    /// `stem`: select the name without its extension, as after creating it.
+    pub(super) fn start_desktop_rename(&mut self, index: usize, stem: bool) {
         if let Some(item) = self
             .classic
             .desktop
@@ -429,15 +465,22 @@ impl Gavno {
             .get(index)
             .filter(|item| item.real())
         {
+            let select_to = if stem && item.kind == Kind::File {
+                desktop_io::split_name(&item.name).0.len()
+            } else {
+                item.name.len()
+            };
             self.classic.desktop.rename = Some(Rename {
                 index,
                 value: item.name.clone(),
-                cursor: item.name.len(),
+                cursor: select_to,
                 select_all: true,
+                select_to,
                 pending: false,
                 error: None,
             });
             self.classic.desktop.focused = true;
+            self.classic.desktop.changed();
         }
     }
     fn open_desktop_item(&mut self, index: usize, reveal: bool) {
@@ -535,7 +578,17 @@ impl Gavno {
             )
         });
     }
-    fn desktop_action(&mut self, action: MenuAction, item: Option<usize>) {
+    fn desktop_action(&mut self, action: MenuAction, menu: &Menu) {
+        let item = menu.item;
+        let target = || -> Option<std::path::PathBuf> {
+            let paths = self.classic.desktop.paths.as_ref()?;
+            Some(match item.and_then(|i| self.classic.desktop.items.get(i)) {
+                Some(it) if it.real() => paths.desktop.join(&it.name),
+                Some(_) => return None,
+                None => paths.desktop.clone(),
+            })
+        };
+        let target = target();
         match action {
             MenuAction::Open => {
                 if let Some(i) = item {
@@ -567,19 +620,47 @@ impl Gavno {
                 }
             }
             MenuAction::Terminal => {
-                if let Some(paths) = &self.classic.desktop.paths {
+                if let Some(dir) = &target {
                     crate::state::spawn_shell(&format!(
                         "cd -- {} && exec {}",
-                        crate::desktop_entry::shell_quote(&paths.desktop.to_string_lossy()),
+                        crate::desktop_entry::shell_quote(&dir.to_string_lossy()),
                         self.config.terminal
                     ));
                 }
             }
-            MenuAction::NewFolder => {
+            MenuAction::New(kind) => {
                 if let Some(paths) = self.classic.desktop.paths.clone() {
+                    let (templates, _) = desktop_io::templates();
                     desktop_io::spawn_job(self, move || {
-                        Reply::Operation(desktop_io::new_folder(&paths).map(|_| None))
+                        Reply::Created(desktop_io::create_entry(&paths, &kind, templates.as_deref()))
                     });
+                }
+            }
+            MenuAction::Editor(i) => {
+                if let (Some(editor), Some(path)) = (menu.editors.get(i), &target) {
+                    crate::state::spawn_shell(&format!(
+                        "{} -- {}",
+                        editor.command,
+                        crate::desktop_entry::shell_quote(&path.to_string_lossy())
+                    ));
+                }
+            }
+            MenuAction::OpenWith(i) => {
+                if let (Some(app), Some(path)) = (menu.open_with.apps.get(i).cloned(), target) {
+                    let file = path.to_string_lossy().into_owned();
+                    if let Some(command) = app.command_with(&self.config.terminal, &[file]) {
+                        crate::state::spawn_shell(&command);
+                        let mime = menu.open_with.mime.clone();
+                        std::thread::spawn(move || desktop_io::remember_open_with(&mime, &app.id));
+                    }
+                }
+            }
+            MenuAction::CopyPath => {
+                if let Some(path) = &target {
+                    crate::state::spawn_shell(&format!(
+                        "printf %s {} | wl-copy",
+                        crate::desktop_entry::shell_quote(&path.to_string_lossy())
+                    ));
                 }
             }
         }

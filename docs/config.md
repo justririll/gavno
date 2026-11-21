@@ -591,8 +591,9 @@ glyph is drawn. `start_icon` names an icon explicitly (empty means automatic).
 
 Pins name desktop-entry IDs, with or without `.desktop`. Missing applications
 are skipped. Start also accepts `@terminal`, `@files` and `@settings`, which use
-the configured commands. Taskbar Pin/Unpin changes the current session; edit
-`classic.pinned` to keep it across restarts. The taskbar is 48 logical pixels
+the configured commands. Pin/Unpin in the taskbar or the dock writes the list
+back to `config.toml` (`[classic] pinned` when it is set, else `[dock] pinned`),
+keeping the file's comments. Apps installed after login can be pinned too. The taskbar is 48 logical pixels
 high on every output, and fullscreen windows hide it. Fixed window layouts
 refit when the shell transition settles.
 
@@ -639,6 +640,20 @@ together with widget positions. Writes are atomic and happen only after changes.
 Renaming refuses existing destinations and names containing `/`; it renames the
 file, including the filename of a `.desktop` shortcut. Trash operations use
 `gio trash`, never permanent deletion.
+
+Right-clicking the desktop opens a menu with **New** (folder, text document,
+C++ and C sources, Markdown, shell script, and every file in `~/Templates`),
+a terminal here, Files, the desktop in an installed editor (VS Code, VSCodium,
+Zed, CLion, IntelliJ IDEA, Sublime Text or Kate), Refresh (F5) and display
+settings. A new entry is selected with its name ready to type over; for files
+only the part before the extension is selected. Right-clicking an icon offers
+Open, **Open with**, the editors, a terminal in a folder, Show in Files, Copy
+path, Rename (F2) and Move to Trash (Del).
+
+**Open with** lists the last three apps used for that file type first, then
+the default app from `mimeapps.list`, then every other app that declares the
+type (plain-text editors for any text file). The history lives in
+`$XDG_STATE_HOME/gavno/open-with`.
 
 Up to four panels follow the order in `widgets`; duplicates and unknown
 names are skipped. `media` shows the active MPRIS player (title, artist and

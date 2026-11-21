@@ -5,6 +5,7 @@ pub mod decor;
 pub mod desktop;
 pub mod logo;
 mod desktop_input;
+mod desktop_menu;
 mod desktop_io;
 #[cfg(test)]
 pub(crate) use desktop_io::tests as desktop_tests;

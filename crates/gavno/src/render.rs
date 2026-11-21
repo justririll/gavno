@@ -483,7 +483,7 @@ fn output_elements_inner(
     let work_area = crate::classic::reserve(smithay::utils::Rectangle::new(zone.loc + output_geo.loc, zone.size),
         if features.on(Feature::Classic) { classic.settled } else { crate::classic::ShellMode::Gavno },
         features.on(Feature::Bar) && config.bar.enabled, features.on(Feature::Dock) && config.dock.enabled, config.dock.autohide);
-    features.call(Feature::Classic, (), || classic.desktop.append_overlay(renderer, output, &mut elements, scale.x));
+    features.call(Feature::Classic, (), || classic.desktop.append_overlay(renderer, output, &mut elements, scale.x, topbar.accent(), &config.dock.icon_theme));
     let focused = classic.taskbar.focused.clone();
     features.call(Feature::Classic, (), || classic.start.append(renderer, output, output_geo.size, time, config.classic.align, accent, &config.dock.icon_theme, &mut elements));
     features.call(Feature::Classic, (), || classic.taskbar.append(renderer, output, output_geo.size, p, config.classic.align, focused.as_ref(), topbar.status(), accent, &config.dock.icon_theme, shell_visible, &mut elements));
