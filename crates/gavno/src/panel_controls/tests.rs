@@ -30,7 +30,7 @@ fn state(page: Page) -> State {
 }
 fn info() -> Info {
     Info {
-        battery: Some(crate::topbar::Battery { percent: 64, charging: true, minutes: Some(95), milliwatts: None }),
+        battery: Some(crate::topbar::Battery { percent: 64, charging: true, minutes: Some(95), milliwatts: None, charge_limit: None }),
         profile: Some("balanced".into()),
         brightness: Some(0.7),
         code_available: true,
@@ -52,7 +52,7 @@ fn legacy_status_cannot_overwrite_panel_volume_or_resurrect_a_removed_output() {
     let legacy = status::Snapshot {
         volume: legacy_volume,
         brightness: Some(status::Brightness { name: "fake-panel".into(), value: 70, max: 100 }),
-        battery: Some(crate::topbar::Battery { percent: 42, charging: false, minutes: None, milliwatts: None }),
+        battery: Some(crate::topbar::Battery { percent: 42, charging: false, minutes: None, milliwatts: None, charge_limit: None }),
         network: status::Network::Wired,
         profile: None,
         ..Default::default()
@@ -417,7 +417,7 @@ fn stream_icons_resolve_through_desktop_entries_and_devices_get_proper_icons() {
 }
 #[test]
 fn battery_summary_and_estimates_from_sysfs() {
-    let b = |percent, charging, minutes| crate::topbar::Battery { percent, charging, minutes, milliwatts: None };
+    let b = |percent, charging, minutes| crate::topbar::Battery { percent, charging, minutes, milliwatts: None, charge_limit: None };
     assert_eq!(b(64, false, Some(95)).summary(), "64% · 1 h 35 min left");
     assert_eq!(b(64, true, Some(20)).summary(), "64% · 20 min until full");
     assert_eq!(b(100, true, None).summary(), "100%");
@@ -1065,4 +1065,24 @@ fn scrolling_the_cluster_steps_volume_by_five_and_sliders_drag() {
     h.gv.panel_effect(&o, Effect::Brightness(0.4));
     assert!(matches!(brightness.try_recv(), Ok(crate::topbar::status::Command::Brightness(v)) if v == 0.4));
     assert!(h.gv.media.osd_timer.is_none());
+}
+#[test]
+fn charge_limit_tile_shows_only_with_firmware_support() {
+    let mut s = state(Page::Main);
+    let labels = |s: &State, info: &Info| -> Vec<String> {
+        s.rows(Page::Main, info).into_iter().map(|r| r.label).collect()
+    };
+    assert!(!labels(&s, &info()).iter().any(|l| l == "Charge limit"));
+    let mut limited = info();
+    limited.battery.as_mut().unwrap().charge_limit = Some(80);
+    let rows = s.rows(Page::Main, &limited);
+    let tile = rows.iter().find(|r| r.label == "Charge limit").unwrap();
+    assert!(tile.on);
+    assert_eq!(tile.detail, "80%");
+    assert_eq!(s.activate(tile.action.clone()), Some(Effect::ChargeLimit));
+    limited.battery.as_mut().unwrap().charge_limit = Some(100);
+    let rows = s.rows(Page::Main, &limited);
+    let tile = rows.iter().find(|r| r.label == "Charge limit").unwrap();
+    assert!(!tile.on);
+    assert_eq!(tile.detail, "Off");
 }

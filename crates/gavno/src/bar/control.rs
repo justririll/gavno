@@ -322,6 +322,26 @@ impl Gavno {
     pub(crate) fn panel_set_brightness(&mut self, level: f64) {
         self.set_brightness(level, false);
     }
+    /// Quick settings switch: battery charge limit 80 % ⇄ 100 %. The panel
+    /// shows the new value at once; the firmware write runs on its own thread
+    /// (it waits for the ADSP) and the next battery read reconciles a failure.
+    pub(crate) fn toggle_charge_limit(&mut self) {
+        let Some(battery) = self.media.status.battery.as_mut() else { return };
+        let Some(current) = battery.charge_limit else { return };
+        let next = if current < 100 { 100 } else { crate::topbar::CHARGE_LIMIT };
+        battery.charge_limit = Some(next);
+        let spawned = std::thread::Builder::new().name("charge-limit".into()).spawn(move || {
+            match crate::topbar::write_charge_limit(std::path::Path::new("/sys/class/power_supply"), next) {
+                Ok(()) => tracing::info!(percent = next, "battery charge limit set"),
+                Err(err) => tracing::warn!(%err, percent = next, "battery charge limit write failed"),
+            }
+        });
+        if let Err(err) = spawned {
+            tracing::warn!(%err, "charge limit thread failed to start");
+        }
+        self.guard(crate::module::Feature::Bar, (), |gv| gv.topbar.status = gv.media.status.clone());
+        self.queue_redraw_all();
+    }
     fn set_brightness(&mut self, level: f64, osd: bool) {
         self.sync_brightness();
         if self.media.brightness.software {

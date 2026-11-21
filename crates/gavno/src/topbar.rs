@@ -80,7 +80,12 @@ pub struct Battery {
     /// Power flowing out of (or into, while charging) the battery, in
     /// milliwatts, when the firmware reports it.
     pub milliwatts: Option<u32>,
+    /// The firmware's charge end threshold in percent, when it has one
+    /// (`charge_control_end_threshold`); 100 means no limit.
+    pub charge_limit: Option<u8>,
 }
+/// The charge limit the quick settings switch turns on.
+pub const CHARGE_LIMIT: u8 = 80;
 impl Battery {
     /// "4.6 W" for the quick settings footer.
     pub fn power(&self) -> Option<String> {
@@ -154,13 +159,30 @@ pub fn read_battery(root: &Path) -> Option<Battery> {
         }
         .filter(|_| status == "Charging" || status == "Discharging")
         .map(|mw| mw.min(u32::MAX as u64) as u32);
+        let charge_limit = read(&path, "charge_control_end_threshold")
+            .and_then(|v| v.parse::<u8>().ok())
+            .filter(|v| (1..=100).contains(v));
         Some(Battery {
             percent,
             charging: matches!(status.as_str(), "Charging" | "Full"),
             minutes,
             milliwatts,
+            charge_limit,
         })
     })
+}
+/// Writes the charge end threshold of the first battery that has one.
+/// The firmware answers over the ADSP link, so callers run this off the
+/// event loop.
+pub fn write_charge_limit(root: &Path, percent: u8) -> std::io::Result<()> {
+    let mut batteries: Vec<_> = std::fs::read_dir(root)?.flatten().map(|e| e.path()).collect();
+    batteries.sort();
+    let file = batteries
+        .into_iter()
+        .map(|p| p.join("charge_control_end_threshold"))
+        .find(|p| p.exists())
+        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))?;
+    std::fs::write(file, format!("{percent}\n"))
 }
 
 /// Pool indices are stable between frames. Unchanged shapes keep their damage commits.
@@ -1633,7 +1655,7 @@ mod tests {
             Some(Battery {
                 percent: 87,
                 charging: true,
-                minutes: None, milliwatts: None,
+                minutes: None, milliwatts: None, charge_limit: None,
             })
         );
         std::fs::write(b.join("capacity"), "broken").unwrap();
@@ -1646,9 +1668,13 @@ mod tests {
             Some(Battery {
                 percent: 75,
                 charging: false,
-                minutes: None, milliwatts: None,
+                minutes: None, milliwatts: None, charge_limit: None,
             })
         );
+        std::fs::write(b.join("charge_control_end_threshold"), "80\n").unwrap();
+        assert_eq!(read_battery(&root).unwrap().charge_limit, Some(80));
+        write_charge_limit(&root, 100).unwrap();
+        assert_eq!(read_battery(&root).unwrap().charge_limit, Some(100));
         std::fs::write(b.join("present"), "0").unwrap();
         assert!(read_battery(&root).is_none());
         std::fs::remove_dir_all(root).unwrap();

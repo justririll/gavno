@@ -798,7 +798,7 @@ mod tests {
             battery_icons(&Battery {
                 percent: 15,
                 charging: false,
-                minutes: None, milliwatts: None,
+                minutes: None, milliwatts: None, charge_limit: None,
             }),
             [
                 "battery-level-10-symbolic",
@@ -810,7 +810,7 @@ mod tests {
             battery_icons(&Battery {
                 percent: 100,
                 charging: true,
-                minutes: None, milliwatts: None,
+                minutes: None, milliwatts: None, charge_limit: None,
             })[0],
             "battery-level-100-charging-symbolic"
         );
@@ -818,7 +818,7 @@ mod tests {
             battery_icons(&Battery {
                 percent: 79,
                 charging: true,
-                minutes: None, milliwatts: None,
+                minutes: None, milliwatts: None, charge_limit: None,
             })[1],
             "battery-good-charging-symbolic"
         );

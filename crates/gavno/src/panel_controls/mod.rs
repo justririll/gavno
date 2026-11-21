@@ -90,6 +90,7 @@ enum Action {
     NightLight,
     DoNotDisturb,
     CodeMode,
+    ChargeLimit,
     Open(Page),
     Back,
     Settings,
@@ -119,6 +120,8 @@ pub struct Info {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Effect {
     NightLight,
+    /// Toggle the battery charge limit between 80 % and 100 %.
+    ChargeLimit,
     DoNotDisturb,
     CodeMode,
     TtyMode,
@@ -396,6 +399,17 @@ impl State {
             info.dnd,
             None,
         );
+        if let Some(limit) = info.battery.as_ref().and_then(|b| b.charge_limit) {
+            let on = limit < 100;
+            tile(
+                "Charge limit",
+                if on { format!("{limit}%") } else { "Off".into() },
+                "battery-level-80-plugged-in-symbolic",
+                Action::ChargeLimit,
+                on,
+                None,
+            );
+        }
         if info.code_available {
             tile(
                 "Code mode",
@@ -635,6 +649,7 @@ impl State {
             Action::NightLight => return Some(Effect::NightLight),
             Action::DoNotDisturb => return Some(Effect::DoNotDisturb),
             Action::CodeMode => return Some(Effect::CodeMode),
+            Action::ChargeLimit => return Some(Effect::ChargeLimit),
             Action::Tty => return Some(Effect::TtyMode),
             Action::Open(page) => self.go(page),
             Action::Back => self.go(Page::Main),
@@ -854,6 +869,7 @@ impl Gavno {
             }
             Effect::DoNotDisturb => self.bar_action(output, crate::topbar::BarAction::DoNotDisturb),
             Effect::CodeMode => self.set_code_mode(!self.code_mode),
+            Effect::ChargeLimit => self.toggle_charge_limit(),
             Effect::TtyMode => self.set_tty_mode(!self.tty.active()),
             Effect::Brightness(level) => self.panel_set_brightness(level),
             Effect::Settings => {
