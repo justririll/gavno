@@ -1,21 +1,97 @@
 use crate::{
     clipboard,
-    config::{Config, ViewMode},
-    model,
+    config::{Config, SortField, ViewMode},
+    dock::Dock,
+    icons::IconCache,
+    model::{self, FileEntry, Location, ScanError},
+    open,
     ops::{self, Operations},
-    preview, search, sidebar,
+    preview, root, root_proto, search,
+    sidebar::{Sidebar, SidebarCallbacks},
     thumbs::Thumbnails,
-    views::{Report, Views},
+    trash,
+    views::{Report, ViewCallbacks, Views},
 };
 use adw::prelude::*;
 use gtk::gdk;
 use std::{
     cell::{Cell, RefCell},
-    collections::{HashMap, HashSet},
+    collections::HashSet,
+    path::PathBuf,
     rc::Rc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Duration,
 };
 
-thread_local! {static WINDOWS:RefCell<Vec<Rc<FileWindow>>>=const{RefCell::new(Vec::new())};}
+thread_local! {
+    static WINDOWS: RefCell<Vec<Rc<FileWindow>>> = const { RefCell::new(Vec::new()) };
+}
+
+#[derive(Clone, Debug)]
+enum LoadErrorKind {
+    PermissionDenied,
+    Other(String),
+}
+
+struct TabState {
+    id: u64,
+    location: Location,
+    back: Vec<Location>,
+    forward: Vec<Location>,
+    all_entries: Vec<FileEntry>,
+    dir_writable: bool,
+    filter_query: String,
+    recursive: bool,
+    loading: bool,
+    loaded: bool,
+    needs_refresh: bool,
+    scroll_pos: f64,
+    pending_selection: Vec<String>,
+    load_cancel: Arc<AtomicBool>,
+    search_cancel: Arc<AtomicBool>,
+    search_revision: u64,
+    monitor: Option<gio::FileMonitor>,
+    debounce_source: Option<glib::SourceId>,
+    load_error: Option<LoadErrorKind>,
+}
+
+impl TabState {
+    fn new(id: u64, location: Location, pending_selection: Vec<String>) -> Self {
+        Self {
+            id,
+            location,
+            back: Vec::new(),
+            forward: Vec::new(),
+            all_entries: Vec::new(),
+            dir_writable: true,
+            filter_query: String::new(),
+            recursive: false,
+            loading: false,
+            loaded: false,
+            needs_refresh: false,
+            scroll_pos: 0.0,
+            pending_selection,
+            load_cancel: Arc::new(AtomicBool::new(false)),
+            search_cancel: Arc::new(AtomicBool::new(false)),
+            search_revision: 0,
+            monitor: None,
+            debounce_source: None,
+            load_error: None,
+        }
+    }
+
+    fn cancel_async(&mut self) {
+        self.load_cancel.store(true, Ordering::Relaxed);
+        self.search_cancel.store(true, Ordering::Relaxed);
+        self.monitor.take();
+        if let Some(id) = self.debounce_source.take() {
+            id.remove();
+        }
+    }
+}
 
 pub struct FileWindow {
     pub window: adw::ApplicationWindow,
@@ -24,185 +100,247 @@ pub struct FileWindow {
     config_revision: Cell<u64>,
     config_saving: Cell<bool>,
     toast: adw::ToastOverlay,
-    store: gio::ListStore,
-    filter: gtk::CustomFilter,
     views: Views,
-    current: RefCell<gio::File>,
-    back: RefCell<Vec<gio::File>>,
-    forward: RefCell<Vec<gio::File>>,
+    sidebar: Sidebar,
+    paned: gtk::Paned,
+    tab_strip: gtk::Box,
+    tabs: RefCell<Vec<TabState>>,
+    active_tab: Cell<usize>,
+    next_tab_id: Cell<u64>,
+    visible_entries: RefCell<Vec<FileEntry>>,
     back_button: gtk::Button,
     forward_button: gtk::Button,
     up_button: gtk::Button,
     path_stack: gtk::Stack,
+    crumbs_scroll: gtk::ScrolledWindow,
     crumbs: gtk::Box,
     path: gtk::Entry,
     search: gtk::Entry,
     search_button: gtk::ToggleButton,
-    recursive: Cell<bool>,
+    grid_button: gtk::Button,
+    list_button: gtk::Button,
     changing: Cell<bool>,
-    query: Rc<RefCell<String>>,
-    hidden: Rc<Cell<bool>>,
     status: gtk::Label,
     empty: gtk::Label,
     spinner: gtk::Spinner,
-    loading: Cell<bool>,
-    load_cancel: RefCell<gio::Cancellable>,
-    search_cancel: RefCell<gio::Cancellable>,
-    monitor: RefCell<Option<gio::Cancellable>>,
-    search_revision: Cell<u64>,
     completion_revision: Cell<u64>,
-    pending_selection: RefCell<Vec<String>>,
-    selection_scheduled: Cell<bool>,
     operations: Operations,
-    thumbs: Thumbnails,
-    volume_monitor: RefCell<Option<gio::VolumeMonitor>>,
-    places: RefCell<Option<gtk::ScrolledWindow>>,
-    dock: Rc<crate::dock::Dock>,
-    shortcuts: gtk::ShortcutController,
-    root: RefCell<Option<Rc<crate::root::RootSession>>>,
+    icon_cache: IconCache,
+    dock: Rc<Dock>,
+    root: RefCell<Option<Rc<root::RootSession>>>,
     root_button: gtk::Button,
     root_bar: gtk::Revealer,
     root_idle: RefCell<Option<glib::SourceId>>,
     access_bar: gtk::Revealer,
     access_label: gtk::Label,
+    access_button: gtk::Button,
+    access_row: gtk::Box,
     who: gtk::Label,
+    active_popover: RefCell<Option<gtk::Popover>>,
 }
 
-pub fn open(app: &adw::Application, file: gio::File, selected: Vec<String>) -> Rc<FileWindow> {
-    let state = FileWindow::new(app);
+pub fn active_window(app: &adw::Application) -> Option<Rc<FileWindow>> {
+    WINDOWS.with(|windows| windows.borrow().iter().find(|w| w.app == *app).cloned())
+}
+
+pub fn open(app: &adw::Application, location: Location, selected: Vec<String>) -> Rc<FileWindow> {
+    let state = FileWindow::new(app, location, selected);
     WINDOWS.with(|windows| windows.borrow_mut().push(state.clone()));
-    state.pending_selection.replace(selected);
-    state.navigate(file, true);
     state.window.present();
+    state.views.grab_focus();
     state
 }
-pub fn report(app: &adw::Application, message: impl AsRef<str>) {
-    let window = WINDOWS.with(|windows| windows.borrow().iter().find(|w| w.app == *app).cloned());
-    if let Some(window) = window {
-        window.notify(message.as_ref());
-    } else {
-        open(app, gio::File::for_path(glib::home_dir()), Vec::new()).notify(message.as_ref());
-    }
-}
-pub fn show_items(app: &adw::Application, uris: Vec<String>) {
-    let mut folders: HashMap<String, Vec<String>> = HashMap::new();
-    for uri in uris {
-        let item = gio::File::for_uri(&uri);
-        if let Some(parent) = item.parent() {
-            folders
-                .entry(parent.uri().to_string())
-                .or_default()
-                .push(uri);
-        }
-    }
-    for (folder, selected) in folders {
-        open(app, gio::File::for_uri(&folder), selected);
-    }
-}
+
 impl FileWindow {
-    fn new(app: &adw::Application) -> Rc<Self> {
-        let config = Rc::new(RefCell::new(Config::default()));
+    fn new(app: &adw::Application, initial_loc: Location, selected: Vec<String>) -> Rc<Self> {
+        let config = Config::load().unwrap_or_default();
+        let initial_view = config.view;
+        let initial_sort = (config.sort_field, config.sort_descending);
+        let initial_hidden = config.show_hidden;
+        let initial_w = config.window_width.unwrap_or(1140).max(640);
+        let initial_h = config.window_height.unwrap_or(720).max(460);
+        let initial_side = config.sidebar_width.unwrap_or(196).clamp(150, 360);
+
         let window = adw::ApplicationWindow::builder()
             .application(app)
             .title("Files")
-            .default_width(1120)
-            .default_height(720)
+            .default_width(initial_w)
+            .default_height(initial_h)
             .build();
-        // A hand-built header: AdwHeaderBar only gives its title its natural
-        // width, while the path pill should take all the free space.
+
+        // Header bar built left-to-right matching design/files-mockup.html.
         let header = gtk::Box::new(gtk::Orientation::Horizontal, 4);
         header.add_css_class("files-header");
-        let mut header_end: Vec<gtk::Widget> = Vec::new();
         let back_button = icon_button("go-previous-symbolic", "Back (Alt+Left)");
         let forward_button = icon_button("go-next-symbolic", "Forward (Alt+Right)");
         let up_button = icon_button("go-up-symbolic", "Up (Alt+Up)");
         header.append(&back_button);
         header.append(&forward_button);
         header.append(&up_button);
+
         let path_stack = gtk::Stack::new();
         path_stack.add_css_class("path-bar");
         path_stack.set_hexpand(true);
         let crumbs = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        let scroll = gtk::ScrolledWindow::builder()
+        let crumbs_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::External)
             .vscrollbar_policy(gtk::PolicyType::Never)
             .child(&crumbs)
             .build();
-        path_stack.add_named(&scroll, Some("crumbs"));
+        path_stack.add_named(&crumbs_scroll, Some("crumbs"));
         let path = gtk::Entry::new();
         path.set_has_frame(false);
         path.set_placeholder_text(Some("Path or file URI · Tab to complete"));
         path_stack.add_named(&path, Some("entry"));
         header.append(&path_stack);
+
         let search = gtk::Entry::new();
         search.set_placeholder_text(Some("Filter this folder"));
         search.set_visible(false);
         search.set_width_chars(22);
-        let terminal_button = icon_button("utilities-terminal-symbolic", "Terminal (F4)");
-        terminal_button.set_action_name(Some("win.dock"));
-        header_end.push(terminal_button.upcast());
-        header_end.push(search.clone().upcast());
+        header.append(&search);
+
         let search_button = gtk::ToggleButton::builder()
             .icon_name("system-search-symbolic")
-            .tooltip_text("Search (Ctrl+F for subfolders)")
+            .tooltip_text("Search subfolders (Ctrl+F)")
             .build();
-        header_end.push(search_button.clone().upcast());
-        let list_button = icon_button("view-list-symbolic", "List view (Ctrl+2)");
+        header.append(&search_button);
+
         let grid_button = icon_button("view-grid-symbolic", "Grid view (Ctrl+1)");
-        header_end.push(list_button.clone().upcast());
-        header_end.push(grid_button.clone().upcast());
+        let list_button = icon_button("view-list-symbolic", "List view (Ctrl+2)");
+        header.append(&grid_button);
+        header.append(&list_button);
+
+        let terminal_button = icon_button("utilities-terminal-symbolic", "Docked terminal (F4)");
+        terminal_button.set_action_name(Some("win.dock"));
+        header.append(&terminal_button);
+
+        let root_button = gtk::Button::new();
+        let root_content = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        root_content.append(&gtk::Image::from_icon_name("security-high-symbolic"));
+        root_content.append(&gtk::Label::new(Some("root")));
+        root_button.set_child(Some(&root_content));
+        root_button.add_css_class("root-button");
+        root_button.set_tooltip_text(Some("Root mode (Ctrl+Shift+R)"));
+        root_button.set_action_name(Some("win.root"));
+        header.append(&root_button);
+
+        let operations = Operations::new();
+        header.append(&operations.button);
+
         let menu = gio::Menu::new();
-        menu.append(Some("Show Hidden Files"), Some("win.hidden"));
+        menu.append(Some("New Tab"), Some("win.new-tab"));
         menu.append(Some("New Window"), Some("win.new-window"));
         menu.append(Some("New Folder"), Some("win.new-folder"));
-        menu.append(Some("Empty Trash…"), Some("win.empty-trash"));
-        menu.append(Some("About Files"), Some("win.about"));
+        let view_sec = gio::Menu::new();
+        view_sec.append(Some("Show Hidden Files"), Some("win.hidden"));
+        let sort_menu = gio::Menu::new();
+        sort_menu.append(Some("Name"), Some("win.sort-name"));
+        sort_menu.append(Some("Size"), Some("win.sort-size"));
+        sort_menu.append(Some("Modified"), Some("win.sort-modified"));
+        sort_menu.append(Some("Type"), Some("win.sort-type"));
+        sort_menu.append(Some("Descending"), Some("win.sort-desc"));
+        view_sec.append_submenu(Some("Sort By"), &sort_menu);
+        menu.append_section(None, &view_sec);
+        let trash_sec = gio::Menu::new();
+        trash_sec.append(Some("Empty Trash…"), Some("win.empty-trash"));
+        trash_sec.append(Some("About Files"), Some("win.about"));
+        menu.append_section(None, &trash_sec);
+
         let menu_button = gtk::MenuButton::builder()
             .icon_name("open-menu-symbolic")
             .menu_model(&menu)
             .build();
-        header_end.push(menu_button.clone().upcast());
-        let operations = Operations::new();
-        header_end.push(operations.button.clone().upcast());
-        let spinner = gtk::Spinner::new();
-        header_end.push(spinner.clone().upcast());
-        let store = gio::ListStore::new::<gio::FileInfo>();
-        let query = Rc::new(RefCell::new(String::new()));
-        let hidden = Rc::new(Cell::new(false));
-        let filter = gtk::CustomFilter::new(glib::clone!(
-            #[strong]
-            query,
-            #[strong]
-            hidden,
-            move |obj| {
-                obj.downcast_ref::<gio::FileInfo>().is_some_and(|i| {
-                    (hidden.get() || !i.is_hidden())
-                        && i.display_name()
-                            .to_lowercase()
-                            .contains(query.borrow().as_str())
-                })
-            }
-        ));
-        let filtered = gtk::FilterListModel::new(Some(store.clone()), Some(filter.clone()));
-        filtered.set_incremental(true);
-        let thumbs = Thumbnails::new();
-        // The callbacks are installed after construction through a weak state slot.
+        header.append(&menu_button);
+        header.append(&gtk::WindowControls::new(gtk::PackType::End));
+
+        let handle = gtk::WindowHandle::new();
+        handle.set_child(Some(&header));
+
         let slot: Rc<RefCell<std::rc::Weak<Self>>> = Rc::new(RefCell::new(std::rc::Weak::new()));
-        let rename = Rc::new(glib::clone!(
-            #[strong]
-            slot,
-            move |info, name| if let Some(w) = slot.borrow().upgrade() {
-                w.rename(info, name);
-            }
-        ));
         let reporter: Report = Rc::new(glib::clone!(
             #[strong]
             slot,
-            move |message: String| if let Some(w) = slot.borrow().upgrade() {
-                w.notify(&message);
+            move |message: String| {
+                if let Some(w) = slot.borrow().upgrade() {
+                    w.notify(&message);
+                }
             }
         ));
-        let views = Views::new(&filtered, thumbs.clone(), rename, reporter);
+
+        let icon_cache = IconCache::new();
+        let views = Views::new(
+            Thumbnails::new(),
+            icon_cache.clone(),
+            ViewCallbacks {
+                on_context_menu: Rc::new(glib::clone!(
+                    #[strong]
+                    slot,
+                    move |pos, x, y| {
+                        if let Some(w) = slot.borrow().upgrade() {
+                            w.handle_context_menu(pos, x, y);
+                        }
+                    }
+                )),
+                on_middle_click: Rc::new(glib::clone!(
+                    #[strong]
+                    slot,
+                    move |pos| {
+                        if let Some(w) = slot.borrow().upgrade() {
+                            w.middle_click_item(pos);
+                        }
+                    }
+                )),
+                on_sort_changed: Rc::new(glib::clone!(
+                    #[strong]
+                    slot,
+                    move |field, desc| {
+                        if let Some(w) = slot.borrow().upgrade() {
+                            w.set_sort(field, desc);
+                        }
+                    }
+                )),
+                on_drop: Rc::new(glib::clone!(
+                    #[strong]
+                    slot,
+                    move |target_dir, uris, moving, drop| {
+                        if let Some(w) = slot.borrow().upgrade() {
+                            w.handle_drop(
+                                target_dir.map(Location::Local),
+                                uris,
+                                moving,
+                                drop,
+                            );
+                        }
+                    }
+                )),
+                on_drag_uris: Rc::new(glib::clone!(
+                    #[strong]
+                    slot,
+                    move |pos| {
+                        slot.borrow()
+                            .upgrade()
+                            .map(|w| w.drag_uris_for(pos))
+                            .unwrap_or_default()
+                    }
+                )),
+                on_rename: Rc::new(glib::clone!(
+                    #[strong]
+                    slot,
+                    move |entry, new_name| {
+                        if let Some(w) = slot.borrow().upgrade() {
+                            w.rename_entry(entry, new_name);
+                        }
+                    }
+                )),
+                report: reporter.clone(),
+            },
+        );
+
+        let tab_strip = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        tab_strip.add_css_class("tab-strip");
+        tab_strip.set_visible(false);
+
         let overlay = gtk::Overlay::new();
         overlay.set_child(Some(&views.stack));
         let empty = gtk::Label::new(Some("Loading…"));
@@ -211,36 +349,32 @@ impl FileWindow {
         empty.add_css_class("dim-label");
         empty.set_can_target(false);
         overlay.add_overlay(&empty);
-        // File-view shortcuts are local to the view so the docked terminal
-        // and text entries keep Ctrl+C, Ctrl+L and friends.
-        let shortcuts = gtk::ShortcutController::new();
-        overlay.add_controller(shortcuts.clone());
-        let dock = crate::dock::Dock::new(
+
+        let dock = Dock::new(
             Rc::new(glib::clone!(
                 #[strong]
                 slot,
-                move |path: std::path::PathBuf| if let Some(w) = slot.borrow().upgrade() {
-                    let file = gio::File::for_path(&path);
-                    if file != *w.current.borrow() {
-                        w.navigate(file, true);
+                move |path: PathBuf| {
+                    if let Some(w) = slot.borrow().upgrade() {
+                        let loc = Location::Local(path);
+                        if loc != w.current_location() {
+                            w.navigate(loc, true);
+                        }
                     }
                 }
             )),
             Rc::new(glib::clone!(
                 #[strong]
                 slot,
-                move |path: std::path::PathBuf| if let Some(w) = slot.borrow().upgrade() {
-                    w.external_terminal(path);
+                move |path: PathBuf| {
+                    if let Some(w) = slot.borrow().upgrade() {
+                        w.external_terminal(path);
+                    }
                 }
             )),
-            Rc::new(glib::clone!(
-                #[strong]
-                slot,
-                move |message: String| if let Some(w) = slot.borrow().upgrade() {
-                    w.notify(&message);
-                }
-            )),
+            reporter.clone(),
         );
+
         let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
         let access_row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
         access_row.add_css_class("access-banner");
@@ -258,11 +392,16 @@ impl FileWindow {
             .transition_type(gtk::RevealerTransitionType::SlideDown)
             .child(&access_row)
             .build();
+        content.append(&tab_strip);
         content.append(&access_bar);
         content.append(&overlay);
         content.append(&dock.revealer);
+
         let footer = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         footer.add_css_class("status-footer");
+        let spinner = gtk::Spinner::new();
+        spinner.set_visible(false);
+        footer.append(&spinner);
         let status = gtk::Label::new(Some("Loading…"));
         status.set_hexpand(true);
         status.set_xalign(0.);
@@ -286,28 +425,63 @@ impl FileWindow {
         hints.append(&who);
         footer.append(&hints);
         content.append(&footer);
+
+        let sidebar = Sidebar::build(
+            &window,
+            SidebarCallbacks {
+                navigate: Rc::new(glib::clone!(
+                    #[strong]
+                    slot,
+                    move |loc| {
+                        if let Some(w) = slot.borrow().upgrade() {
+                            w.navigate(loc, true);
+                            w.views.grab_focus();
+                        }
+                    }
+                )),
+                new_tab: Rc::new(glib::clone!(
+                    #[strong]
+                    slot,
+                    move |loc| {
+                        if let Some(w) = slot.borrow().upgrade() {
+                            w.new_tab(loc, true);
+                        }
+                    }
+                )),
+                open_term: Rc::new(glib::clone!(
+                    #[strong]
+                    slot,
+                    move |path, external| {
+                        if let Some(w) = slot.borrow().upgrade() {
+                            if external {
+                                w.external_terminal(path);
+                            } else {
+                                w.dock.open(&path);
+                            }
+                        }
+                    }
+                )),
+                on_drop: Rc::new(glib::clone!(
+                    #[strong]
+                    slot,
+                    move |loc, uris, moving, drop| {
+                        if let Some(w) = slot.borrow().upgrade() {
+                            w.handle_drop(Some(loc), uris, moving, drop);
+                        }
+                    }
+                )),
+                report: reporter,
+            },
+        );
+
         let paned = gtk::Paned::new(gtk::Orientation::Horizontal);
-        paned.set_position(196);
+        paned.set_position(initial_side);
         paned.set_resize_start_child(false);
         paned.set_shrink_start_child(false);
+        paned.set_start_child(Some(&sidebar.scroll));
         paned.set_end_child(Some(&content));
-        let layout = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        for widget in header_end.iter().rev() {
-            header.append(widget);
-        }
-        let root_button = gtk::Button::new();
-        let root_content = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        root_content.append(&gtk::Image::from_icon_name("security-high-symbolic"));
-        root_content.append(&gtk::Label::new(Some("root")));
-        root_button.set_child(Some(&root_content));
-        root_button.add_css_class("root-button");
-        root_button.set_tooltip_text(Some("Root mode (Ctrl+Shift+R)"));
-        root_button.set_action_name(Some("win.root"));
-        header.append(&root_button);
-        header.append(&gtk::WindowControls::new(gtk::PackType::End));
-        let handle = gtk::WindowHandle::new();
-        handle.set_child(Some(&header));
-        layout.append(&handle);
+        paned.set_vexpand(true);
+
         let root_row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
         root_row.add_css_class("root-bar");
         let root_text = gtk::Label::new(Some(
@@ -324,522 +498,173 @@ impl FileWindow {
             .transition_type(gtk::RevealerTransitionType::SlideDown)
             .child(&root_row)
             .build();
+
+        let layout = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        layout.append(&handle);
         layout.append(&root_bar);
         layout.append(&paned);
-        paned.set_vexpand(true);
+
         let toast = adw::ToastOverlay::new();
         toast.set_child(Some(&layout));
         window.set_content(Some(&toast));
+
+        let initial_tab = TabState::new(1, initial_loc.clone(), selected);
         let this = Rc::new(Self {
             window,
             app: app.clone(),
-            config,
+            config: Rc::new(RefCell::new(config)),
             config_revision: Cell::new(0),
             config_saving: Cell::new(false),
             toast,
-            store,
-            filter,
             views,
-            current: RefCell::new(gio::File::for_path(glib::home_dir())),
-            back: RefCell::new(Vec::new()),
-            forward: RefCell::new(Vec::new()),
+            sidebar,
+            paned,
+            tab_strip,
+            tabs: RefCell::new(vec![initial_tab]),
+            active_tab: Cell::new(0),
+            next_tab_id: Cell::new(2),
+            visible_entries: RefCell::new(Vec::new()),
             back_button,
             forward_button,
             up_button,
             path_stack,
+            crumbs_scroll,
             crumbs,
             path,
             search,
             search_button,
-            recursive: Cell::new(false),
+            grid_button,
+            list_button,
             changing: Cell::new(false),
-            query,
-            hidden,
             status,
             empty,
             spinner,
-            loading: Cell::new(false),
-            load_cancel: RefCell::new(gio::Cancellable::new()),
-            search_cancel: RefCell::new(gio::Cancellable::new()),
-            monitor: RefCell::new(None),
-            search_revision: Cell::new(0),
             completion_revision: Cell::new(0),
-            pending_selection: RefCell::new(Vec::new()),
-            selection_scheduled: Cell::new(false),
             operations,
-            thumbs,
-            volume_monitor: RefCell::new(None),
-            places: RefCell::new(None),
+            icon_cache,
             dock,
-            shortcuts,
             root: RefCell::new(None),
             root_button,
             root_bar,
             root_idle: RefCell::new(None),
             access_bar,
             access_label,
+            access_button,
+            access_row,
             who,
+            active_popover: RefCell::new(None),
         });
         slot.replace(Rc::downgrade(&this));
-        let (side, monitor) = sidebar::build(
-            &this.window,
-            Rc::new(glib::clone!(
-                #[weak]
-                this,
-                move |file| this.navigate(file, true)
-            )),
-            this.reporter(),
-        );
-        paned.set_start_child(Some(&side));
-        this.places.replace(Some(side));
-        this.volume_monitor.replace(Some(monitor));
-        this.connect();
+
         this.actions();
-        this.dnd();
-        grid_button.connect_clicked(glib::clone!(
-            #[weak]
-            this,
-            move |_| this.set_view(ViewMode::Grid)
-        ));
-        list_button.connect_clicked(glib::clone!(
-            #[weak]
-            this,
-            move |_| this.set_view(ViewMode::List)
-        ));
-        glib::spawn_future_local(glib::clone!(
-            #[weak]
-            this,
-            async move {
-                match gio::spawn_blocking(Config::load).await {
-                    Ok(Ok(config)) => {
-                        this.hidden.set(config.show_hidden);
-                        this.filter.changed(gtk::FilterChange::Different);
-                        this.views
-                            .stack
-                            .set_visible_child_name(if config.view == ViewMode::Grid {
-                                "grid"
-                            } else {
-                                "list"
-                            });
-                        if let Some(action) = this
-                            .window
-                            .lookup_action("hidden")
-                            .and_downcast::<gio::SimpleAction>()
-                        {
-                            action.set_state(&config.show_hidden.to_variant());
-                        }
-                        this.config.replace(config);
-                    }
-                    Ok(Err(e)) => this.notify(&format!("Configuration: {e}")),
-                    Err(_) => this.notify("Configuration worker failed"),
-                }
-            }
-        ));
+        this.connect_signals();
+        this.apply_view_mode(initial_view);
+        this.views
+            .set_sort_indicator(initial_sort.0, initial_sort.1);
+        if let Some(action) = this
+            .window
+            .lookup_action("hidden")
+            .and_downcast::<gio::SimpleAction>()
+        {
+            action.set_state(&initial_hidden.to_variant());
+        }
+        this.render_path();
+        this.load_active_tab();
         this
     }
+
     pub fn notify(&self, message: &str) {
         self.toast.add_toast(adw::Toast::new(message));
     }
-    fn error(&self, e: glib::Error) {
-        if !ops::is_cancelled(&e) {
-            self.notify(&e.to_string());
+
+    fn close_active_popover(&self) -> bool {
+        let pop = self.active_popover.borrow_mut().take();
+        if let Some(pop) = pop {
+            pop.popdown();
+            true
+        } else {
+            false
         }
     }
+
     fn reporter(self: &Rc<Self>) -> Report {
         Rc::new(glib::clone!(
-            #[weak(rename_to=this)]
+            #[weak(rename_to = this)]
             self,
-            move |message: String| this.notify(&message)
+            move |msg: String| this.notify(&msg)
         ))
     }
-    fn connect(self: &Rc<Self>) {
-        self.window.connect_destroy(glib::clone!(
-            #[weak(rename_to=this)]
-            self,
-            move |_| {
-                this.load_cancel.borrow().cancel();
-                this.search_cancel.borrow().cancel();
-                this.operations.cancel_all();
-                if let Some(monitor) = this.monitor.borrow_mut().take() {
-                    monitor.cancel();
-                }
-                WINDOWS.with(|windows| windows.borrow_mut().retain(|w| !Rc::ptr_eq(w, &this)));
-            }
-        ));
-        self.back_button.connect_clicked(glib::clone!(
-            #[weak(rename_to=this)]
-            self,
-            move |_| this.history(false)
-        ));
-        self.forward_button.connect_clicked(glib::clone!(
-            #[weak(rename_to=this)]
-            self,
-            move |_| this.history(true)
-        ));
-        self.up_button.connect_clicked(glib::clone!(
-            #[weak(rename_to=this)]
-            self,
-            move |_| this.up()
-        ));
-        self.path.connect_activate(glib::clone!(
-            #[weak(rename_to=this)]
-            self,
-            move |entry| {
-                let value = entry.text();
-                if value.contains('\0') {
-                    this.notify("Paths cannot contain a null character");
-                    return;
-                }
-                let file = this.resolve_path(&value);
-                this.path_stack.set_visible_child_name("crumbs");
-                this.navigate(file, true);
-            }
-        ));
-        let keys = gtk::EventControllerKey::new();
-        keys.connect_key_pressed(glib::clone!(
-            #[weak(rename_to=this)]
-            self,
-            #[upgrade_or]
-            glib::Propagation::Proceed,
-            move |_, key, _, _| {
-                if key == gdk::Key::Escape {
-                    this.path_stack.set_visible_child_name("crumbs");
-                    this.views.stack.grab_focus();
-                    glib::Propagation::Stop
-                } else if key == gdk::Key::Tab {
-                    this.complete_path();
-                    glib::Propagation::Stop
-                } else {
-                    glib::Propagation::Proceed
-                }
-            }
-        ));
-        self.path.add_controller(keys);
-        self.search_button.connect_toggled(glib::clone!(
-            #[weak(rename_to=this)]
-            self,
-            move |button| {
-                if this.changing.get() {
-                    return;
-                }
-                this.search.set_visible(button.is_active());
-                if button.is_active() {
-                    this.search.grab_focus();
-                } else {
-                    this.clear_search();
-                }
-            }
-        ));
-        self.search.connect_changed(glib::clone!(
-            #[weak(rename_to=this)]
-            self,
-            move |_| if !this.changing.get() {
-                this.update_search();
-            }
-        ));
-        self.search.connect_activate(glib::clone!(
-            #[weak(rename_to=this)]
-            self,
-            move |_| if let Some(info) =
-                this.views.selection.item(0).and_downcast::<gio::FileInfo>()
-            {
-                this.open_item(info);
-            }
-        ));
-        let search_keys = gtk::EventControllerKey::new();
-        search_keys.connect_key_pressed(glib::clone!(
-            #[weak(rename_to=this)]
-            self,
-            #[upgrade_or]
-            glib::Propagation::Proceed,
-            move |_, key, _, _| {
-                if key == gdk::Key::Escape {
-                    this.search_button.set_active(false);
-                    this.views.stack.grab_focus();
-                    glib::Propagation::Stop
-                } else {
-                    glib::Propagation::Proceed
-                }
-            }
-        ));
-        self.search.add_controller(search_keys);
-        self.views.grid.connect_activate(glib::clone!(
-            #[weak(rename_to=this)]
-            self,
-            move |_, position| this.activate(position)
-        ));
-        self.views.list.connect_activate(glib::clone!(
-            #[weak(rename_to=this)]
-            self,
-            move |_, position| this.activate(position)
-        ));
-        self.views.selection.connect_selection_changed(glib::clone!(
-            #[weak(rename_to=this)]
-            self,
-            move |_, _, _| this.update_status()
-        ));
-        self.views.sorted.connect_items_changed(glib::clone!(
-            #[weak(rename_to=this)]
-            self,
-            move |_, _, _, _| {
-                this.schedule_selection();
-                this.update_status();
-            }
-        ));
-        self.views.sorted.connect_pending_notify(glib::clone!(
-            #[weak(rename_to=this)]
-            self,
-            move |_| {
-                this.schedule_selection();
-                this.update_status();
-            }
-        ));
-        let keys = gtk::EventControllerKey::new();
-        keys.connect_key_pressed(glib::clone!(
-            #[weak(rename_to=this)]
-            self,
-            #[upgrade_or]
-            glib::Propagation::Proceed,
-            move |_, key, _, state| {
-                if gtk::prelude::GtkWindowExt::focus(&this.window).is_some_and(|widget| {
-                    widget.is::<gtk::Entry>()
-                        || widget.is::<gtk::TextView>()
-                        || widget.ancestor(gtk::Entry::static_type()).is_some()
-                }) {
-                    return glib::Propagation::Proceed;
-                }
-                if state.intersects(
-                    gdk::ModifierType::CONTROL_MASK
-                        | gdk::ModifierType::ALT_MASK
-                        | gdk::ModifierType::SUPER_MASK,
-                ) {
-                    return glib::Propagation::Proceed;
-                }
-                let handled = match key {
-                    gdk::Key::space => {
-                        this.quicklook();
-                        true
-                    }
-                    gdk::Key::Return | gdk::Key::KP_Enter => {
-                        this.open_selected();
-                        true
-                    }
-                    gdk::Key::Delete => {
-                        this.delete(state.contains(gdk::ModifierType::SHIFT_MASK));
-                        true
-                    }
-                    gdk::Key::F2 => {
-                        this.views.rename_selected();
-                        true
-                    }
-                    gdk::Key::BackSpace => {
-                        this.history(false);
-                        true
-                    }
-                    gdk::Key::Escape => {
-                        this.search_button.set_active(false);
-                        this.views.selection.unselect_all();
-                        true
-                    }
-                    _ => {
-                        if let Some(c) = key
-                            .to_unicode()
-                            .filter(|c| !c.is_control() && !c.is_whitespace())
-                        {
-                            this.recursive.set(false);
-                            this.search.set_placeholder_text(Some("Filter this folder"));
-                            this.search_button.set_active(true);
-                            this.search.set_text(&format!("{}{c}", this.search.text()));
-                            this.search.set_position(-1);
-                            true
-                        } else {
-                            false
-                        }
-                    }
-                };
-                if handled {
-                    glib::Propagation::Stop
-                } else {
-                    glib::Propagation::Proceed
-                }
-            }
-        ));
-        self.window.add_controller(keys);
-        // A context gesture on each view's ancestor also covers empty space.
-        let click = gtk::GestureClick::new();
-        click.set_button(3);
-        click.connect_pressed(glib::clone!(
-            #[weak(rename_to=this)]
-            self,
-            move |gesture, _, x, y| {
-                let mut on_item = false;
-                if let Some(widget) = this.views.stack.pick(x, y, gtk::PickFlags::DEFAULT) {
-                    let mut item = Some(widget);
-                    while let Some(widget) = item {
-                        if let Some(row) = widget.downcast_ref::<gtk::Box>() {
-                            if let Some(label) =
-                                row.last_child().and_downcast::<gtk::EditableLabel>()
-                            {
-                                on_item = true;
-                                let uri = label.widget_name();
-                                for position in 0..this.views.selection.n_items() {
-                                    if this
-                                        .views
-                                        .selection
-                                        .item(position)
-                                        .and_downcast::<gio::FileInfo>()
-                                        .is_some_and(|i| model::file(&i).uri() == uri)
-                                    {
-                                        if !this.views.selection.is_selected(position) {
-                                            this.views.selection.select_item(position, true);
-                                        }
-                                        break;
-                                    }
-                                }
-                                break;
-                            }
-                        }
-                        item = widget.parent();
-                    }
-                }
-                if !on_item {
-                    this.views.selection.unselect_all();
-                }
-                this.context_menu(x, y);
-                gesture.set_state(gtk::EventSequenceState::Claimed);
-            }
-        ));
-        self.views.stack.add_controller(click);
+
+    fn current_location(&self) -> Location {
+        let idx = self.active_tab.get();
+        self.tabs
+            .borrow()
+            .get(idx)
+            .map(|t| t.location.clone())
+            .unwrap_or_else(|| Location::Local(glib::home_dir()))
     }
-    fn action(self: &Rc<Self>, name: &str, keys: &[&str], run: impl Fn(&Rc<Self>) + 'static) {
-        let action = gio::SimpleAction::new(name, None);
-        action.connect_activate(glib::clone!(
-            #[weak(rename_to=this)]
-            self,
-            move |_, _| run(&this)
-        ));
-        self.window.add_action(&action);
-        if keys.is_empty() {
-            return;
-        }
-        // Terminal keys work everywhere; the rest only in the file view.
-        if matches!(name, "dock" | "terminal" | "new-window") {
-            self.app.set_accels_for_action(&format!("win.{name}"), keys);
-            return;
-        }
-        for key in keys {
-            if let Some(trigger) = gtk::ShortcutTrigger::parse_string(key) {
-                self.shortcuts.add_shortcut(gtk::Shortcut::new(
-                    Some(trigger),
-                    Some(gtk::NamedAction::new(&format!("win.{name}"))),
-                ));
-            }
+
+    fn active_tab_id(&self) -> u64 {
+        let idx = self.active_tab.get();
+        self.tabs.borrow().get(idx).map(|t| t.id).unwrap_or(0)
+    }
+
+    fn is_trash(&self) -> bool {
+        self.current_location().is_trash()
+    }
+
+    fn apply_view_mode(&self, mode: ViewMode) {
+        self.views.set_mode(mode);
+        if mode == ViewMode::Grid {
+            self.grid_button.add_css_class("on");
+            self.list_button.remove_css_class("on");
+        } else {
+            self.list_button.add_css_class("on");
+            self.grid_button.remove_css_class("on");
         }
     }
-    fn actions(self: &Rc<Self>) {
-        self.action("back", &["<Alt>Left"], |w| w.history(false));
-        self.action("forward", &["<Alt>Right"], |w| w.history(true));
-        self.action("up", &["<Alt>Up"], |w| w.up());
-        self.action("path", &["<Control>l"], |w| {
-            w.path.set_text(&w.current.borrow().parse_name());
-            w.path_stack.set_visible_child_name("entry");
-            w.path.grab_focus();
-            w.path.select_region(0, -1);
-        });
-        self.action("search", &["<Control>f"], |w| {
-            w.recursive.set(true);
-            w.search
-                .set_placeholder_text(Some("Search subfolders · 10,000 results max"));
-            w.search_button.set_active(true);
-            w.search.grab_focus();
-            w.update_search();
-        });
-        self.action("grid", &["<Control>1"], |w| w.set_view(ViewMode::Grid));
-        self.action("list", &["<Control>2"], |w| w.set_view(ViewMode::List));
-        let hidden = gio::SimpleAction::new_stateful("hidden", None, &false.to_variant());
-        hidden.connect_activate(glib::clone!(
-            #[weak(rename_to=this)]
-            self,
-            move |action, _| {
-                let hidden = !this.hidden.get();
-                this.hidden.set(hidden);
-                action.set_state(&hidden.to_variant());
-                this.filter.changed(gtk::FilterChange::Different);
-                this.config.borrow_mut().show_hidden = hidden;
-                this.save_config();
-                if this.recursive.get() {
-                    this.update_search();
-                }
-            }
-        ));
-        self.window.add_action(&hidden);
-        self.app
-            .set_accels_for_action("win.hidden", &["<Control>h"]);
-        self.action("new-window", &["<Control>n"], |w| {
-            open(&w.app, w.current.borrow().clone(), Vec::new());
-        });
-        self.action("new-folder", &["<Control><Shift>n"], |w| w.new_folder());
-        self.action("copy", &["<Control>c"], |w| w.copy(false));
-        self.action("cut", &["<Control>x"], |w| w.copy(true));
-        self.action("paste", &["<Control>v"], |w| w.paste());
-        self.action("terminal", &["<Shift>F4"], |w| {
-            if w.dock.has_focus() {
-                if let Some(dir) = w.dock.cwd() {
-                    w.external_terminal(dir);
-                }
-                w.dock.hide();
-            } else {
-                w.terminal();
-            }
-        });
-        self.action("dock", &["F4"], |w| w.toggle_dock());
-        self.action("root", &["<Control><Shift>r"], |w| w.toggle_root());
-        self.action("open", &[], |w| w.open_selected());
-        self.action("open-with", &[], |w| w.open_with());
-        self.action("rename", &[], |w| w.views.rename_selected());
-        self.action("trash", &[], |w| w.delete(false));
-        self.action("delete-permanently", &[], |w| w.delete(true));
-        self.action("properties", &["<Alt>Return"], |w| {
-            if let Some(info) = w.views.selected().first() {
-                preview::properties(&w.window, info, w.reporter());
-            }
-        });
-        self.action("restore", &[], |w| w.restore_selected());
-        self.action("empty-trash", &[], |w| w.empty_trash());
-        self.action("select-all", &["<Control>a"], |w| {
-            w.views.selection.select_all();
-        });
-        self.action("refresh", &["F5", "<Control>r"], |w| w.reload());
-        self.action("about", &[], |w| {
-            let dialog = adw::AboutDialog::builder()
-                .application_name("Files")
-                .application_icon("system-file-manager")
-                .developer_name("GAVNO")
-                .version(env!("CARGO_PKG_VERSION"))
-                .comments("A file manager for the GAVNO desktop")
-                .license_type(gtk::License::MitX11)
-                .build();
-            dialog.present(Some(&w.window));
-        });
-    }
+
     fn set_view(self: &Rc<Self>, view: ViewMode) {
-        self.views
-            .stack
-            .set_visible_child_name(if view == ViewMode::Grid {
-                "grid"
-            } else {
-                "list"
-            });
+        self.apply_view_mode(view);
         self.config.borrow_mut().view = view;
         self.save_config();
+        self.views.grab_focus();
     }
+
+    fn set_sort(self: &Rc<Self>, field: SortField, descending: bool) {
+        {
+            let mut cfg = self.config.borrow_mut();
+            if cfg.sort_field == field && cfg.sort_descending == descending {
+                drop(cfg);
+                self.views.set_sort_indicator(field, descending);
+                return;
+            }
+            cfg.sort_field = field;
+            cfg.sort_descending = descending;
+        }
+        self.views.set_sort_indicator(field, descending);
+        if let Some(action) = self
+            .window
+            .lookup_action("sort-desc")
+            .and_downcast::<gio::SimpleAction>()
+        {
+            action.set_state(&descending.to_variant());
+        }
+        self.save_config();
+        let idx = self.active_tab.get();
+        if let Some(tab) = self.tabs.borrow_mut().get_mut(idx) {
+            model::sort_entries(&mut tab.all_entries, field, descending);
+        }
+        self.apply_filter_to_view(false);
+    }
+
     fn save_config(self: &Rc<Self>) {
         self.config_revision.set(self.config_revision.get() + 1);
         if self.config_saving.replace(true) {
             return;
         }
         glib::spawn_future_local(glib::clone!(
-            #[weak(rename_to=this)]
+            #[weak(rename_to = this)]
             self,
             async move {
                 loop {
@@ -858,527 +683,1971 @@ impl FileWindow {
             }
         ));
     }
-    fn history(self: &Rc<Self>, forward: bool) {
-        let file = if forward {
-            self.forward.borrow_mut().pop()
-        } else {
-            self.back.borrow_mut().pop()
+
+    fn actions(self: &Rc<Self>) {
+        let add = |name: &str, run: fn(&Rc<Self>)| {
+            let action = gio::SimpleAction::new(name, None);
+            action.connect_activate(glib::clone!(
+                #[weak(rename_to = this)]
+                self,
+                move |_, _| run(&this)
+            ));
+            self.window.add_action(&action);
         };
-        if let Some(file) = file {
-            if forward {
-                self.back.borrow_mut().push(self.current.borrow().clone());
+
+        add("back", |w| w.history(false));
+        add("forward", |w| w.history(true));
+        add("up", |w| w.up());
+        add("new-tab", |w| {
+            let loc = w.current_location();
+            w.new_tab(loc, true);
+        });
+        add("close-tab", |w| {
+            let idx = w.active_tab.get();
+            w.close_tab(idx);
+        });
+        add("new-window", |w| {
+            open(&w.app, w.current_location(), Vec::new());
+        });
+        add("new-folder", |w| w.new_folder());
+        add("new-file", |w| w.new_file());
+        add("copy", |w| w.copy(false));
+        add("cut", |w| w.copy(true));
+        add("duplicate", |w| w.duplicate());
+        add("paste", |w| w.paste());
+        add("dock", |w| w.toggle_dock());
+        add("dock-here", |w| w.open_dock_here());
+        add("terminal", |w| {
+            if w.dock.has_focus() {
+                if let Some(dir) = w.dock.cwd() {
+                    w.external_terminal(dir);
+                }
+                w.dock.hide();
             } else {
-                self.forward
-                    .borrow_mut()
-                    .push(self.current.borrow().clone());
+                w.terminal();
             }
-            self.navigate(file, false);
+        });
+        add("root", |w| w.toggle_root());
+        add("open", |w| w.open_selected());
+        add("open-tab", |w| {
+            if let Some(entry) = w.views.selected().into_iter().next() {
+                if entry.is_dir && entry.trash.is_none() {
+                    w.new_tab(Location::Local(entry.path), true);
+                }
+            }
+        });
+        add("open-with", |w| w.open_with());
+        add("quicklook", |w| w.quicklook());
+        add("extract", |w| w.extract_selected());
+        add("compress", |w| w.compress_selected());
+        add("copy-path", |w| w.copy_selected_paths());
+        add("bookmark", |w| w.toggle_bookmark_for_target());
+        add("rename", |w| w.start_rename());
+        add("trash", |w| w.delete(false));
+        add("delete-permanently", |w| w.delete(true));
+        add("properties", |w| w.properties());
+        add("restore", |w| w.restore_selected());
+        add("empty-trash", |w| w.empty_trash());
+        add("select-all", |w| {
+            w.views.selection.select_all();
+        });
+        add("refresh", |w| w.reload(false));
+        add("sort-name", |w| {
+            let desc = w.config.borrow().sort_descending;
+            w.set_sort(SortField::Name, desc);
+        });
+        add("sort-size", |w| {
+            let desc = w.config.borrow().sort_descending;
+            w.set_sort(SortField::Size, desc);
+        });
+        add("sort-modified", |w| {
+            let desc = w.config.borrow().sort_descending;
+            w.set_sort(SortField::Modified, desc);
+        });
+        add("sort-type", |w| {
+            let desc = w.config.borrow().sort_descending;
+            w.set_sort(SortField::Type, desc);
+        });
+        add("about", |w| {
+            let dialog = adw::AboutDialog::builder()
+                .application_name("Files")
+                .application_icon("org.gavno.Files")
+                .developer_name("GAVNO")
+                .version(env!("CARGO_PKG_VERSION"))
+                .comments("A file manager for the GAVNO desktop")
+                .license_type(gtk::License::Gpl30)
+                .build();
+            dialog.present(Some(&w.window));
+        });
+
+        let hidden = gio::SimpleAction::new_stateful("hidden", None, &false.to_variant());
+        hidden.connect_activate(glib::clone!(
+            #[weak(rename_to = this)]
+            self,
+            move |action, _| {
+                let next = !this.config.borrow().show_hidden;
+                this.config.borrow_mut().show_hidden = next;
+                action.set_state(&next.to_variant());
+                this.save_config();
+                let is_rec = {
+                    let idx = this.active_tab.get();
+                    this.tabs.borrow().get(idx).is_some_and(|t| t.recursive)
+                };
+                if is_rec {
+                    this.update_search();
+                } else {
+                    this.apply_filter_to_view(false);
+                }
+            }
+        ));
+        self.window.add_action(&hidden);
+
+        let sort_desc = gio::SimpleAction::new_stateful(
+            "sort-desc",
+            None,
+            &self.config.borrow().sort_descending.to_variant(),
+        );
+        sort_desc.connect_activate(glib::clone!(
+            #[weak(rename_to = this)]
+            self,
+            move |_, _| {
+                let (field, desc) = {
+                    let c = this.config.borrow();
+                    (c.sort_field, !c.sort_descending)
+                };
+                this.set_sort(field, desc);
+            }
+        ));
+        self.window.add_action(&sort_desc);
+    }
+
+    fn connect_signals(self: &Rc<Self>) {
+        self.window.connect_close_request(glib::clone!(
+            #[weak(rename_to = this)]
+            self,
+            #[upgrade_or]
+            glib::Propagation::Proceed,
+            move |_| {
+                let w = this.window.width();
+                let h = this.window.height();
+                let sw = this.paned.position();
+                {
+                    let mut cfg = this.config.borrow_mut();
+                    if w >= 640 && h >= 460 {
+                        cfg.window_width = Some(w);
+                        cfg.window_height = Some(h);
+                    }
+                    if sw >= 140 {
+                        cfg.sidebar_width = Some(sw);
+                    }
+                }
+                let _ = this.config.borrow().save();
+                glib::Propagation::Proceed
+            }
+        ));
+
+        self.window.connect_destroy(glib::clone!(
+            #[weak(rename_to = this)]
+            self,
+            move |_| {
+                this.close_active_popover();
+                this.views.dismiss_rename();
+                this.views.clear();
+                for tab in this.tabs.borrow_mut().iter_mut() {
+                    tab.cancel_async();
+                }
+                this.operations.cancel_all();
+                if let Some(id) = this.root_idle.borrow_mut().take() {
+                    id.remove();
+                }
+                this.root.borrow_mut().take();
+                WINDOWS.with(|windows| windows.borrow_mut().retain(|w| !Rc::ptr_eq(w, &this)));
+            }
+        ));
+
+        self.back_button.connect_clicked(glib::clone!(
+            #[weak(rename_to = this)]
+            self,
+            move |_| {
+                this.history(false);
+                this.views.grab_focus();
+            }
+        ));
+        self.forward_button.connect_clicked(glib::clone!(
+            #[weak(rename_to = this)]
+            self,
+            move |_| {
+                this.history(true);
+                this.views.grab_focus();
+            }
+        ));
+        self.up_button.connect_clicked(glib::clone!(
+            #[weak(rename_to = this)]
+            self,
+            move |_| {
+                this.up();
+                this.views.grab_focus();
+            }
+        ));
+        self.grid_button.connect_clicked(glib::clone!(
+            #[weak(rename_to = this)]
+            self,
+            move |_| this.set_view(ViewMode::Grid)
+        ));
+        self.list_button.connect_clicked(glib::clone!(
+            #[weak(rename_to = this)]
+            self,
+            move |_| this.set_view(ViewMode::List)
+        ));
+
+        // Clicking empty space in the breadcrumb bar switches to editable path entry.
+        let path_click = gtk::GestureClick::new();
+        path_click.set_button(1);
+        path_click.connect_pressed(glib::clone!(
+            #[weak(rename_to = this)]
+            self,
+            move |_, _, x, y| {
+                if this.path_stack.visible_child_name().as_deref() == Some("crumbs") {
+                    if let Some(picked) = this.crumbs_scroll.pick(x, y, gtk::PickFlags::DEFAULT) {
+                        if picked.ancestor(gtk::Button::static_type()).is_some() {
+                            return;
+                        }
+                    }
+                    this.enter_path_mode();
+                }
+            }
+        ));
+        self.crumbs_scroll.add_controller(path_click);
+
+        self.path.connect_activate(glib::clone!(
+            #[weak(rename_to = this)]
+            self,
+            move |entry| {
+                let value = entry.text();
+                if value.contains('\0') {
+                    this.notify("Paths cannot contain a null character");
+                    return;
+                }
+                match this.resolve_path(&value) {
+                    Ok(loc) => {
+                        this.path_stack.set_visible_child_name("crumbs");
+                        this.navigate(loc, true);
+                        this.views.grab_focus();
+                    }
+                    Err(e) => this.notify(&e),
+                }
+            }
+        ));
+
+        let path_keys = gtk::EventControllerKey::new();
+        path_keys.connect_key_pressed(glib::clone!(
+            #[weak(rename_to = this)]
+            self,
+            #[upgrade_or]
+            glib::Propagation::Proceed,
+            move |_, key, _, _| {
+                if key == gdk::Key::Escape {
+                    if this.close_active_popover() {
+                        return glib::Propagation::Stop;
+                    }
+                    this.path_stack.set_visible_child_name("crumbs");
+                    this.views.grab_focus();
+                    glib::Propagation::Stop
+                } else if key == gdk::Key::Tab {
+                    this.complete_path();
+                    glib::Propagation::Stop
+                } else {
+                    glib::Propagation::Proceed
+                }
+            }
+        ));
+        self.path.add_controller(path_keys);
+
+        self.search_button.connect_toggled(glib::clone!(
+            #[weak(rename_to = this)]
+            self,
+            move |button| {
+                if this.changing.get() {
+                    return;
+                }
+                this.search.set_visible(button.is_active());
+                if button.is_active() {
+                    this.search.grab_focus();
+                } else {
+                    this.clear_search();
+                }
+            }
+        ));
+
+        self.search.connect_changed(glib::clone!(
+            #[weak(rename_to = this)]
+            self,
+            move |_| {
+                if !this.changing.get() {
+                    this.update_search();
+                }
+            }
+        ));
+
+        self.search.connect_activate(glib::clone!(
+            #[weak(rename_to = this)]
+            self,
+            move |_| {
+                if let Some(entry) = this.views.entry_at(0) {
+                    this.open_item(entry);
+                }
+            }
+        ));
+
+        let search_keys = gtk::EventControllerKey::new();
+        search_keys.connect_key_pressed(glib::clone!(
+            #[weak(rename_to = this)]
+            self,
+            #[upgrade_or]
+            glib::Propagation::Proceed,
+            move |_, key, _, _| {
+                if key == gdk::Key::Escape {
+                    this.search_button.set_active(false);
+                    this.views.grab_focus();
+                    glib::Propagation::Stop
+                } else {
+                    glib::Propagation::Proceed
+                }
+            }
+        ));
+        self.search.add_controller(search_keys);
+
+        self.views.grid.connect_activate(glib::clone!(
+            #[weak(rename_to = this)]
+            self,
+            move |_, position| this.activate(position)
+        ));
+        self.views.list.connect_activate(glib::clone!(
+            #[weak(rename_to = this)]
+            self,
+            move |_, position| this.activate(position)
+        ));
+        self.views.selection.connect_selection_changed(glib::clone!(
+            #[weak(rename_to = this)]
+            self,
+            move |_, _, _| this.update_status()
+        ));
+
+        // Mouse side buttons (8 = Back, 9 = Forward).
+        let mouse_nav = gtk::GestureClick::new();
+        mouse_nav.set_button(0);
+        mouse_nav.set_propagation_phase(gtk::PropagationPhase::Capture);
+        mouse_nav.connect_pressed(glib::clone!(
+            #[weak(rename_to = this)]
+            self,
+            move |gesture, _, _, _| match gesture.current_button() {
+                8 => {
+                    this.history(false);
+                    gesture.set_state(gtk::EventSequenceState::Claimed);
+                }
+                9 => {
+                    this.history(true);
+                    gesture.set_state(gtk::EventSequenceState::Claimed);
+                }
+                _ => {}
+            }
+        ));
+        self.window.add_controller(mouse_nav);
+
+        // Window-wide shortcuts in Capture phase with strict guards for terminal, entries, popovers & dialogs.
+        let win_keys = gtk::EventControllerKey::new();
+        win_keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+        win_keys.connect_key_pressed(glib::clone!(
+            #[weak(rename_to = this)]
+            self,
+            #[upgrade_or]
+            glib::Propagation::Proceed,
+            move |_, key, _, state| this.handle_window_key(key, state)
+        ));
+        self.window.add_controller(win_keys);
+    }
+
+    fn handle_window_key(self: &Rc<Self>, key: gdk::Key, state: gdk::ModifierType) -> glib::Propagation {
+        // Never interfere with modal AdwDialogs (Confirm, New Folder, Conflict, Polkit password prompt).
+        if self.window.visible_dialog().is_some() {
+            return glib::Propagation::Proceed;
+        }
+        let focus = GtkWindowExt::focus(&self.window);
+        let in_popover = focus
+            .as_ref()
+            .is_some_and(|w| w.ancestor(gtk::Popover::static_type()).is_some());
+        if in_popover {
+            return glib::Propagation::Proceed;
+        }
+
+        let shift = state.contains(gdk::ModifierType::SHIFT_MASK);
+        let ctrl = state.contains(gdk::ModifierType::CONTROL_MASK);
+        let alt = state.contains(gdk::ModifierType::ALT_MASK);
+        let super_mod = state.contains(gdk::ModifierType::SUPER_MASK);
+
+        // Terminal toggle / pop-out always works even while typing in terminal or entries.
+        if key == gdk::Key::F4 && !ctrl && !alt && !super_mod {
+            if shift {
+                if self.dock.has_focus() {
+                    if let Some(dir) = self.dock.cwd() {
+                        self.external_terminal(dir);
+                    }
+                    self.dock.hide();
+                } else {
+                    self.terminal();
+                }
+            } else {
+                self.toggle_dock();
+            }
+            return glib::Propagation::Stop;
+        }
+
+        #[cfg(feature = "vte")]
+        let in_terminal = focus.as_ref().is_some_and(|w| {
+            w.is::<vte4::Terminal>() || w.ancestor(vte4::Terminal::static_type()).is_some()
+        });
+        #[cfg(not(feature = "vte"))]
+        let in_terminal = false;
+        if in_terminal {
+            return glib::Propagation::Proceed;
+        }
+
+        let in_text = focus.as_ref().is_some_and(|w| {
+            w.is::<gtk::Entry>()
+                || w.is::<gtk::SearchEntry>()
+                || w.is::<gtk::PasswordEntry>()
+                || w.is::<gtk::Text>()
+                || w.is::<gtk::TextView>()
+                || w.ancestor(gtk::Entry::static_type()).is_some()
+                || w.ancestor(gtk::Text::static_type()).is_some()
+                || w.ancestor(gtk::TextView::static_type()).is_some()
+        });
+        if in_text {
+            return glib::Propagation::Proceed;
+        }
+
+        if super_mod {
+            return glib::Propagation::Proceed;
+        }
+
+        let lower = key.to_lower();
+
+        if ctrl && !alt {
+            match (shift, lower) {
+                (false, gdk::Key::l) => {
+                    self.enter_path_mode();
+                    return glib::Propagation::Stop;
+                }
+                (false, gdk::Key::f) => {
+                    self.enter_recursive_search();
+                    return glib::Propagation::Stop;
+                }
+                (false, gdk::Key::t) => {
+                    let loc = self.current_location();
+                    self.new_tab(loc, true);
+                    return glib::Propagation::Stop;
+                }
+                (false, gdk::Key::w) => {
+                    let idx = self.active_tab.get();
+                    self.close_tab(idx);
+                    return glib::Propagation::Stop;
+                }
+                (false, gdk::Key::Tab) => {
+                    self.cycle_tab(1);
+                    return glib::Propagation::Stop;
+                }
+                (true, gdk::Key::ISO_Left_Tab) | (true, gdk::Key::Tab) => {
+                    self.cycle_tab(-1);
+                    return glib::Propagation::Stop;
+                }
+                (false, gdk::Key::n) => {
+                    open(&self.app, self.current_location(), Vec::new());
+                    return glib::Propagation::Stop;
+                }
+                (true, gdk::Key::n) => {
+                    self.new_folder();
+                    return glib::Propagation::Stop;
+                }
+                (false, gdk::Key::_1) => {
+                    self.set_view(ViewMode::Grid);
+                    return glib::Propagation::Stop;
+                }
+                (false, gdk::Key::_2) => {
+                    self.set_view(ViewMode::List);
+                    return glib::Propagation::Stop;
+                }
+                (false, gdk::Key::h) => {
+                    let _ = gio::prelude::ActionGroupExt::activate_action(
+                        &self.window,
+                        "hidden",
+                        None,
+                    );
+                    return glib::Propagation::Stop;
+                }
+                (false, gdk::Key::c) => {
+                    self.copy(false);
+                    return glib::Propagation::Stop;
+                }
+                (false, gdk::Key::x) => {
+                    self.copy(true);
+                    return glib::Propagation::Stop;
+                }
+                (false, gdk::Key::v) => {
+                    self.paste();
+                    return glib::Propagation::Stop;
+                }
+                (false, gdk::Key::d) => {
+                    self.duplicate();
+                    return glib::Propagation::Stop;
+                }
+                (false, gdk::Key::a) => {
+                    self.views.selection.select_all();
+                    return glib::Propagation::Stop;
+                }
+                (false, gdk::Key::r) => {
+                    self.reload(false);
+                    return glib::Propagation::Stop;
+                }
+                (true, gdk::Key::r) => {
+                    self.toggle_root();
+                    return glib::Propagation::Stop;
+                }
+                _ => return glib::Propagation::Proceed,
+            }
+        }
+
+        if alt && !ctrl && !shift {
+            match key {
+                gdk::Key::Left => {
+                    self.history(false);
+                    return glib::Propagation::Stop;
+                }
+                gdk::Key::Right => {
+                    self.history(true);
+                    return glib::Propagation::Stop;
+                }
+                gdk::Key::Up => {
+                    self.up();
+                    return glib::Propagation::Stop;
+                }
+                gdk::Key::Return | gdk::Key::KP_Enter => {
+                    self.properties();
+                    return glib::Propagation::Stop;
+                }
+                _ => return glib::Propagation::Proceed,
+            }
+        }
+
+        if ctrl || alt {
+            return glib::Propagation::Proceed;
+        }
+
+        let in_file_view = focus.as_ref().is_some_and(|w| {
+            w.is::<gtk::GridView>()
+                || w.is::<gtk::ColumnView>()
+                || w.ancestor(gtk::GridView::static_type()).is_some()
+                || w.ancestor(gtk::ColumnView::static_type()).is_some()
+        });
+
+        match key {
+            gdk::Key::F2 if !shift => {
+                self.start_rename();
+                glib::Propagation::Stop
+            }
+            gdk::Key::F5 if !shift => {
+                self.reload(false);
+                glib::Propagation::Stop
+            }
+            gdk::Key::Delete => {
+                self.delete(shift);
+                glib::Propagation::Stop
+            }
+            gdk::Key::BackSpace if !shift => {
+                self.history(false);
+                glib::Propagation::Stop
+            }
+            gdk::Key::Escape if !shift => {
+                if self.close_active_popover() {
+                    return glib::Propagation::Stop;
+                }
+                if self.search_button.is_active() {
+                    self.search_button.set_active(false);
+                } else {
+                    self.views.selection.unselect_all();
+                }
+                self.views.grab_focus();
+                glib::Propagation::Stop
+            }
+            gdk::Key::space if !shift && in_file_view => {
+                self.quicklook();
+                glib::Propagation::Stop
+            }
+            gdk::Key::Return | gdk::Key::KP_Enter if !shift && in_file_view => {
+                self.open_selected();
+                glib::Propagation::Stop
+            }
+            _ => {
+                if self.active_popover.borrow().is_none() {
+                    if let Some(c) = key
+                        .to_unicode()
+                        .filter(|c| !c.is_control() && !c.is_whitespace())
+                    {
+                        let was_recursive = {
+                            let mut tabs = self.tabs.borrow_mut();
+                            if let Some(tab) = tabs.get_mut(self.active_tab.get()) {
+                                tab.search_cancel.store(true, Ordering::Relaxed);
+                                tab.search_revision += 1;
+                                std::mem::replace(&mut tab.recursive, false)
+                            } else {
+                                false
+                            }
+                        };
+                        self.changing.set(true);
+                        self.search.set_placeholder_text(Some("Filter this folder"));
+                        self.search_button.set_active(true);
+                        self.search.set_visible(true);
+                        self.search.grab_focus();
+                        let next = if was_recursive {
+                            c.to_string()
+                        } else {
+                            format!("{}{c}", self.search.text())
+                        };
+                        if was_recursive {
+                            if let Some(tab) = self.tabs.borrow_mut().get_mut(self.active_tab.get())
+                            {
+                                tab.filter_query = next.clone();
+                            }
+                        }
+                        self.search.set_text(&next);
+                        self.changing.set(false);
+                        self.search.set_position(-1);
+                        if was_recursive {
+                            self.load_active_tab();
+                        } else {
+                            self.update_search();
+                        }
+                        return glib::Propagation::Stop;
+                    }
+                }
+                glib::Propagation::Proceed
+            }
         }
     }
+
+    fn enter_path_mode(&self) {
+        self.close_active_popover();
+        self.views.dismiss_rename();
+        self.path.set_text(&self.current_location().parse_name());
+        self.path_stack.set_visible_child_name("entry");
+        self.path.grab_focus();
+        self.path.select_region(0, -1);
+    }
+
+    fn enter_recursive_search(self: &Rc<Self>) {
+        let is_trash = {
+            let mut tabs = self.tabs.borrow_mut();
+            if let Some(tab) = tabs.get_mut(self.active_tab.get()) {
+                if let Some(id) = tab.debounce_source.take() {
+                    id.remove();
+                }
+                let trash = tab.location.is_trash();
+                tab.recursive = !trash;
+                trash
+            } else {
+                false
+            }
+        };
+        self.search.set_placeholder_text(Some(if is_trash {
+            "Filter Trash"
+        } else {
+            "Search subfolders · 10,000 results max"
+        }));
+        self.search_button.set_active(true);
+        self.search.grab_focus();
+        self.update_search();
+    }
+
+    fn render_tabs(self: &Rc<Self>) {
+        while let Some(child) = self.tab_strip.first_child() {
+            self.tab_strip.remove(&child);
+        }
+        let snapshot: Vec<(usize, u64, String)> = {
+            let tabs = self.tabs.borrow();
+            if tabs.len() <= 1 {
+                self.tab_strip.set_visible(false);
+                return;
+            }
+            tabs.iter()
+                .enumerate()
+                .map(|(i, t)| (i, t.id, t.location.display_title()))
+                .collect()
+        };
+        let active = self.active_tab.get();
+        self.tab_strip.set_visible(true);
+
+        for (idx, _id, title) in snapshot {
+            let pill = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+            pill.add_css_class("tab-pill");
+            if idx == active {
+                pill.add_css_class("active");
+            }
+            let btn = gtk::Button::with_label(&title);
+            btn.add_css_class("tab-label");
+            if let Some(lbl) = btn.child().and_downcast::<gtk::Label>() {
+                lbl.set_ellipsize(gtk::pango::EllipsizeMode::End);
+                lbl.set_max_width_chars(22);
+            }
+            btn.connect_clicked(glib::clone!(
+                #[weak(rename_to = this)]
+                self,
+                move |_| this.switch_tab(idx)
+            ));
+            let mid = gtk::GestureClick::new();
+            mid.set_button(2);
+            mid.connect_pressed(glib::clone!(
+                #[weak(rename_to = this)]
+                self,
+                move |gesture, _, _, _| {
+                    this.close_tab(idx);
+                    gesture.set_state(gtk::EventSequenceState::Claimed);
+                }
+            ));
+            btn.add_controller(mid);
+
+            let close = gtk::Button::from_icon_name("window-close-symbolic");
+            close.add_css_class("tab-close");
+            close.set_tooltip_text(Some("Close tab (Ctrl+W)"));
+            close.connect_clicked(glib::clone!(
+                #[weak(rename_to = this)]
+                self,
+                move |_| this.close_tab(idx)
+            ));
+
+            pill.append(&btn);
+            pill.append(&close);
+            self.tab_strip.append(&pill);
+        }
+
+        let add_btn = gtk::Button::from_icon_name("list-add-symbolic");
+        add_btn.add_css_class("flat");
+        add_btn.add_css_class("tab-add");
+        add_btn.set_tooltip_text(Some("New tab (Ctrl+T)"));
+        add_btn.connect_clicked(glib::clone!(
+            #[weak(rename_to = this)]
+            self,
+            move |_| {
+                let loc = this.current_location();
+                this.new_tab(loc, true);
+            }
+        ));
+        self.tab_strip.append(&add_btn);
+    }
+
+    fn new_tab(self: &Rc<Self>, loc: Location, switch: bool) {
+        let id = self.next_tab_id.get();
+        self.next_tab_id.set(id + 1);
+        let new_idx = {
+            let mut tabs = self.tabs.borrow_mut();
+            tabs.push(TabState::new(id, loc, Vec::new()));
+            tabs.len() - 1
+        };
+        if switch {
+            self.switch_tab(new_idx);
+            self.load_active_tab();
+        } else {
+            self.render_tabs();
+        }
+    }
+
+    fn switch_tab(self: &Rc<Self>, idx: usize) {
+        self.close_active_popover();
+        self.views.dismiss_rename();
+        let cur = self.active_tab.get();
+        let len = self.tabs.borrow().len();
+        if idx >= len {
+            return;
+        }
+        if cur != idx {
+            let scroll = self.views.scroll_value();
+            if let Some(prev) = self.tabs.borrow_mut().get_mut(cur) {
+                prev.scroll_pos = scroll;
+            }
+        }
+        self.active_tab.set(idx);
+        let (sort_field, sort_desc) = {
+            let c = self.config.borrow();
+            (c.sort_field, c.sort_descending)
+        };
+        let (query, recursive, loc, scroll_pos, loading, loaded, needs_refresh) = {
+            let mut tabs = self.tabs.borrow_mut();
+            let tab = &mut tabs[idx];
+            if tab.loaded && !tab.recursive {
+                model::sort_entries(&mut tab.all_entries, sort_field, sort_desc);
+            }
+            (
+                tab.filter_query.clone(),
+                tab.recursive,
+                tab.location.clone(),
+                tab.scroll_pos,
+                tab.loading,
+                tab.loaded,
+                tab.needs_refresh,
+            )
+        };
+        self.changing.set(true);
+        self.search.set_text(&query);
+        let search_open = !query.is_empty() || recursive;
+        self.search_button.set_active(search_open);
+        self.search.set_visible(search_open);
+        self.search.set_placeholder_text(Some(if recursive {
+            "Search subfolders · 10,000 results max"
+        } else {
+            "Filter this folder"
+        }));
+        self.changing.set(false);
+
+        if loading {
+            self.spinner.set_visible(true);
+            self.spinner.start();
+        } else {
+            self.spinner.stop();
+            self.spinner.set_visible(false);
+        }
+
+        if let Some(path) = loc.local_path() {
+            self.dock.follow(path);
+        }
+        self.render_tabs();
+        self.render_path();
+        self.apply_filter_to_view(false);
+        self.views.set_scroll_value(scroll_pos);
+        self.update_access_banner();
+        self.views.grab_focus();
+
+        if (!loaded || needs_refresh) && !loading && !recursive {
+            self.load_tab(idx, needs_refresh && loaded);
+        }
+    }
+
+    fn close_tab(self: &Rc<Self>, idx: usize) {
+        let len = self.tabs.borrow().len();
+        if len <= 1 {
+            self.window.close();
+            return;
+        }
+        if idx >= len {
+            return;
+        }
+        let cur = self.active_tab.get();
+        {
+            let mut tabs = self.tabs.borrow_mut();
+            let mut removed = tabs.remove(idx);
+            removed.cancel_async();
+        }
+        let next_idx = if idx < cur {
+            cur - 1
+        } else if idx == cur {
+            cur.min(len - 2)
+        } else {
+            cur
+        };
+        self.active_tab.set(next_idx);
+        if idx == cur {
+            self.switch_tab(next_idx);
+        } else {
+            self.render_tabs();
+        }
+    }
+
+    fn cycle_tab(self: &Rc<Self>, delta: isize) {
+        let len = self.tabs.borrow().len();
+        if len <= 1 {
+            return;
+        }
+        let cur = self.active_tab.get() as isize;
+        let next = (cur + delta).rem_euclid(len as isize) as usize;
+        self.switch_tab(next);
+    }
+
+    fn history(self: &Rc<Self>, forward: bool) {
+        let idx = self.active_tab.get();
+        let target = {
+            let mut tabs = self.tabs.borrow_mut();
+            let Some(tab) = tabs.get_mut(idx) else {
+                return;
+            };
+            let next = if forward {
+                tab.forward.pop()
+            } else {
+                tab.back.pop()
+            };
+            let Some(loc) = next else {
+                return;
+            };
+            let cur = tab.location.clone();
+            if forward {
+                tab.back.push(cur);
+            } else {
+                tab.forward.push(cur);
+            }
+            loc
+        };
+        self.navigate(target, false);
+    }
+
     fn up(self: &Rc<Self>) {
-        let parent = self.current.borrow().parent();
-        if let Some(parent) = parent {
+        if let Some(parent) = self.current_location().parent() {
             self.navigate(parent, true);
         }
     }
-    fn resolve_path(&self, text: &str) -> gio::File {
+
+    fn resolve_path(&self, text: &str) -> Result<Location, String> {
         let text = text.trim();
         if text == "~" {
-            return gio::File::for_path(glib::home_dir());
+            return Ok(Location::Local(glib::home_dir()));
         }
         if let Some(tail) = text.strip_prefix("~/") {
-            return gio::File::for_path(glib::home_dir().join(tail));
+            return Ok(Location::Local(glib::home_dir().join(tail)));
+        }
+        if text == "trash:" || text.starts_with("trash://") {
+            return Ok(Location::Trash);
         }
         if text.contains("://") {
-            gio::File::for_uri(text)
-        } else if text.starts_with('/') {
-            gio::File::for_path(text)
-        } else {
-            self.current.borrow().resolve_relative_path(text)
+            return Location::from_uri(text);
+        }
+        if text.starts_with('/') {
+            return Ok(Location::Local(PathBuf::from(text)));
+        }
+        match self.current_location() {
+            Location::Local(cur) => Ok(Location::Local(cur.join(text))),
+            Location::Trash => Ok(Location::Local(glib::home_dir().join(text))),
         }
     }
-    pub fn navigate(self: &Rc<Self>, file: gio::File, history: bool) {
-        if !matches!(file.uri_scheme().as_deref(), Some("file" | "trash")) {
-            self.notify("Network locations are not supported in v1");
-            return;
+
+    pub fn navigate(self: &Rc<Self>, location: Location, record_history: bool) {
+        self.close_active_popover();
+        self.views.dismiss_rename();
+        let idx = self.active_tab.get();
+        {
+            let mut tabs = self.tabs.borrow_mut();
+            let Some(tab) = tabs.get_mut(idx) else {
+                return;
+            };
+            if record_history && tab.location != location {
+                let prev = tab.location.clone();
+                tab.back.push(prev);
+                tab.forward.clear();
+            }
+            tab.location = location.clone();
+            tab.search_cancel.store(true, Ordering::Relaxed);
+            tab.recursive = false;
+            tab.filter_query.clear();
+            tab.loaded = false;
+            tab.needs_refresh = false;
+            tab.scroll_pos = 0.0;
+            tab.load_error = None;
         }
-        if history && file != *self.current.borrow() {
-            self.back.borrow_mut().push(self.current.borrow().clone());
-            self.forward.borrow_mut().clear();
+        if let Some(path) = location.local_path() {
+            self.dock.follow(path);
         }
-        self.current.replace(file.clone());
-        if let Some(path) = file.path() {
-            self.dock.follow(&path);
-        }
-        self.search_cancel.borrow().cancel();
-        self.recursive.set(false);
         self.changing.set(true);
         self.search.set_text("");
-        self.query.borrow_mut().clear();
         self.search_button.set_active(false);
         self.search.set_visible(false);
         self.search.set_placeholder_text(Some("Filter this folder"));
         self.changing.set(false);
-        self.filter.changed(gtk::FilterChange::Different);
+        self.render_tabs();
         self.render_path();
-        self.load(file);
+        self.load_active_tab();
     }
+
     fn render_path(self: &Rc<Self>) {
-        self.back_button
-            .set_sensitive(!self.back.borrow().is_empty());
-        self.forward_button
-            .set_sensitive(!self.forward.borrow().is_empty());
-        self.up_button
-            .set_sensitive(self.current.borrow().parent().is_some());
+        self.close_active_popover();
+        let idx = self.active_tab.get();
+        let (has_back, has_fwd, loc) = {
+            let tabs = self.tabs.borrow();
+            let Some(tab) = tabs.get(idx) else {
+                return;
+            };
+            (!tab.back.is_empty(), !tab.forward.is_empty(), tab.location.clone())
+        };
+        self.back_button.set_sensitive(has_back);
+        self.forward_button.set_sensitive(has_fwd);
+        self.up_button.set_sensitive(loc.parent().is_some());
+
         while let Some(child) = self.crumbs.first_child() {
             self.crumbs.remove(&child);
         }
-        let file = self.current.borrow();
-        self.window.set_title(Some(&format!(
-            "{} — Files",
-            file.basename()
-                .map(|p| p.to_string_lossy().into_owned())
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| "System".into())
-        )));
-        if let Some(path) = file.path() {
-            for (label, path) in model::breadcrumbs(&path, &glib::home_dir()) {
-                let button = gtk::Button::with_label(&label);
-                button.add_css_class("flat");
-                button.connect_clicked(glib::clone!(
-                    #[weak(rename_to=this)]
-                    self,
-                    move |_| this.navigate(gio::File::for_path(&path), true)
-                ));
-                if self.crumbs.first_child().is_some() {
-                    let separator = gtk::Label::new(Some("›"));
-                    separator.add_css_class("crumb-sep");
-                    self.crumbs.append(&separator);
+        self.window
+            .set_title(Some(&format!("{} — Files", loc.display_title())));
+
+        match &loc {
+            Location::Local(path) => {
+                for (label, seg_path) in model::breadcrumbs(path, &glib::home_dir()) {
+                    let button = gtk::Button::with_label(&label);
+                    button.add_css_class("flat");
+                    button.add_css_class("crumb");
+                    button.connect_clicked(glib::clone!(
+                        #[weak(rename_to = this)]
+                        self,
+                        move |_| {
+                            this.navigate(Location::Local(seg_path.clone()), true);
+                            this.views.grab_focus();
+                        }
+                    ));
+                    if self.crumbs.first_child().is_some() {
+                        let sep = gtk::Label::new(Some("›"));
+                        sep.add_css_class("crumb-sep");
+                        self.crumbs.append(&sep);
+                    }
+                    self.crumbs.append(&button);
                 }
-                button.add_css_class("crumb");
-                self.crumbs.append(&button);
+                if let Some(last) = self.crumbs.last_child() {
+                    last.add_css_class("current");
+                }
             }
-            if let Some(last) = self.crumbs.last_child() {
-                last.add_css_class("current");
+            Location::Trash => {
+                let lbl = gtk::Label::new(Some("Trash"));
+                lbl.set_margin_start(8);
+                lbl.add_css_class("crumb");
+                lbl.add_css_class("current");
+                self.crumbs.append(&lbl);
             }
-        } else {
-            self.crumbs.append(&gtk::Label::new(Some("Trash")));
         }
         self.path_stack.set_visible_child_name("crumbs");
-        drop(file);
-        self.mark_place();
+        self.sidebar.set_active(&loc);
+
+        // Scroll breadcrumb strip to the right so the active folder is always visible.
+        let scroll = self.crumbs_scroll.clone();
+        glib::idle_add_local_once(move || {
+            let adj = scroll.hadjustment();
+            adj.set_value((adj.upper() - adj.page_size()).max(0.0));
+        });
     }
-    /// Highlights the sidebar entry for the current folder.
-    fn mark_place(&self) {
-        let Some(side) = self.places.borrow().clone() else {
-            return;
-        };
-        let current = self.current.borrow().parse_name().to_string();
-        fn walk(widget: &gtk::Widget, current: &str) {
-            if widget.has_css_class("place") {
-                if widget.tooltip_text().is_some_and(|t| t == current) {
-                    widget.add_css_class("on");
-                } else {
-                    widget.remove_css_class("on");
-                }
-                return;
-            }
-            let mut child = widget.first_child();
-            while let Some(c) = child {
-                walk(&c, current);
-                child = c.next_sibling();
-            }
-        }
-        walk(side.upcast_ref(), &current);
-    }
-    fn reload(self: &Rc<Self>) {
-        if self.recursive.get() {
+
+    fn reload(self: &Rc<Self>, silent: bool) {
+        let idx = self.active_tab.get();
+        let is_rec = self.tabs.borrow().get(idx).is_some_and(|t| t.recursive);
+        if is_rec {
             self.update_search();
-        } else {
-            if self.pending_selection.borrow().is_empty() {
-                self.pending_selection.replace(
-                    self.views
-                        .selected()
-                        .iter()
-                        .map(|i| model::file(i).uri().to_string())
-                        .collect(),
-                );
-            }
-            let file = self.current.borrow().clone();
-            self.load(file);
-        }
-    }
-    fn load(self: &Rc<Self>, file: gio::File) {
-        self.load_cancel.borrow().cancel();
-        let cancel = gio::Cancellable::new();
-        self.load_cancel.replace(cancel.clone());
-        self.store.remove_all();
-        self.loading.set(true);
-        self.spinner.start();
-        self.access_bar.set_reveal_child(false);
-        self.update_status();
-        if let Some(monitor) = self.monitor.borrow_mut().take() {
-            monitor.cancel();
-        }
-        let root = self.root.borrow().clone();
-        if let (Some(root), Some(path)) = (root, file.path()) {
-            self.touch_root();
-            glib::spawn_future_local(glib::clone!(
-                #[weak(rename_to=this)]
-                self,
-                async move {
-                    let result = root.list(&path).await;
-                    if cancel.is_cancelled() {
-                        return;
-                    }
-                    this.loading.set(false);
-                    this.spinner.stop();
-                    match result {
-                        Ok(entries) => {
-                            let infos: Vec<gio::FileInfo> = entries
-                                .iter()
-                                .map(|e| crate::root::file_info(&path, e))
-                                .collect();
-                            this.store.extend_from_slice(&infos);
-                        }
-                        Err(e) => {
-                            this.empty.set_text("Unable to open this folder");
-                            this.notify(&e);
-                        }
-                    }
-                    this.update_status();
-                    this.schedule_selection();
-                }
-            ));
             return;
         }
+        if !silent {
+            let has_pending = self
+                .tabs
+                .borrow()
+                .get(idx)
+                .is_some_and(|t| !t.pending_selection.is_empty());
+            if !has_pending {
+                let uris: Vec<String> = self
+                    .views
+                    .selected()
+                    .into_iter()
+                    .map(|e| e.uri)
+                    .collect();
+                let scroll = self.views.scroll_value();
+                if let Some(tab) = self.tabs.borrow_mut().get_mut(idx) {
+                    tab.pending_selection = uris;
+                    tab.scroll_pos = scroll;
+                }
+            }
+        }
+        self.load_tab(idx, silent);
+    }
+
+    fn load_active_tab(self: &Rc<Self>) {
+        let idx = self.active_tab.get();
+        self.load_tab(idx, false);
+    }
+
+    fn load_tab(self: &Rc<Self>, idx: usize, silent: bool) {
+        let (tab_id, loc, cancel) = {
+            let mut tabs = self.tabs.borrow_mut();
+            let Some(tab) = tabs.get_mut(idx) else {
+                return;
+            };
+            tab.load_cancel.store(true, Ordering::Relaxed);
+            tab.needs_refresh = false;
+            tab.loading = true;
+            if !silent {
+                tab.monitor.take();
+                if let Some(s) = tab.debounce_source.take() {
+                    s.remove();
+                }
+                tab.all_entries.clear();
+                tab.load_error = None;
+                tab.loaded = false;
+            }
+            let c = Arc::new(AtomicBool::new(false));
+            tab.load_cancel = c.clone();
+            (tab.id, tab.location.clone(), c)
+        };
+
+        let is_active = self.active_tab_id() == tab_id;
+        if !silent && is_active {
+            self.views.clear();
+            self.visible_entries.borrow_mut().clear();
+            self.spinner.set_visible(true);
+            self.spinner.start();
+            self.access_bar.set_reveal_child(false);
+            self.update_status();
+        }
+
+        let root_session = self.root.borrow().clone();
+        let (sort_field, sort_desc) = {
+            let c = self.config.borrow();
+            (c.sort_field, c.sort_descending)
+        };
+
         glib::spawn_future_local(glib::clone!(
-            #[weak(rename_to=this)]
+            #[weak(rename_to = this)]
             self,
             async move {
-                let result = async {
-                    let e = ops::enumerate_display(&file, model::ATTRIBUTES, &cancel).await?;
-                    loop {
-                        let batch = ops::next(&e, &cancel).await?;
-                        if batch.is_empty() {
-                            break;
-                        }
-                        cancel.set_error_if_cancelled()?;
-                        for info in &batch {
-                            model::attach(info, &e.child(info));
-                        }
-                        this.store.extend_from_slice(&batch);
-                        glib::timeout_future(std::time::Duration::from_millis(1)).await;
-                    }
-                    e.close_future(glib::Priority::DEFAULT).await?;
-                    Ok::<_, glib::Error>(())
+                enum Outcome {
+                    Entries {
+                        entries: Vec<FileEntry>,
+                        writable: bool,
+                        trash_total: Option<usize>,
+                    },
+                    Err(LoadErrorKind),
+                    Cancelled,
                 }
-                .await;
-                if cancel.is_cancelled() {
+
+                let outcome = match (&root_session, &loc) {
+                    (Some(root), Location::Local(path)) => {
+                        this.touch_root();
+                        match root.list(path).await {
+                            Ok(raw) => {
+                                let mut entries = root::file_entries(path, &raw);
+                                model::sort_entries(&mut entries, sort_field, sort_desc);
+                                Outcome::Entries {
+                                    entries,
+                                    writable: true,
+                                    trash_total: None,
+                                }
+                            }
+                            Err(e) => Outcome::Err(LoadErrorKind::Other(e)),
+                        }
+                    }
+                    (_, Location::Trash) => {
+                        let c = cancel.clone();
+                        match gio::spawn_blocking(move || trash::list_trash(&c)).await {
+                            Ok(Ok(mut entries)) => {
+                                let total = entries.len();
+                                model::sort_entries(&mut entries, sort_field, sort_desc);
+                                Outcome::Entries {
+                                    entries,
+                                    writable: true,
+                                    trash_total: Some(total),
+                                }
+                            }
+                            Ok(Err(e)) => Outcome::Err(LoadErrorKind::Other(e)),
+                            Err(_) => {
+                                Outcome::Err(LoadErrorKind::Other("Trash worker failed".into()))
+                            }
+                        }
+                    }
+                    (None, Location::Local(path)) => {
+                        let p = path.clone();
+                        let c = cancel.clone();
+                        match gio::spawn_blocking(move || model::scan_directory(&p, false, &c))
+                            .await
+                        {
+                            Ok(Ok(mut res)) => {
+                                model::sort_entries(&mut res.entries, sort_field, sort_desc);
+                                Outcome::Entries {
+                                    entries: res.entries,
+                                    writable: res.dir_writable,
+                                    trash_total: None,
+                                }
+                            }
+                            Ok(Err(ScanError::Cancelled)) => Outcome::Cancelled,
+                            Ok(Err(ScanError::PermissionDenied)) => {
+                                Outcome::Err(LoadErrorKind::PermissionDenied)
+                            }
+                            Ok(Err(ScanError::NotFound(e) | ScanError::Other(e))) => {
+                                Outcome::Err(LoadErrorKind::Other(e))
+                            }
+                            Err(_) => {
+                                Outcome::Err(LoadErrorKind::Other("Directory worker failed".into()))
+                            }
+                        }
+                    }
+                };
+
+                if cancel.load(Ordering::Relaxed) || matches!(outcome, Outcome::Cancelled) {
+                    let mut stop_spinner = false;
+                    if let Some(tab) = this.tabs.borrow_mut().iter_mut().find(|t| t.id == tab_id) {
+                        if Arc::ptr_eq(&tab.load_cancel, &cancel) {
+                            tab.loading = false;
+                            stop_spinner = this.active_tab_id() == tab_id;
+                        }
+                    }
+                    if stop_spinner {
+                        this.spinner.stop();
+                        this.spinner.set_visible(false);
+                        this.update_status();
+                    }
                     return;
                 }
-                this.loading.set(false);
-                this.spinner.stop();
-                this.update_status();
-                this.schedule_selection();
-                if let Err(e) = result {
-                    this.empty.set_text("Unable to open this folder");
-                    if e.matches(gio::IOErrorEnum::PermissionDenied) {
-                        this.access_label.set_text(&format!(
-                            "No access to {}: only root can read this folder.",
-                            file.parse_name()
-                        ));
-                        this.access_bar.set_reveal_child(true);
-                    } else {
-                        this.error(e);
-                    }
+
+                // Re-locate tab by immutable tab_id.
+                let Some(tab_pos) = this.tabs.borrow().iter().position(|t| t.id == tab_id) else {
+                    return;
+                };
+
+                let (preserved_sel, preserved_scroll) = if silent && this.active_tab_id() == tab_id
+                {
+                    (
+                        this.views
+                            .selected()
+                            .into_iter()
+                            .map(|e| e.uri)
+                            .collect::<Vec<_>>(),
+                        Some(this.views.scroll_value()),
+                    )
                 } else {
-                    this.watch(file, cancel);
+                    (Vec::new(), None)
+                };
+
+                let mut monitor_needed = false;
+                let mut err_to_toast = None;
+                let replay_refresh;
+                {
+                    let mut tabs = this.tabs.borrow_mut();
+                    let tab = &mut tabs[tab_pos];
+                    tab.loading = false;
+                    replay_refresh = std::mem::replace(&mut tab.needs_refresh, false);
+                    match outcome {
+                        Outcome::Entries {
+                            entries,
+                            writable,
+                            trash_total,
+                        } => {
+                            if let Some(count) = trash_total {
+                                this.sidebar.set_trash_count(count);
+                            }
+                            tab.all_entries = entries;
+                            tab.dir_writable = writable;
+                            tab.load_error = None;
+                            tab.loaded = true;
+                            if silent && !preserved_sel.is_empty() && tab.pending_selection.is_empty()
+                            {
+                                tab.pending_selection = preserved_sel;
+                            }
+                            if let Some(sc) = preserved_scroll {
+                                tab.scroll_pos = sc;
+                            }
+                            monitor_needed = tab.monitor.is_none() && root_session.is_none();
+                        }
+                        Outcome::Err(kind) => {
+                            tab.loaded = true;
+                            tab.all_entries.clear();
+                            if !silent {
+                                if let LoadErrorKind::Other(ref msg) = kind {
+                                    err_to_toast = Some(msg.clone());
+                                }
+                            }
+                            tab.load_error = Some(kind);
+                        }
+                        Outcome::Cancelled => unreachable!(),
+                    }
+                }
+
+                if let Some(msg) = err_to_toast {
+                    this.notify(&msg);
+                }
+
+                if this.active_tab_id() == tab_id {
+                    this.spinner.stop();
+                    this.spinner.set_visible(false);
+                    this.apply_filter_to_view(!silent);
+                    this.update_access_banner();
+                }
+
+                if monitor_needed {
+                    this.attach_monitor(tab_id, &loc);
+                }
+
+                if replay_refresh {
+                    if this.active_tab_id() == tab_id {
+                        this.schedule_silent_refresh(tab_id);
+                    } else if let Some(tab) =
+                        this.tabs.borrow_mut().iter_mut().find(|t| t.id == tab_id)
+                    {
+                        tab.needs_refresh = true;
+                    }
                 }
             }
         ));
     }
-    fn watch(self: &Rc<Self>, file: gio::File, cancel: gio::Cancellable) {
-        if cancel.is_cancelled() {
+
+    fn attach_monitor(self: &Rc<Self>, tab_id: u64, loc: &Location) {
+        let watch_path = match loc {
+            Location::Local(p) => p.clone(),
+            Location::Trash => trash::trash_root().join("files"),
+        };
+        let Ok(mon) = gio::File::for_path(&watch_path)
+            .monitor_directory(gio::FileMonitorFlags::WATCH_MOVES, gio::Cancellable::NONE)
+        else {
+            return;
+        };
+        mon.connect_changed(glib::clone!(
+            #[weak(rename_to = this)]
+            self,
+            move |_, _, _, event| {
+                if matches!(
+                    event,
+                    gio::FileMonitorEvent::AttributeChanged
+                        | gio::FileMonitorEvent::ChangesDoneHint
+                ) {
+                    return;
+                }
+                this.schedule_silent_refresh(tab_id);
+            }
+        ));
+        if let Some(tab) = self.tabs.borrow_mut().iter_mut().find(|t| t.id == tab_id) {
+            tab.monitor = Some(mon);
+        }
+    }
+
+    fn schedule_silent_refresh(self: &Rc<Self>, tab_id: u64) {
+        let is_active = self.active_tab_id() == tab_id;
+        let mut tabs = self.tabs.borrow_mut();
+        let Some(tab) = tabs.iter_mut().find(|t| t.id == tab_id) else {
+            return;
+        };
+        if tab.recursive {
             return;
         }
-        let watch_cancel = gio::Cancellable::new();
-        let receiver = model::watch_directory(file, watch_cancel.clone());
-        self.monitor.replace(Some(watch_cancel.clone()));
-        let mut dirty = false;
-        glib::timeout_add_local(
-            std::time::Duration::from_millis(160),
+        if tab.loading || !is_active {
+            tab.needs_refresh = true;
+            return;
+        }
+        if let Some(id) = tab.debounce_source.take() {
+            id.remove();
+        }
+        let source = glib::timeout_add_local_once(
+            Duration::from_millis(120),
             glib::clone!(
-                #[weak(rename_to=this)]
+                #[weak(rename_to = this)]
                 self,
-                #[upgrade_or]
-                glib::ControlFlow::Break,
                 move || {
-                    if watch_cancel.is_cancelled() {
-                        return glib::ControlFlow::Break;
-                    }
-                    while let Ok(event) = receiver.try_recv() {
-                        match event {
-                            Ok(()) => dirty = true,
-                            Err(e) => this.notify(&e),
+                    let idx_opt = {
+                        let mut tabs = this.tabs.borrow_mut();
+                        if let Some(pos) = tabs.iter().position(|t| t.id == tab_id) {
+                            tabs[pos].debounce_source = None;
+                            (!tabs[pos].recursive).then_some(pos)
+                        } else {
+                            None
                         }
+                    };
+                    if let Some(pos) = idx_opt {
+                        this.load_tab(pos, true);
                     }
-                    if dirty && !this.loading.get() && !this.recursive.get() {
-                        this.reload();
-                        return glib::ControlFlow::Break;
-                    }
-                    glib::ControlFlow::Continue
                 }
             ),
         );
+        tab.debounce_source = Some(source);
     }
-    fn schedule_selection(self: &Rc<Self>) {
-        if self.selection_scheduled.replace(true) {
-            return;
-        }
-        glib::idle_add_local_once(glib::clone!(
-            #[weak(rename_to=this)]
-            self,
-            move || {
-                this.selection_scheduled.set(false);
-                this.select_pending();
-            }
-        ));
-    }
-    fn select_pending(&self) {
-        // Never mutate the selection from inside ListModel::items-changed: the
-        // views must finish consuming the model notification first.
-        if self.loading.get() || self.views.sorted.pending() != 0 {
-            return;
-        }
-        let mut pending = self.pending_selection.borrow_mut();
-        if pending.is_empty() {
-            return;
-        }
-        pending.retain(|uri| {
-            for i in 0..self.views.selection.n_items() {
-                if self
-                    .views
-                    .selection
-                    .item(i)
-                    .and_downcast::<gio::FileInfo>()
-                    .is_some_and(|info| model::file(&info).uri().as_str() == uri)
-                {
-                    self.views.selection.select_item(i, false);
-                    if self.views.stack.visible_child_name().as_deref() == Some("list") {
-                        self.views
-                            .list
-                            .scroll_to(i, None, gtk::ListScrollFlags::NONE, None);
-                    } else {
-                        self.views
-                            .grid
-                            .scroll_to(i, gtk::ListScrollFlags::NONE, None);
-                    }
-                    return false;
-                }
-            }
-            true
-        });
-    }
-    fn update_status(&self) {
-        let count = self.views.selection.n_items();
-        let selected = self.views.selection.selection().size();
-        self.status.set_text(&if selected > 0 {
-            let size: u64 = self
-                .views
-                .selected()
+
+    fn apply_filter_to_view(&self, scroll_to_pending: bool) {
+        let idx = self.active_tab.get();
+        let (show_hidden, query, entries_snapshot, pending, saved_scroll) = {
+            let mut tabs = self.tabs.borrow_mut();
+            let Some(tab) = tabs.get_mut(idx) else {
+                return;
+            };
+            let show_hidden = self.config.borrow().show_hidden;
+            let q = tab.filter_query.trim().to_lowercase();
+            let filtered: Vec<FileEntry> = tab
+                .all_entries
                 .iter()
-                .filter(|i| !model::is_dir(i))
-                .map(|i| i.size().max(0) as u64)
-                .sum();
-            format!(
-                "{selected} of {count} selected · {}",
-                model::format_size(size)
+                .filter(|e| {
+                    (show_hidden || !e.is_hidden)
+                        && (q.is_empty() || e.lower_name.contains(&q))
+                })
+                .cloned()
+                .collect();
+            let pending = std::mem::take(&mut tab.pending_selection);
+            (show_hidden, q, filtered, pending, tab.scroll_pos)
+        };
+        let _ = (show_hidden, query);
+
+        self.visible_entries.replace(entries_snapshot.clone());
+        self.views.replace_entries(&entries_snapshot);
+        self.update_status();
+
+        if !pending.is_empty() {
+            let views = &self.views;
+            views.select_by_uris(&pending, scroll_to_pending);
+        }
+        if !scroll_to_pending && saved_scroll > 0.0 {
+            self.views.set_scroll_value(saved_scroll);
+        }
+    }
+
+    fn update_access_banner(&self) {
+        let idx = self.active_tab.get();
+        let is_root = self.root.borrow().is_some();
+        let (loc, writable, err) = {
+            let tabs = self.tabs.borrow();
+            let Some(tab) = tabs.get(idx) else {
+                return;
+            };
+            (tab.location.clone(), tab.dir_writable, tab.load_error.clone())
+        };
+        self.access_row.remove_css_class("readonly-banner");
+        match err {
+            Some(LoadErrorKind::PermissionDenied) if !is_root => {
+                self.access_label.set_text(&format!(
+                    "No access to {}: only root can read this folder.",
+                    loc.parse_name()
+                ));
+                self.access_button.set_label("Open as root");
+                self.access_bar.set_reveal_child(true);
+            }
+            _ if !writable && !is_root && !loc.is_trash() => {
+                self.access_row.add_css_class("readonly-banner");
+                self.access_label
+                    .set_text("Read-only folder. Turn on root mode to edit files here.");
+                self.access_button.set_label("Root (Ctrl+Shift+R)");
+                self.access_bar.set_reveal_child(true);
+            }
+            _ => {
+                self.access_bar.set_reveal_child(false);
+            }
+        }
+    }
+
+    fn update_status(&self) {
+        let idx = self.active_tab.get();
+        let (loading, query, is_trash, load_err) = {
+            let tabs = self.tabs.borrow();
+            let Some(tab) = tabs.get(idx) else {
+                return;
+            };
+            (
+                tab.loading,
+                tab.filter_query.clone(),
+                tab.location.is_trash(),
+                tab.load_error.clone(),
             )
+        };
+        let count = self.views.n_items();
+        let selected = self.views.selected_count();
+        self.status.set_text(&if selected > 0 {
+            let bytes = self.views.selected_file_size_sum();
+            format!("{selected} of {count} selected · {}", model::format_size(bytes))
         } else {
             format!(
                 "{count} items{}",
-                if self.loading.get() {
-                    " · Loading…"
-                } else {
-                    ""
-                }
+                if loading { " · Loading…" } else { "" }
             )
         });
         self.empty.set_visible(count == 0);
-        self.empty.set_text(if self.loading.get() {
+        self.empty.set_text(if loading {
             "Loading…"
-        } else if !self.query.borrow().is_empty() {
+        } else if load_err.is_some() {
+            "Unable to open this folder"
+        } else if !query.is_empty() {
             "Nothing found"
-        } else if self.is_trash() {
+        } else if is_trash {
             "Trash is empty"
         } else {
             "This folder is empty"
         });
     }
+
+    fn clear_search(self: &Rc<Self>) {
+        let idx = self.active_tab.get();
+        let was_recursive = {
+            let mut tabs = self.tabs.borrow_mut();
+            let Some(tab) = tabs.get_mut(idx) else {
+                return;
+            };
+            tab.search_cancel.store(true, Ordering::Relaxed);
+            tab.search_revision += 1;
+            tab.filter_query.clear();
+            std::mem::replace(&mut tab.recursive, false)
+        };
+        self.changing.set(true);
+        self.search.set_text("");
+        self.changing.set(false);
+        if was_recursive {
+            self.load_active_tab();
+        } else {
+            self.apply_filter_to_view(false);
+        }
+    }
+
+    fn update_search(self: &Rc<Self>) {
+        let query = self.search.text().to_string();
+        let idx = self.active_tab.get();
+        let (tab_id, recursive, cancel, revision, loc) = {
+            let mut tabs = self.tabs.borrow_mut();
+            let Some(tab) = tabs.get_mut(idx) else {
+                return;
+            };
+            tab.filter_query = query.clone();
+            if !tab.recursive {
+                drop(tabs);
+                self.apply_filter_to_view(false);
+                return;
+            }
+            tab.search_cancel.store(true, Ordering::Relaxed);
+            tab.load_cancel.store(true, Ordering::Relaxed);
+            tab.load_cancel = Arc::new(AtomicBool::new(false));
+            let next_cancel = Arc::new(AtomicBool::new(false));
+            tab.search_cancel = next_cancel.clone();
+            tab.search_revision += 1;
+            if query.trim().is_empty() {
+                tab.loading = false;
+                tab.all_entries.clear();
+            }
+            (
+                tab.id,
+                tab.recursive,
+                next_cancel,
+                tab.search_revision,
+                tab.location.clone(),
+            )
+        };
+        let _ = recursive;
+
+        if query.trim().is_empty() {
+            self.views.clear();
+            self.visible_entries.borrow_mut().clear();
+            self.spinner.stop();
+            self.spinner.set_visible(false);
+            self.update_status();
+            return;
+        }
+        let Some(root_path) = loc.local_path().map(PathBuf::from) else {
+            return;
+        };
+        let hidden = self.config.borrow().show_hidden;
+
+        glib::spawn_future_local(glib::clone!(
+            #[weak(rename_to = this)]
+            self,
+            async move {
+                glib::timeout_future(Duration::from_millis(160)).await;
+                if cancel.load(Ordering::Relaxed) {
+                    return;
+                }
+                let still_valid = this
+                    .tabs
+                    .borrow()
+                    .iter()
+                    .find(|t| t.id == tab_id)
+                    .is_some_and(|t| t.search_revision == revision && t.recursive);
+                if !still_valid {
+                    return;
+                }
+                if let Some(tab) = this.tabs.borrow_mut().iter_mut().find(|t| t.id == tab_id) {
+                    tab.loading = true;
+                    tab.all_entries.clear();
+                }
+                if this.active_tab_id() == tab_id {
+                    this.views.clear();
+                    this.visible_entries.borrow_mut().clear();
+                    this.spinner.set_visible(true);
+                    this.spinner.start();
+                    this.update_status();
+                }
+
+                let cancel_batch = cancel.clone();
+                let cancel_done = cancel.clone();
+                search::spawn(
+                    root_path,
+                    query,
+                    hidden,
+                    cancel,
+                    glib::clone!(
+                        #[weak]
+                        this,
+                        move |batch| {
+                            if cancel_batch.load(Ordering::Relaxed) {
+                                return;
+                            }
+                            let mut appended_active = false;
+                            if let Some(tab) = this
+                                .tabs
+                                .borrow_mut()
+                                .iter_mut()
+                                .find(|t| t.id == tab_id && t.search_revision == revision && t.recursive)
+                            {
+                                tab.all_entries.extend(batch.clone());
+                                appended_active = this.active_tab_id() == tab_id;
+                            }
+                            if appended_active {
+                                this.visible_entries.borrow_mut().extend(batch.clone());
+                                this.views.append_entries(&batch);
+                                this.update_status();
+                            }
+                        }
+                    ),
+                    glib::clone!(
+                        #[weak]
+                        this,
+                        move |res| {
+                            let mut finished_current = false;
+                            if let Some(tab) = this
+                                .tabs
+                                .borrow_mut()
+                                .iter_mut()
+                                .find(|t| t.id == tab_id && t.search_revision == revision && t.recursive)
+                            {
+                                tab.loading = false;
+                                finished_current = true;
+                            }
+                            if finished_current
+                                && !cancel_done.load(Ordering::Relaxed)
+                                && this.active_tab_id() == tab_id
+                            {
+                                this.spinner.stop();
+                                this.spinner.set_visible(false);
+                                this.update_status();
+                                match res {
+                                    Ok(true) => this.notify(
+                                        "Search stopped at 10,000 results. Refine your query.",
+                                    ),
+                                    Ok(false) => {}
+                                    Err(e) if e != "Cancelled" => this.notify(&e),
+                                    Err(_) => {}
+                                }
+                            }
+                        }
+                    ),
+                );
+            }
+        ));
+    }
+
     fn activate(self: &Rc<Self>, position: u32) {
-        if let Some(info) = self
-            .views
-            .selection
-            .item(position)
-            .and_downcast::<gio::FileInfo>()
-        {
-            self.open_item(info);
+        if let Some(entry) = self.views.entry_at(position) {
+            self.open_item(entry);
         }
     }
+
     fn open_selected(self: &Rc<Self>) {
-        for info in self.views.selected() {
-            self.open_item(info);
+        let selected = self.views.selected();
+        if selected.len() == 1 {
+            self.open_item(selected.into_iter().next().unwrap());
+            return;
+        }
+        for entry in selected {
+            if !entry.is_dir {
+                self.open_item(entry);
+            }
         }
     }
-    fn open_item(self: &Rc<Self>, info: gio::FileInfo) {
-        if self.is_trash() {
+
+    fn open_item(self: &Rc<Self>, entry: FileEntry) {
+        if self.is_trash() || entry.trash.is_some() {
             self.quicklook();
             return;
         }
-        if model::is_dir(&info) {
-            self.navigate(model::file(&info), true);
-        } else {
-            let uri = model::file(&info).uri();
-            let context = gtk::prelude::WidgetExt::display(&self.window).app_launch_context();
-            glib::spawn_future_local(glib::clone!(
-                #[weak(rename_to=this)]
-                self,
-                async move {
-                    if let Err(e) =
-                        gio::AppInfo::launch_default_for_uri_future(&uri, Some(&context)).await
-                    {
-                        this.error(e);
-                    }
-                }
-            ));
+        if entry.is_dir {
+            self.navigate(Location::Local(entry.path), true);
+            return;
         }
+        let cfg = self.config.borrow().clone();
+        open::open_entry(&self.window, entry, cfg, self.reporter());
     }
+
     fn open_with(self: &Rc<Self>) {
-        if let Some(info) = self.views.selected().first() {
-            let launcher = gtk::FileLauncher::new(Some(&model::file(info)));
-            launcher.set_always_ask(true);
-            glib::spawn_future_local(glib::clone!(
-                #[weak(rename_to=this)]
-                self,
-                async move {
-                    if let Err(e) = launcher.launch_future(Some(&this.window)).await {
-                        if !e.matches(gtk::DialogError::Dismissed) {
-                            this.error(e);
-                        }
-                    }
-                }
-            ));
-        }
-    }
-    fn quicklook(self: &Rc<Self>) {
-        if let Some(info) = self.views.selected().first() {
-            preview::show(&self.window, info, self.thumbs.clone(), self.reporter());
-        }
-    }
-    fn is_trash(&self) -> bool {
-        self.current.borrow().uri_scheme().as_deref() == Some("trash")
-    }
-    fn rename(self: &Rc<Self>, info: gio::FileInfo, name: String) {
-        if self.is_trash() {
-            self.notify("Restore files before renaming them");
-            return;
-        }
-        if name.is_empty() || name == "." || name == ".." || name.contains(['/', '\0']) {
-            self.notify("Choose a nonempty name without a slash");
-            self.reload();
-            return;
-        }
-        let file = model::file(&info);
-        if let (Some(from), Some(parent)) = (file.path(), file.parent().and_then(|p| p.path())) {
-            let to = parent.join(&name);
-            if self.root_run(crate::root_proto::Request::Rename { from, to: to.clone() }, vec![to]) {
+        if let Some(entry) = self.views.selected().into_iter().next() {
+            if entry.is_dir {
                 return;
             }
+            let cfg = self.config.borrow().clone();
+            open::open_with_dialog(&self.window, entry, None, cfg, self.reporter());
+        }
+    }
+
+    fn middle_click_item(self: &Rc<Self>, position: u32) {
+        if let Some(entry) = self.views.entry_at(position) {
+            if entry.is_dir && entry.trash.is_none() {
+                self.new_tab(Location::Local(entry.path), true);
+            }
+        }
+    }
+
+    fn quicklook(self: &Rc<Self>) {
+        let Some(selected) = self.views.selected().into_iter().next() else {
+            return;
+        };
+        let entries = self.visible_entries.borrow().clone();
+        let idx = entries
+            .iter()
+            .position(|e| e.uri == selected.uri)
+            .unwrap_or(0);
+        let views_grid = self.views.grid.clone();
+        let views_list = self.views.list.clone();
+        let mode = self.views.mode();
+        preview::show_quicklook(
+            &self.window,
+            entries,
+            idx,
+            self.reporter(),
+            Rc::new(move || match mode {
+                ViewMode::Grid => {
+                    views_grid.grab_focus();
+                }
+                ViewMode::List => {
+                    views_list.grab_focus();
+                }
+            }),
+        );
+    }
+
+    fn reload_tab_after_op(self: &Rc<Self>, tab_id: u64) {
+        if self.active_tab_id() == tab_id {
+            self.reload(true);
+        } else if let Some(tab) = self.tabs.borrow_mut().iter_mut().find(|t| t.id == tab_id) {
+            tab.needs_refresh = true;
+        }
+    }
+
+    fn finish_tab_mutation(self: &Rc<Self>, tab_id: u64, created_paths: Vec<PathBuf>) {
+        if !created_paths.is_empty() {
+            let uris: Vec<String> = created_paths
+                .iter()
+                .map(|p| model::file_uri_from_path(p))
+                .collect();
+            if let Some(tab) = self.tabs.borrow_mut().iter_mut().find(|t| t.id == tab_id) {
+                tab.pending_selection = uris;
+            }
+        }
+        self.reload_tab_after_op(tab_id);
+    }
+
+    fn refresh_location(self: &Rc<Self>, loc: &Location) {
+        let active_id = self.active_tab_id();
+        let mut reload_active = false;
+        for tab in self.tabs.borrow_mut().iter_mut() {
+            if &tab.location == loc {
+                if tab.id == active_id {
+                    reload_active = true;
+                } else {
+                    tab.needs_refresh = true;
+                }
+            }
+        }
+        if reload_active {
+            self.reload(true);
+        }
+    }
+
+    fn properties(self: &Rc<Self>) {
+        let entry = if let Some(sel) = self.views.selected().into_iter().next() {
+            sel
+        } else if let Some(path) = self.current_location().local_path() {
+            let Some(cur) = model::entry_from_path(path, self.root.borrow().is_some()) else {
+                return;
+            };
+            cur
+        } else {
+            return;
+        };
+
+        let is_root = self.root.borrow().is_some();
+        let can_chmod = is_root || !entry.is_readonly;
+        preview::show_properties(
+            &self.window,
+            entry,
+            &self.icon_cache,
+            can_chmod,
+            Rc::new(glib::clone!(
+                #[weak(rename_to = this)]
+                self,
+                move |path, mode, done| this.apply_chmod(path, mode, done)
+            )),
+        );
+    }
+
+    fn apply_chmod(self: &Rc<Self>, path: PathBuf, mode: u32, done: Box<dyn FnOnce(bool)>) {
+        let tab_id = self.active_tab_id();
+        if let Some(root) = self.root.borrow().clone() {
+            self.touch_root();
+            glib::spawn_future_local(glib::clone!(
+                #[weak(rename_to = this)]
+                self,
+                async move {
+                    let ok = match root.run(root_proto::Request::Chmod { path, mode }).await {
+                        Ok(()) => true,
+                        Err(e) => {
+                            this.notify(&e);
+                            false
+                        }
+                    };
+                    done(ok);
+                    if ok {
+                        this.reload_tab_after_op(tab_id);
+                    }
+                }
+            ));
+            return;
         }
         glib::spawn_future_local(glib::clone!(
-            #[weak(rename_to=this)]
+            #[weak(rename_to = this)]
             self,
             async move {
-                match gio::spawn_blocking(move || {
-                    file.set_display_name(&name, gio::Cancellable::NONE)
-                })
-                .await
-                {
-                    Ok(Ok(file)) => {
-                        this.pending_selection.replace(vec![file.uri().to_string()]);
-                        this.reload();
+                let ok = match ops::chmod_path(path, mode).await {
+                    Ok(()) => true,
+                    Err(e) => {
+                        this.notify(&e);
+                        false
                     }
-                    Ok(Err(e)) => this.error(e),
-                    Err(_) => this.notify("Rename worker failed"),
+                };
+                done(ok);
+                if ok {
+                    this.reload_tab_after_op(tab_id);
                 }
             }
         ));
     }
-    fn new_folder(self: &Rc<Self>) {
-        if self.is_trash() {
-            self.notify("New folders cannot be created in Trash");
+
+    fn start_rename(&self) {
+        let idx = self.active_tab.get();
+        let siblings: HashSet<String> = self
+            .tabs
+            .borrow()
+            .get(idx)
+            .map(|t| t.all_entries.iter().map(|e| e.name.clone()).collect())
+            .unwrap_or_default();
+        self.views.open_rename_popover(siblings);
+    }
+
+    fn rename_entry(self: &Rc<Self>, entry: FileEntry, new_name: String) {
+        if self.is_trash() || entry.trash.is_some() {
+            self.notify("Restore files before renaming them");
             return;
         }
-        let dialog = adw::AlertDialog::builder().heading("New Folder").build();
-        let name = gtk::Entry::builder()
-            .text("New Folder")
+        if new_name == entry.name {
+            return;
+        }
+        if new_name.is_empty()
+            || new_name == "."
+            || new_name == ".."
+            || new_name.contains(['/', '\0'])
+        {
+            self.notify("Invalid name");
+            return;
+        }
+        let Some(parent) = entry.path.parent() else {
+            return;
+        };
+        let to = parent.join(&new_name);
+        if self.root_run(
+            root_proto::Request::Rename {
+                from: entry.path.clone(),
+                to: to.clone(),
+                overwrite: false,
+            },
+            vec![to],
+        ) {
+            return;
+        }
+        let tab_id = self.active_tab_id();
+        glib::spawn_future_local(glib::clone!(
+            #[weak(rename_to = this)]
+            self,
+            async move {
+                match ops::rename_path(entry.path, new_name).await {
+                    Ok(new_path) => this.finish_tab_mutation(tab_id, vec![new_path]),
+                    Err(e) => this.notify(&e),
+                }
+            }
+        ));
+    }
+
+    fn new_folder(self: &Rc<Self>) {
+        self.prompt_new_entry(true);
+    }
+
+    fn new_file(self: &Rc<Self>) {
+        self.prompt_new_entry(false);
+    }
+
+    fn prompt_new_entry(self: &Rc<Self>, folder: bool) {
+        let Some(dir) = self.current_location().local_path().map(PathBuf::from) else {
+            self.notify("Cannot create items in Trash");
+            return;
+        };
+        let heading = if folder { "New Folder" } else { "New File" };
+        let default_name = if folder { "New Folder" } else { "untitled.txt" };
+        let dialog = adw::AlertDialog::builder().heading(heading).build();
+        let name_entry = gtk::Entry::builder()
+            .text(default_name)
             .activates_default(true)
             .build();
-        dialog.set_extra_child(Some(&name));
+        dialog.set_extra_child(Some(&name_entry));
         dialog.add_responses(&[("cancel", "Cancel"), ("create", "Create")]);
         dialog.set_default_response(Some("create"));
         dialog.set_close_response("cancel");
         dialog.set_response_appearance("create", adw::ResponseAppearance::Suggested);
-        let folder = self.current.borrow().clone();
+        dialog.set_focus(Some(&name_entry));
+        if !folder {
+            name_entry.select_region(0, default_name.rfind('.').map(|i| i as i32).unwrap_or(-1));
+        } else {
+            name_entry.select_region(0, -1);
+        }
+
+        let tab_id = self.active_tab_id();
         glib::spawn_future_local(glib::clone!(
-            #[weak(rename_to=this)]
+            #[weak(rename_to = this)]
             self,
             async move {
                 if dialog.choose_future(Some(&this.window)).await != "create" {
                     return;
                 }
-                let name = name.text();
+                let name = name_entry.text().to_string();
                 if name.is_empty() || name == "." || name == ".." || name.contains(['/', '\0']) {
-                    this.notify("Invalid folder name");
+                    this.notify("Invalid name");
                     return;
                 }
-                let target = folder.child(name.as_str());
-                if let Some(path) = target.path() {
-                    if this.root_run(
-                        crate::root_proto::Request::Mkdir { path: path.clone() },
-                        vec![path],
-                    ) {
-                        return;
+                let target = dir.join(&name);
+                let req = if folder {
+                    root_proto::Request::Mkdir {
+                        path: target.clone(),
                     }
+                } else {
+                    root_proto::Request::Touch {
+                        path: target.clone(),
+                    }
+                };
+                if this.root_run(req, vec![target]) {
+                    return;
                 }
-                let dest = target.clone();
-                match gio::spawn_blocking(move || dest.make_directory(gio::Cancellable::NONE)).await
-                {
-                    Ok(Ok(())) => {
-                        this.pending_selection
-                            .replace(vec![target.uri().to_string()]);
-                        this.reload();
-                    }
-                    Ok(Err(e)) => this.error(e),
-                    Err(_) => this.notify("Folder worker failed"),
+                let res = if folder {
+                    ops::create_folder(dir, name).await
+                } else {
+                    ops::create_file(dir, name).await
+                };
+                match res {
+                    Ok(created) => this.finish_tab_mutation(tab_id, vec![created]),
+                    Err(e) => this.notify(&e),
                 }
             }
         ));
     }
+
     fn copy(&self, cut: bool) {
         if self.is_trash() {
             self.notify("Restore files before copying or cutting them");
             return;
         }
-        let uris = self
-            .views
-            .selected()
-            .iter()
-            .map(|i| model::file(i).uri().to_string())
-            .collect::<Vec<_>>();
+        let uris: Vec<String> = self.views.selected().into_iter().map(|e| e.uri).collect();
         if uris.is_empty() {
             return;
+        }
+        if cut {
+            self.views.set_cut_uris(uris.iter().cloned().collect());
+        } else {
+            self.views.set_cut_uris(HashSet::new());
         }
         let files = clipboard::Files { cut, uris };
         if let Err(e) = self.window.clipboard().set_content(Some(&files.provider())) {
@@ -1387,72 +2656,225 @@ impl FileWindow {
             self.notify(if cut { "Files cut" } else { "Files copied" });
         }
     }
-    fn paste(self: &Rc<Self>) {
+
+    fn duplicate(self: &Rc<Self>) {
         if self.is_trash() {
-            self.notify("Files cannot be pasted into Trash");
             return;
         }
-        let clipboard = self.window.clipboard();
-        let destination = self.current.borrow().clone();
+        let selected = self.views.selected();
+        if selected.is_empty() {
+            return;
+        }
+        let tab_id = self.active_tab_id();
+        if let Some(root) = self.root.borrow().clone() {
+            let mut taken: HashSet<String> = self
+                .tabs
+                .borrow()
+                .iter()
+                .find(|t| t.id == tab_id)
+                .map(|t| t.all_entries.iter().map(|e| e.name.clone()).collect())
+                .unwrap_or_default();
+            let op = self.operations.start("Duplicating");
+            self.touch_root();
+            let _hold = self.app.hold();
+            glib::spawn_future_local(glib::clone!(
+                #[strong(rename_to = this)]
+                self,
+                async move {
+                    let _hold = _hold;
+                    let mut created = Vec::new();
+                    for entry in selected {
+                        if op.cancel.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        let Some(parent) = entry.path.parent() else {
+                            continue;
+                        };
+                        let name = next_copy_name(&entry.name, entry.is_dir, true, &mut taken);
+                        let to = parent.join(name);
+                        match root
+                            .run(root_proto::Request::Copy {
+                                from: entry.path,
+                                to: to.clone(),
+                                overwrite: false,
+                            })
+                            .await
+                        {
+                            Ok(()) => created.push(to),
+                            Err(e) => {
+                                this.notify(&e);
+                                break;
+                            }
+                        }
+                    }
+                    if !created.is_empty() {
+                        this.notify(&format!("Duplicated {} item(s)", created.len()));
+                    }
+                    op.finish();
+                    this.finish_tab_mutation(tab_id, created);
+                }
+            ));
+            return;
+        }
+        let paths: Vec<PathBuf> = selected.into_iter().map(|e| e.path).collect();
+        let op = self.operations.start("Duplicating");
+        let cancel = op.cancel.clone();
+        let _hold = self.app.hold();
         glib::spawn_future_local(glib::clone!(
-            #[weak(rename_to=this)]
+            #[strong(rename_to = this)]
+            self,
+            async move {
+                let _hold = _hold;
+                let mut created_paths = Vec::new();
+                match gio::spawn_blocking(move || ops::duplicate_sync(&paths, &cancel)).await {
+                    Ok(Ok(created)) => {
+                        this.notify(&format!("Duplicated {} item(s)", created.len()));
+                        created_paths = created;
+                    }
+                    Ok(Err(e)) => this.notify(&e),
+                    Err(_) => this.notify("Duplicate worker failed"),
+                }
+                op.finish();
+                this.finish_tab_mutation(tab_id, created_paths);
+            }
+        ));
+    }
+
+    fn paste(self: &Rc<Self>) {
+        let Some(dest) = self.current_location().local_path().map(PathBuf::from) else {
+            self.notify("Files cannot be pasted into Trash");
+            return;
+        };
+        let clipboard = self.window.clipboard();
+        glib::spawn_future_local(glib::clone!(
+            #[weak(rename_to = this)]
             self,
             async move {
                 match clipboard::read(&clipboard).await {
-                    Ok(files) => this.transfer(files, destination, true, None),
+                    Ok(files) => this.transfer_files(files, dest, true, None),
                     Err(e) => this.notify(&e),
                 }
             }
         ));
     }
-    fn transfer(
+
+    fn drag_uris_for(&self, pos: u32) -> Vec<String> {
+        if self.is_trash() {
+            return Vec::new();
+        }
+        if !self.views.selection.is_selected(pos) {
+            self.views.selection.select_item(pos, true);
+        }
+        self.views.selected().into_iter().map(|e| e.uri).collect()
+    }
+
+    fn handle_drop(
+        self: &Rc<Self>,
+        target_loc: Option<Location>,
+        uris: Vec<String>,
+        moving: bool,
+        drop: gdk::Drop,
+    ) {
+        let is_bg = target_loc.is_none();
+        let target = target_loc.unwrap_or_else(|| self.current_location());
+        match target {
+            Location::Trash => {
+                if is_bg {
+                    drop.finish(gdk::DragAction::empty());
+                    return;
+                }
+                let paths: Vec<PathBuf> = uris
+                    .into_iter()
+                    .filter_map(|u| Location::from_uri(&u).ok()?.local_path().map(PathBuf::from))
+                    .collect();
+                if paths.is_empty() {
+                    drop.finish(gdk::DragAction::empty());
+                    return;
+                }
+                self.trash_paths(paths, Some(drop));
+            }
+            Location::Local(dir) => {
+                let files = clipboard::Files { cut: moving, uris };
+                self.transfer_files(files, dir, false, Some(drop));
+            }
+        }
+    }
+
+    fn transfer_files(
         self: &Rc<Self>,
         files: clipboard::Files,
-        destination: gio::File,
+        destination: PathBuf,
         clear_clipboard: bool,
         drop: Option<gdk::Drop>,
     ) {
         if let Some(root) = self.root.borrow().clone() {
-            if let Some(dir) = destination.path() {
-                self.root_transfer(root, files, dir);
-                return;
+            self.root_transfer(root, files, destination, clear_clipboard, drop);
+            return;
+        }
+        let sources: Vec<PathBuf> = files
+            .uris
+            .iter()
+            .filter_map(|u| Location::from_uri(u).ok()?.local_path().map(PathBuf::from))
+            .collect();
+        if sources.is_empty() {
+            if let Some(drop) = drop {
+                drop.finish(gdk::DragAction::empty());
             }
+            return;
         }
         let op = self.operations.start(if files.cut {
             "Moving files"
         } else {
             "Copying files"
         });
-        let sources = files
-            .uris
-            .iter()
-            .map(|uri| gio::File::for_uri(uri))
-            .collect();
+        let tab_id = self.active_tab_id();
         let _hold = self.app.hold();
         glib::spawn_future_local(glib::clone!(
-            #[strong(rename_to=this)]
+            #[strong(rename_to = this)]
             self,
             async move {
                 let _hold = _hold;
                 let mut success = false;
+                let dest_loc = Location::Local(destination.clone());
                 match ops::transfer(&this.window, sources, destination, files.cut, &op).await {
-                    Ok(all) => {
-                        success = all;
-                        if all && files.cut && clear_clipboard {
-                            let clipboard = this.window.clipboard();
-                            if clipboard::read(&clipboard)
+                    Ok(report) => {
+                        success = !report.cancelled;
+                        if files.cut
+                            && clear_clipboard
+                            && !report.cancelled
+                            && report.skipped == 0
+                        {
+                            this.views.set_cut_uris(HashSet::new());
+                            let cb = this.window.clipboard();
+                            if clipboard::read(&cb)
                                 .await
-                                .is_ok_and(|current| current == files)
+                                .is_ok_and(|cur| cur == files)
                             {
-                                if let Err(e) = clipboard.set_content(None::<&gdk::ContentProvider>)
-                                {
-                                    this.notify(&e.to_string());
-                                }
+                                let _ = cb.set_content(None::<&gdk::ContentProvider>);
                             }
                         }
-                        this.notify(&format!("{} items completed", op.completed.get()));
+                        if !report.created_paths.is_empty() {
+                            let uris: Vec<String> = report
+                                .created_paths
+                                .iter()
+                                .map(|p| model::file_uri_from_path(p))
+                                .collect();
+                            if let Some(tab) = this
+                                .tabs
+                                .borrow_mut()
+                                .iter_mut()
+                                .find(|t| t.id == tab_id && t.location == dest_loc)
+                            {
+                                tab.pending_selection = uris;
+                            }
+                        }
+                        if report.cancelled {
+                            this.notify("Transfer cancelled");
+                        } else {
+                            this.notify(&format!("{} items completed", report.completed));
+                        }
                     }
-                    Err(e) => this.error(e),
+                    Err(e) => this.notify(&e),
                 }
                 if let Some(drop) = drop {
                     drop.finish(if success {
@@ -1466,152 +2888,212 @@ impl FileWindow {
                     });
                 }
                 op.finish();
-                this.reload();
+                this.reload_tab_after_op(tab_id);
+                this.refresh_location(&dest_loc);
             }
         ));
     }
+
     fn delete(self: &Rc<Self>, permanent: bool) {
         let selected = self.views.selected();
         if selected.is_empty() {
             return;
         }
-        let permanent = permanent || self.is_trash();
+        if self.is_trash() {
+            self.delete_from_trash(selected);
+            return;
+        }
         if self.root.borrow().is_some() {
             self.root_delete(selected);
             return;
         }
-        glib::spawn_future_local(glib::clone!(
-            #[strong(rename_to=this)]
-            self,
-            async move {
-                if permanent
-                    && !ops::confirm(
+        let paths: Vec<PathBuf> = selected.into_iter().map(|e| e.path).collect();
+        if permanent {
+            glib::spawn_future_local(glib::clone!(
+                #[strong(rename_to = this)]
+                self,
+                async move {
+                    if !ops::confirm(
                         &this.window,
                         "Delete permanently?",
                         &format!(
-                            "{} selected items will be permanently deleted. This cannot be undone.",
-                            selected.len()
+                            "{} selected item(s) will be permanently deleted. This cannot be undone.",
+                            paths.len()
                         ),
                         "Delete Permanently",
                     )
                     .await
+                    {
+                        return;
+                    }
+                    let _hold = this.app.hold();
+                    let op = this.operations.start("Deleting files");
+                    match ops::delete_paths(paths, &op).await {
+                        Ok(n) => this.notify(&format!("Deleted {n} item(s)")),
+                        Err(e) => this.notify(&e),
+                    }
+                    op.finish();
+                    this.reload(true);
+                }
+            ));
+        } else {
+            self.trash_paths(paths, None);
+        }
+    }
+
+    fn trash_paths(self: &Rc<Self>, paths: Vec<PathBuf>, drop: Option<gdk::Drop>) {
+        let op = self.operations.start("Moving to Trash");
+        let _hold = self.app.hold();
+        glib::spawn_future_local(glib::clone!(
+            #[strong(rename_to = this)]
+            self,
+            async move {
+                let _hold = _hold;
+                let count = paths.len();
+                let res = gio::spawn_blocking(move || {
+                    let mut trashed = Vec::with_capacity(paths.len());
+                    for p in paths {
+                        trashed.push(trash::move_to_trash(&p)?);
+                    }
+                    Ok::<_, String>(trashed)
+                })
+                .await;
+                op.finish();
+                let mut ok = false;
+                match res {
+                    Ok(Ok(metas)) if !metas.is_empty() => {
+                        ok = true;
+                        this.sidebar.set_trash_count(trash::trash_count());
+                        let toast = adw::Toast::builder()
+                            .title(format!("{count} item(s) moved to Trash"))
+                            .button_label("Undo")
+                            .timeout(12)
+                            .build();
+                        toast.connect_button_clicked(glib::clone!(
+                            #[weak]
+                            this,
+                            move |_| this.restore_metas(metas.clone())
+                        ));
+                        this.toast.add_toast(toast);
+                    }
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => this.notify(&e),
+                    Err(_) => this.notify("Trash worker failed"),
+                }
+                if let Some(drop) = drop {
+                    drop.finish(if ok {
+                        gdk::DragAction::MOVE
+                    } else {
+                        gdk::DragAction::empty()
+                    });
+                }
+                this.reload(true);
+            }
+        ));
+    }
+
+    fn delete_from_trash(self: &Rc<Self>, selected: Vec<FileEntry>) {
+        glib::spawn_future_local(glib::clone!(
+            #[strong(rename_to = this)]
+            self,
+            async move {
+                if !ops::confirm(
+                    &this.window,
+                    "Delete from Trash permanently?",
+                    &format!(
+                        "{} selected item(s) will be permanently deleted.",
+                        selected.len()
+                    ),
+                    "Delete Permanently",
+                )
+                .await
                 {
                     return;
                 }
-                let _hold = this.app.hold();
-                let op = this.operations.start(if permanent {
-                    "Deleting files"
-                } else {
-                    "Moving to Trash"
-                });
-                let trash = gio::File::for_uri("trash:///");
-                let before = if !permanent {
-                    match ops::children(&trash, &op.cancel).await {
-                        Ok(items) => Some(
-                            items
-                                .iter()
-                                .map(|i| model::file(i).uri().to_string())
-                                .collect::<HashSet<_>>(),
-                        ),
-                        Err(e) => {
-                            this.error(e);
-                            None
-                        }
+                let names: Vec<std::ffi::OsString> = selected
+                    .into_iter()
+                    .filter_map(|e| e.trash.map(|m| m.trash_name))
+                    .collect();
+                let res = gio::spawn_blocking(move || {
+                    for name in &names {
+                        trash::delete_trashed(name)?;
                     }
-                } else {
-                    None
-                };
-                let mut originals = HashSet::new();
-                for info in selected {
-                    let file = model::file(&info);
-                    op.progress(&info.display_name(), 0, 0);
-                    let result = if permanent {
-                        ops::delete_tree(&file, &op.cancel).await
-                    } else {
-                        ops::trash(&file, &op.cancel).await
-                    };
-                    match result {
-                        Ok(()) => {
-                            op.completed.set(op.completed.get() + 1);
-                            if let Some(path) = file.path() {
-                                originals.insert(path.to_string_lossy().into_owned());
-                            }
-                        }
-                        Err(e) => {
-                            let cancelled = ops::is_cancelled(&e);
-                            this.error(e);
-                            if cancelled {
-                                break;
-                            }
-                        }
-                    }
+                    Ok::<_, String>(names.len())
+                })
+                .await;
+                match res {
+                    Ok(Ok(n)) => this.notify(&format!("Deleted {n} item(s)")),
+                    Ok(Err(e)) => this.notify(&e),
+                    Err(_) => this.notify("Trash worker failed"),
                 }
-                if let Some(before) = before {
-                    match ops::children(&trash, &gio::Cancellable::new()).await {
-                        Ok(items) => {
-                            let undo = items
-                                .into_iter()
-                                .filter(|i| {
-                                    !before.contains(model::file(i).uri().as_str())
-                                        && i.attribute_byte_string("trash::orig-path")
-                                            .is_some_and(|p| originals.contains(p.as_str()))
-                                })
-                                .collect::<Vec<_>>();
-                            if !undo.is_empty() {
-                                let toast = adw::Toast::builder()
-                                    .title(format!("{} items moved to Trash", undo.len()))
-                                    .button_label("Undo")
-                                    .timeout(12)
-                                    .build();
-                                toast.connect_button_clicked(glib::clone!(
-                                    #[weak]
-                                    this,
-                                    move |_| this.restore(undo.clone())
-                                ));
-                                this.toast.add_toast(toast);
-                            }
-                        }
-                        Err(e) => this.error(e),
-                    }
-                } else if op.completed.get() > 0 {
-                    this.notify(&format!("{} items completed", op.completed.get()));
-                }
-                op.finish();
-                this.reload();
+                this.sidebar.set_trash_count(trash::trash_count());
+                this.reload(true);
             }
         ));
     }
+
     fn restore_selected(self: &Rc<Self>) {
-        self.restore(self.views.selected());
+        let metas: Vec<model::TrashMeta> = self
+            .views
+            .selected()
+            .into_iter()
+            .filter_map(|e| e.trash)
+            .collect();
+        if !metas.is_empty() {
+            self.restore_metas(metas);
+        }
     }
-    fn restore(self: &Rc<Self>, items: Vec<gio::FileInfo>) {
+
+    fn restore_metas(self: &Rc<Self>, metas: Vec<model::TrashMeta>) {
         let op = self.operations.start("Restoring files");
+        let _hold = self.app.hold();
         glib::spawn_future_local(glib::clone!(
-            #[strong(rename_to=this)]
+            #[strong(rename_to = this)]
             self,
             async move {
-                let _hold = this.app.hold();
-                for info in items {
-                    op.progress(&info.display_name(), 0, 0);
-                    match ops::restore(&this.window, &info, &op.cancel).await {
-                        Ok(()) => op.completed.set(op.completed.get() + 1),
-                        Err(e) => {
-                            let cancelled = ops::is_cancelled(&e);
-                            this.error(e);
-                            if cancelled {
-                                break;
+                let _hold = _hold;
+                let mut restored = 0usize;
+                for meta in metas {
+                    let target = if std::fs::symlink_metadata(&meta.orig_path).is_ok() {
+                        let parent = meta
+                            .orig_path
+                            .parent()
+                            .unwrap_or_else(|| std::path::Path::new("/"));
+                        let name = meta
+                            .orig_path
+                            .file_name()
+                            .map(|s| s.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| meta.trash_name.to_string_lossy().into_owned());
+                        match ops::unique_copy_target(parent, &name, false) {
+                            Ok(u) => u,
+                            Err(e) => {
+                                this.notify(&e);
+                                continue;
                             }
                         }
+                    } else {
+                        meta.orig_path.clone()
+                    };
+                    let m = meta.clone();
+                    match gio::spawn_blocking(move || trash::restore_item(&m, &target)).await {
+                        Ok(Ok(())) => restored += 1,
+                        Ok(Err(e)) => this.notify(&e),
+                        Err(_) => this.notify("Restore worker failed"),
                     }
                 }
                 op.finish();
-                this.reload();
+                this.sidebar.set_trash_count(trash::trash_count());
+                if restored > 0 {
+                    this.notify(&format!("Restored {restored} item(s)"));
+                }
+                this.reload(true);
             }
         ));
     }
+
     fn empty_trash(self: &Rc<Self>) {
         glib::spawn_future_local(glib::clone!(
-            #[strong(rename_to=this)]
+            #[strong(rename_to = this)]
             self,
             async move {
                 if !ops::confirm(
@@ -1626,43 +3108,201 @@ impl FileWindow {
                 }
                 let _hold = this.app.hold();
                 let op = this.operations.start("Emptying Trash");
-                match ops::children(&gio::File::for_uri("trash:///"), &op.cancel).await {
-                    Ok(items) => {
-                        for info in items {
-                            op.progress(&info.display_name(), 0, 0);
-                            match ops::delete_tree(&model::file(&info), &op.cancel).await {
-                                Ok(()) => {}
-                                Err(e) => {
-                                    let cancelled = ops::is_cancelled(&e);
-                                    this.error(e);
-                                    if cancelled {
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    Err(e) => this.error(e),
+                match gio::spawn_blocking(trash::empty_trash).await {
+                    Ok(Ok(n)) => this.notify(&format!("Emptied Trash ({n} items)")),
+                    Ok(Err(e)) => this.notify(&e),
+                    Err(_) => this.notify("Trash worker failed"),
                 }
                 op.finish();
-                this.reload();
+                this.sidebar.set_trash_count(0);
+                this.reload(true);
             }
         ));
     }
-    fn terminal(self: &Rc<Self>) {
+
+    fn extract_selected(self: &Rc<Self>) {
+        let Some(entry) = self.views.selected().into_iter().next() else {
+            return;
+        };
+        let Some(dest_dir) = self.current_location().local_path().map(PathBuf::from) else {
+            return;
+        };
+        let op = self.operations.start("Extracting archive");
+        let tab_id = self.active_tab_id();
+        let _hold = self.app.hold();
+        glib::spawn_future_local(glib::clone!(
+            #[strong(rename_to = this)]
+            self,
+            async move {
+                let _hold = _hold;
+                let mut created = Vec::new();
+                match ops::extract_archive(entry.path, dest_dir, &op).await {
+                    Ok(out) => {
+                        this.notify(&format!(
+                            "Extracted to {}",
+                            out.file_name().unwrap_or_default().to_string_lossy()
+                        ));
+                        created.push(out);
+                    }
+                    Err(e) => this.notify(&e),
+                }
+                op.finish();
+                this.finish_tab_mutation(tab_id, created);
+            }
+        ));
+    }
+
+    fn compress_selected(self: &Rc<Self>) {
+        let selected = self.views.selected();
+        if selected.is_empty() {
+            return;
+        }
+        let Some(dir) = self.current_location().local_path().map(PathBuf::from) else {
+            return;
+        };
+        let default_base = if selected.len() == 1 {
+            selected[0].name.clone()
+        } else {
+            "archive".to_owned()
+        };
+        let dialog = adw::AlertDialog::builder()
+            .heading("Compress")
+            .body("Choose archive filename (.tar.gz, .tar.zst, or .zip):")
+            .build();
+        let entry = gtk::Entry::builder()
+            .text(format!("{default_base}.tar.gz"))
+            .activates_default(true)
+            .build();
+        dialog.set_extra_child(Some(&entry));
+        dialog.add_responses(&[("cancel", "Cancel"), ("create", "Compress")]);
+        dialog.set_default_response(Some("create"));
+        dialog.set_close_response("cancel");
+        dialog.set_response_appearance("create", adw::ResponseAppearance::Suggested);
+        dialog.set_focus(Some(&entry));
+        entry.select_region(0, default_base.chars().count() as i32);
+
+        let tab_id = self.active_tab_id();
+        glib::spawn_future_local(glib::clone!(
+            #[weak(rename_to = this)]
+            self,
+            async move {
+                if dialog.choose_future(Some(&this.window)).await != "create" {
+                    return;
+                }
+                let name = entry.text().to_string();
+                if name.is_empty() || name == "." || name == ".." || name.contains(['/', '\0']) {
+                    this.notify("Invalid archive name");
+                    return;
+                }
+                let archive_path = dir.join(&name);
+                let sources: Vec<PathBuf> = selected.into_iter().map(|e| e.path).collect();
+                let op = this.operations.start("Compressing");
+                let _hold = this.app.hold();
+                let mut created = Vec::new();
+                match ops::compress_paths(sources, archive_path, &op).await {
+                    Ok(out) => {
+                        this.notify("Archive created");
+                        created.push(out);
+                    }
+                    Err(e) => this.notify(&e),
+                }
+                op.finish();
+                this.finish_tab_mutation(tab_id, created);
+            }
+        ));
+    }
+
+    fn copy_selected_paths(&self) {
+        let selected = self.views.selected();
+        let text = if selected.is_empty() {
+            self.current_location().parse_name()
+        } else {
+            selected
+                .iter()
+                .map(|e| e.path.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        self.views.set_cut_uris(HashSet::new());
+        clipboard::copy_text(&self.window.clipboard(), &text);
+        self.notify("Path copied");
+    }
+
+    fn toggle_bookmark_for_target(&self) {
+        let selected = self.views.selected();
+        let target = if selected.len() == 1 && selected[0].is_dir {
+            Some(selected[0].path.clone())
+        } else {
+            self.current_location().local_path().map(PathBuf::from)
+        };
+        let Some(path) = target else {
+            return;
+        };
+        if self.sidebar.is_bookmarked(&path) {
+            self.sidebar
+                .remove_bookmark(&model::file_uri_from_path(&path));
+            self.notify("Bookmark removed");
+        } else {
+            self.sidebar.add_bookmark(&path);
+            self.notify("Bookmark added");
+        }
+    }
+
+    fn terminal(&self) {
         let selected = self.views.selected();
         let folder = selected
             .first()
-            .filter(|i| model::is_dir(i))
-            .map(model::file)
-            .unwrap_or_else(|| self.current.borrow().clone());
-        let Some(path) = folder.path() else {
+            .filter(|e| e.is_dir && e.trash.is_none())
+            .map(|e| e.path.clone())
+            .or_else(|| self.current_location().local_path().map(PathBuf::from));
+        let Some(path) = folder else {
             self.notify("Open in Terminal requires a local folder");
             return;
         };
         self.external_terminal(path);
     }
-    /// Enters root mode (asking for the password through polkit) or leaves it.
+
+    fn external_terminal(&self, path: PathBuf) {
+        let cmd = self.config.borrow().terminal_command();
+        if let Err(e) = open::spawn_terminal_window(&cmd, &path) {
+            self.notify(&e);
+        }
+    }
+
+    fn dock_folder_target(&self) -> Option<PathBuf> {
+        self.views
+            .selected()
+            .first()
+            .filter(|e| e.is_dir && e.trash.is_none())
+            .map(|e| e.path.clone())
+            .or_else(|| self.current_location().local_path().map(PathBuf::from))
+    }
+
+    fn toggle_dock(self: &Rc<Self>) {
+        if self.dock.is_open() {
+            self.dock.hide();
+            self.views.grab_focus();
+            return;
+        }
+        self.open_dock_here();
+    }
+
+    fn open_dock_here(self: &Rc<Self>) {
+        match self.dock_folder_target() {
+            Some(path) => self.dock.open(&path),
+            None => self.notify("The terminal needs a local folder"),
+        }
+    }
+
+    fn mark_other_tabs_stale(&self) {
+        let active_id = self.active_tab_id();
+        for tab in self.tabs.borrow_mut().iter_mut() {
+            if tab.id != active_id {
+                tab.needs_refresh = true;
+            }
+        }
+    }
+
     fn toggle_root(self: &Rc<Self>) {
         if self.root.borrow().is_some() {
             self.leave_root(None);
@@ -1670,10 +3310,10 @@ impl FileWindow {
         }
         self.root_button.set_sensitive(false);
         glib::spawn_future_local(glib::clone!(
-            #[weak(rename_to=this)]
+            #[weak(rename_to = this)]
             self,
             async move {
-                let result = crate::root::RootSession::start(&this.app).await;
+                let result = root::RootSession::start(&this.app).await;
                 this.root_button.set_sensitive(true);
                 match result {
                     Ok(session) => {
@@ -1683,13 +3323,15 @@ impl FileWindow {
                         this.root_bar.set_reveal_child(true);
                         this.who.set_text("root");
                         this.who.add_css_class("root");
-                        this.reload();
+                        this.mark_other_tabs_stale();
+                        this.reload(false);
                     }
                     Err(e) => this.notify(&e),
                 }
             }
         ));
     }
+
     fn leave_root(self: &Rc<Self>, reason: Option<&str>) {
         if self.root.borrow_mut().take().is_none() {
             return;
@@ -1705,9 +3347,10 @@ impl FileWindow {
         if let Some(reason) = reason {
             self.notify(reason);
         }
-        self.reload();
+        self.mark_other_tabs_stale();
+        self.reload(false);
     }
-    /// Root mode ends after five minutes without root operations.
+
     fn touch_root(self: &Rc<Self>) {
         if let Some(id) = self.root_idle.borrow_mut().take() {
             id.remove();
@@ -1721,37 +3364,37 @@ impl FileWindow {
         });
         self.root_idle.replace(Some(id));
     }
-    /// Runs one helper request when root mode is on; false when it is off.
-    fn root_run(self: &Rc<Self>, request: crate::root_proto::Request, select: Vec<std::path::PathBuf>) -> bool {
+
+    fn root_run(self: &Rc<Self>, request: root_proto::Request, select: Vec<PathBuf>) -> bool {
         let Some(root) = self.root.borrow().clone() else {
             return false;
         };
+        let tab_id = self.active_tab_id();
         self.touch_root();
         glib::spawn_future_local(glib::clone!(
-            #[weak(rename_to=this)]
+            #[weak(rename_to = this)]
             self,
             async move {
                 match root.run(request).await {
-                    Ok(()) => {
-                        this.pending_selection.replace(
-                            select
-                                .iter()
-                                .map(|p| gio::File::for_path(p).uri().to_string())
-                                .collect(),
-                        );
+                    Ok(()) => this.finish_tab_mutation(tab_id, select),
+                    Err(e) => {
+                        this.notify(&e);
+                        this.reload_tab_after_op(tab_id);
                     }
-                    Err(e) => this.notify(&e),
                 }
-                this.reload();
             }
         ));
         true
     }
-    fn root_delete(self: &Rc<Self>, selected: Vec<gio::FileInfo>) {
-        let Some(root) = self.root.borrow().clone() else { return };
+
+    fn root_delete(self: &Rc<Self>, selected: Vec<FileEntry>) {
+        let Some(root) = self.root.borrow().clone() else {
+            return;
+        };
+        let tab_id = self.active_tab_id();
         self.touch_root();
         glib::spawn_future_local(glib::clone!(
-            #[weak(rename_to=this)]
+            #[weak(rename_to = this)]
             self,
             async move {
                 if !ops::confirm(
@@ -1767,200 +3410,174 @@ impl FileWindow {
                 {
                     return;
                 }
-                for info in selected {
-                    let Some(path) = model::file(&info).path() else { continue };
-                    if let Err(e) = root.run(crate::root_proto::Request::Delete { path }).await {
+                for entry in selected {
+                    if let Err(e) = root
+                        .run(root_proto::Request::Delete { path: entry.path })
+                        .await
+                    {
                         this.notify(&e);
                         break;
                     }
                 }
-                this.reload();
+                this.reload_tab_after_op(tab_id);
             }
         ));
     }
-    fn root_transfer(self: &Rc<Self>, root: Rc<crate::root::RootSession>, files: clipboard::Files, dir: std::path::PathBuf) {
+
+    fn root_transfer(
+        self: &Rc<Self>,
+        root: Rc<root::RootSession>,
+        files: clipboard::Files,
+        dir: PathBuf,
+        clear_clipboard: bool,
+        drop: Option<gdk::Drop>,
+    ) {
+        let sources: Vec<PathBuf> = files
+            .uris
+            .iter()
+            .filter_map(|u| Location::from_uri(u).ok()?.local_path().map(PathBuf::from))
+            .collect();
+        if sources.is_empty() {
+            if let Some(drop) = drop {
+                drop.finish(gdk::DragAction::empty());
+            }
+            return;
+        }
+        let known_dirs: HashSet<PathBuf> = self
+            .tabs
+            .borrow()
+            .iter()
+            .flat_map(|t| {
+                t.all_entries
+                    .iter()
+                    .filter(|e| e.is_dir)
+                    .map(|e| e.path.clone())
+            })
+            .collect();
+        let op = self.operations.start(if files.cut {
+            "Moving files"
+        } else {
+            "Copying files"
+        });
         self.touch_root();
+        let tab_id = self.active_tab_id();
+        let _hold = self.app.hold();
         glib::spawn_future_local(glib::clone!(
-            #[weak(rename_to=this)]
+            #[strong(rename_to = this)]
             self,
             async move {
-                let mut done = Vec::new();
-                for uri in &files.uris {
-                    let Some(from) = gio::File::for_uri(uri).path() else { continue };
-                    let Some(name) = from.file_name() else { continue };
-                    let to = dir.join(name);
-                    let request = if files.cut {
-                        crate::root_proto::Request::Move { from, to: to.clone() }
+                let _hold = _hold;
+                let mut taken: HashSet<String> = if !files.cut {
+                    root.list(&dir)
+                        .await
+                        .map(|entries| entries.into_iter().map(|e| e.name).collect())
+                        .unwrap_or_default()
+                } else {
+                    HashSet::new()
+                };
+                let mut created = Vec::new();
+                let mut had_error = false;
+                for from in sources {
+                    if op.cancel.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let Some(raw_name) = from.file_name().map(|s| s.to_string_lossy().into_owned())
+                    else {
+                        continue;
+                    };
+                    let to = if files.cut {
+                        dir.join(&raw_name)
                     } else {
-                        crate::root_proto::Request::Copy { from, to: to.clone() }
+                        let is_dir = known_dirs.contains(&from)
+                            || std::fs::symlink_metadata(&from)
+                                .map(|m| m.is_dir())
+                                .unwrap_or(false);
+                        dir.join(next_copy_name(&raw_name, is_dir, false, &mut taken))
+                    };
+                    let request = if files.cut {
+                        root_proto::Request::Move {
+                            from,
+                            to: to.clone(),
+                            overwrite: false,
+                        }
+                    } else {
+                        root_proto::Request::Copy {
+                            from,
+                            to: to.clone(),
+                            overwrite: false,
+                        }
                     };
                     if let Err(e) = root.run(request).await {
                         this.notify(&e);
+                        had_error = true;
                         break;
                     }
-                    done.push(gio::File::for_path(&to).uri().to_string());
+                    created.push(to);
                 }
-                this.pending_selection.replace(done);
-                this.reload();
-            }
-        ));
-    }
-    /// Slides the docked terminal up in the selected folder or the current
-    /// one, or hides it.
-    fn toggle_dock(self: &Rc<Self>) {
-        if self.dock.is_open() {
-            self.dock.hide();
-            self.views.stack.child_focus(gtk::DirectionType::TabForward);
-            return;
-        }
-        let folder = self
-            .views
-            .selected()
-            .first()
-            .filter(|i| model::is_dir(i))
-            .map(model::file)
-            .unwrap_or_else(|| self.current.borrow().clone());
-        match folder.path() {
-            Some(path) => self.dock.open(&path),
-            None => self.notify("The terminal needs a local folder"),
-        }
-    }
-    /// Starts the configured terminal emulator in `path`.
-    fn external_terminal(self: &Rc<Self>, path: std::path::PathBuf) {
-        let command = self.config.borrow().terminal_command();
-        if command.contains('\0') {
-            self.notify("The terminal command contains a null character");
-            return;
-        }
-        let command = match glib::shell_parse_argv(command) {
-            Ok(command) => command,
-            Err(e) => {
-                self.error(e);
-                return;
-            }
-        };
-        if command.is_empty() {
-            self.notify("The terminal command is empty");
-            return;
-        }
-        let mut args = command
-            .iter()
-            .map(|s| s.to_string_lossy().into_owned())
-            .collect::<Vec<_>>();
-        let mut placeholder = false;
-        for arg in &mut args {
-            if arg.contains("{dir}") {
-                *arg = arg.replace("{dir}", &path.to_string_lossy());
-                placeholder = true;
-            }
-        }
-        if !placeholder {
-            args.push(format!("--working-directory={}", path.display()));
-        }
-        glib::spawn_future_local(glib::clone!(
-            #[weak(rename_to=this)]
-            self,
-            async move {
-                match gio::spawn_blocking(move || {
-                    std::process::Command::new(&args[0])
-                        .args(&args[1..])
-                        .spawn()
-                        .map(|mut child| {
-                            std::thread::spawn(move || {
-                                let _ = child.wait();
-                            });
-                        })
-                })
-                .await
-                {
-                    Ok(Ok(())) => {}
-                    Ok(Err(e)) => this.notify(&e.to_string()),
-                    Err(_) => this.notify("Terminal worker failed"),
+                let cancelled = op.cancel.load(Ordering::Relaxed);
+                let success = !cancelled && !had_error;
+                if files.cut && clear_clipboard && success {
+                    this.views.set_cut_uris(HashSet::new());
+                    let cb = this.window.clipboard();
+                    if clipboard::read(&cb).await.is_ok_and(|cur| cur == files) {
+                        let _ = cb.set_content(None::<&gdk::ContentProvider>);
+                    }
                 }
-            }
-        ));
-    }
-    fn clear_search(self: &Rc<Self>) {
-        let was_recursive = self.recursive.replace(false);
-        self.search_cancel.borrow().cancel();
-        self.search_revision.set(self.search_revision.get() + 1);
-        self.changing.set(true);
-        self.search.set_text("");
-        self.changing.set(false);
-        self.query.borrow_mut().clear();
-        self.filter.changed(gtk::FilterChange::Different);
-        if was_recursive {
-            let file = self.current.borrow().clone();
-            self.load(file);
-        }
-    }
-    fn update_search(self: &Rc<Self>) {
-        let query = self.search.text().to_lowercase();
-        self.query.replace(query.clone());
-        self.filter.changed(gtk::FilterChange::Different);
-        if !self.recursive.get() {
-            return;
-        }
-        self.search_cancel.borrow().cancel();
-        self.load_cancel.borrow().cancel();
-        let cancel = gio::Cancellable::new();
-        self.search_cancel.replace(cancel.clone());
-        let revision = self.search_revision.get() + 1;
-        self.search_revision.set(revision);
-        if query.is_empty() {
-            self.store.remove_all();
-            self.loading.set(false);
-            self.spinner.stop();
-            self.update_status();
-            return;
-        }
-        let root = self.current.borrow().clone();
-        let hidden = self.hidden.get();
-        glib::spawn_future_local(glib::clone!(
-            #[weak(rename_to=this)]
-            self,
-            async move {
-                glib::timeout_future(std::time::Duration::from_millis(180)).await;
-                if cancel.is_cancelled() || this.search_revision.get() != revision {
-                    return;
+                let dest_loc = Location::Local(dir);
+                if !created.is_empty() {
+                    let uris: Vec<String> = created
+                        .iter()
+                        .map(|p| model::file_uri_from_path(p))
+                        .collect();
+                    if let Some(tab) = this
+                        .tabs
+                        .borrow_mut()
+                        .iter_mut()
+                        .find(|t| t.id == tab_id && t.location == dest_loc)
+                    {
+                        tab.pending_selection = uris;
+                    }
                 }
-                this.store.remove_all();
-                this.loading.set(true);
-                this.spinner.start();
-                this.update_status();
-                let result = search::recursive(
-                    root,
-                    query,
-                    hidden,
-                    cancel.clone(),
-                    glib::clone!(
-                        #[weak]
-                        this,
-                        move |batch| {
-                            this.store.extend_from_slice(&batch);
+                if cancelled {
+                    this.notify("Transfer cancelled");
+                } else if !created.is_empty() {
+                    this.notify(&format!("{} items completed", created.len()));
+                }
+                if let Some(drop) = drop {
+                    drop.finish(if success && !created.is_empty() {
+                        if files.cut {
+                            gdk::DragAction::MOVE
+                        } else {
+                            gdk::DragAction::COPY
                         }
-                    ),
-                    glib::clone!(
-                        #[weak]
-                        this,
-                        move |e| this.notify(&e)
-                    ),
-                )
-                .await;
-                if cancel.is_cancelled() {
-                    return;
+                    } else {
+                        gdk::DragAction::empty()
+                    });
                 }
-                this.loading.set(false);
-                this.spinner.stop();
-                this.update_status();
-                match result {
-                    Ok(true) => this.notify("Search stopped at 10,000 results. Refine your query."),
-                    Ok(false) => {}
-                    Err(e) => this.error(e),
-                }
+                op.finish();
+                this.reload_tab_after_op(tab_id);
+                this.refresh_location(&dest_loc);
             }
         ));
     }
+
+    fn track_and_popup(self: &Rc<Self>, popover: gtk::Popover) {
+        self.close_active_popover();
+        let tracked = popover.clone();
+        popover.connect_closed(glib::clone!(
+            #[weak(rename_to = this)]
+            self,
+            move |p| {
+                if this.active_popover.borrow().as_ref() == Some(&tracked) {
+                    this.active_popover.borrow_mut().take();
+                }
+                p.unparent();
+            }
+        ));
+        self.active_popover.replace(Some(popover.clone()));
+        popover.popup();
+    }
+
     fn complete_path(self: &Rc<Self>) {
         let text = self.path.text().to_string();
         let (base, prefix) = match text.rsplit_once('/') {
@@ -1970,250 +3587,257 @@ impl FileWindow {
             ),
             None => (".".to_string(), text.clone()),
         };
-        let folder = self.resolve_path(&base);
+        let Ok(Location::Local(folder)) = self.resolve_path(&base) else {
+            return;
+        };
         let revision = self.completion_revision.get() + 1;
         self.completion_revision.set(revision);
         glib::spawn_future_local(glib::clone!(
-            #[weak(rename_to=this)]
+            #[weak(rename_to = this)]
             self,
             async move {
-                let cancel = gio::Cancellable::new();
-                match ops::children(&folder, &cancel).await {
-                    Ok(items) => {
-                        if this.completion_revision.get() != revision || this.path.text() != text {
-                            return;
+                let folder_scan = folder.clone();
+                let prefix_lc = prefix.to_lowercase();
+                let Ok(Ok(mut names)) = gio::spawn_blocking(move || {
+                    let rd = std::fs::read_dir(&folder_scan).map_err(|e| e.to_string())?;
+                    let mut out = Vec::new();
+                    for item in rd.flatten() {
+                        let is_dir = item
+                            .file_type()
+                            .map(|t| t.is_dir())
+                            .unwrap_or(false)
+                            || item.path().is_dir();
+                        if !is_dir {
+                            continue;
                         }
-                        let mut names = items
-                            .into_iter()
-                            .filter(|i| model::is_dir(i) && i.display_name().starts_with(&prefix))
-                            .map(|i| i.display_name().to_string())
-                            .collect::<Vec<_>>();
-                        names.sort_by(|a, b| model::natural_cmp(a, b));
-                        if names.len() == 1 {
-                            let file = folder.child(&names[0]);
-                            this.path
-                                .set_text(&format!("{}/", file.parse_name().trim_end_matches('/')));
-                            this.path.set_position(-1);
-                        } else if !names.is_empty() {
-                            let common =
-                                names.iter().skip(1).fold(names[0].clone(), |acc, name| {
-                                    acc.chars()
-                                        .zip(name.chars())
-                                        .take_while(|(a, b)| a == b)
-                                        .map(|(a, _)| a)
-                                        .collect()
-                                });
-                            if common.len() > prefix.len() {
-                                let file = folder.child(common);
-                                this.path.set_text(&file.parse_name());
-                                this.path.set_position(-1);
-                            }
-                            let popover = gtk::Popover::new();
-                            let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
-                            for name in names.iter().take(40) {
-                                let button = gtk::Button::with_label(name);
-                                button.add_css_class("flat");
-                                let file = folder.child(name);
-                                button.connect_clicked(glib::clone!(
-                                    #[weak]
-                                    this,
-                                    #[weak]
-                                    popover,
-                                    move |_| {
-                                        this.path.set_text(&format!(
-                                            "{}/",
-                                            file.parse_name().trim_end_matches('/')
-                                        ));
-                                        this.path.set_position(-1);
-                                        popover.popdown();
-                                    }
-                                ));
-                                list.append(&button);
-                            }
-                            let scroll = gtk::ScrolledWindow::builder()
-                                .max_content_height(320)
-                                .propagate_natural_height(true)
-                                .child(&list)
-                                .build();
-                            popover.set_child(Some(&scroll));
-                            popover.set_parent(&this.path);
-                            popover.connect_closed(|p| p.unparent());
-                            popover.popup();
+                        let name = item.file_name().to_string_lossy().into_owned();
+                        if name.to_lowercase().starts_with(&prefix_lc) {
+                            out.push(name);
                         }
                     }
-                    Err(e) => this.error(e),
+                    out.sort_by(|a, b| model::natural_cmp(a, b));
+                    Ok::<_, String>(out)
+                })
+                .await
+                else {
+                    return;
+                };
+
+                if this.completion_revision.get() != revision
+                    || this.path.text() != text
+                    || this.path_stack.visible_child_name().as_deref() != Some("entry")
+                {
+                    return;
+                }
+                if names.len() == 1 {
+                    let target = folder.join(names.remove(0));
+                    this.path.set_text(&format!(
+                        "{}/",
+                        target.to_string_lossy().trim_end_matches('/')
+                    ));
+                    this.path.set_position(-1);
+                } else if !names.is_empty() {
+                    let common: String = names.iter().skip(1).fold(names[0].clone(), |acc, name| {
+                        acc.chars()
+                            .zip(name.chars())
+                            .take_while(|(a, b)| a.eq_ignore_ascii_case(b))
+                            .map(|(a, _)| a)
+                            .collect()
+                    });
+                    if common.chars().count() > prefix.chars().count() {
+                        let target = folder.join(common);
+                        this.path.set_text(&target.to_string_lossy());
+                        this.path.set_position(-1);
+                    }
+                    let popover = gtk::Popover::new();
+                    let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
+                    for name in names.iter().take(40) {
+                        let button = gtk::Button::with_label(name);
+                        button.add_css_class("flat");
+                        if let Some(lbl) = button.child().and_downcast::<gtk::Label>() {
+                            lbl.set_xalign(0.);
+                        }
+                        let target = folder.join(name);
+                        button.connect_clicked(glib::clone!(
+                            #[weak]
+                            this,
+                            #[weak]
+                            popover,
+                            move |_| {
+                                this.path.set_text(&format!(
+                                    "{}/",
+                                    target.to_string_lossy().trim_end_matches('/')
+                                ));
+                                this.path.set_position(-1);
+                                popover.popdown();
+                            }
+                        ));
+                        list.append(&button);
+                    }
+                    let scroll = gtk::ScrolledWindow::builder()
+                        .max_content_height(320)
+                        .propagate_natural_height(true)
+                        .child(&list)
+                        .build();
+                    popover.set_child(Some(&scroll));
+                    popover.set_parent(&this.path);
+                    this.track_and_popup(popover);
                 }
             }
         ));
     }
-    fn context_menu(&self, x: f64, y: f64) {
+
+    fn handle_context_menu(self: &Rc<Self>, pos: Option<u32>, x: f64, y: f64) {
+        if let Some(p) = pos {
+            if !self.views.selection.is_selected(p) {
+                self.views.selection.select_item(p, true);
+            }
+        } else {
+            self.views.selection.unselect_all();
+        }
+        self.show_context_menu(x, y);
+    }
+
+    fn show_context_menu(self: &Rc<Self>, x: f64, y: f64) {
         let menu = gio::Menu::new();
         let selected = self.views.selected();
         if self.is_trash() {
             if !selected.is_empty() {
                 menu.append(Some("Restore"), Some("win.restore"));
+                if selected.len() == 1 {
+                    menu.append(Some("Quick Look"), Some("win.quicklook"));
+                }
                 menu.append(Some("Delete Permanently…"), Some("win.delete-permanently"));
             }
             menu.append(Some("Empty Trash…"), Some("win.empty-trash"));
+        } else if selected.is_empty() {
+            let create = gio::Menu::new();
+            create.append(Some("New Folder…"), Some("win.new-folder"));
+            create.append(Some("New File…"), Some("win.new-file"));
+            create.append(Some("Paste"), Some("win.paste"));
+            menu.append_section(None, &create);
+
+            let term = gio::Menu::new();
+            term.append(Some("Terminal Here"), Some("win.dock-here"));
+            term.append(Some("Terminal in New Window"), Some("win.terminal"));
+            menu.append_section(None, &term);
+
+            let view = gio::Menu::new();
+            let sort_sub = gio::Menu::new();
+            sort_sub.append(Some("Name"), Some("win.sort-name"));
+            sort_sub.append(Some("Size"), Some("win.sort-size"));
+            sort_sub.append(Some("Modified"), Some("win.sort-modified"));
+            sort_sub.append(Some("Type"), Some("win.sort-type"));
+            sort_sub.append(Some("Descending"), Some("win.sort-desc"));
+            view.append_submenu(Some("Sort By"), &sort_sub);
+            view.append(Some("Show Hidden Files"), Some("win.hidden"));
+            if let Some(p) = self.current_location().local_path() {
+                let bm_label = if self.sidebar.is_bookmarked(p) {
+                    "Remove Bookmark"
+                } else {
+                    "Bookmark This Folder"
+                };
+                view.append(Some(bm_label), Some("win.bookmark"));
+            }
+            view.append(Some("Select All"), Some("win.select-all"));
+            view.append(Some("Refresh"), Some("win.refresh"));
+            view.append(Some("Copy Path"), Some("win.copy-path"));
+            menu.append_section(None, &view);
+            menu.append(Some("Properties"), Some("win.properties"));
         } else {
-            if !selected.is_empty() {
-                menu.append(Some("Open"), Some("win.open"));
-                if selected.len() == 1 && !model::is_dir(&selected[0]) {
-                    menu.append(Some("Open With…"), Some("win.open-with"));
+            let open_sec = gio::Menu::new();
+            open_sec.append(Some("Open"), Some("win.open"));
+            if selected.len() == 1 && selected[0].is_dir {
+                open_sec.append(Some("Open in New Tab"), Some("win.open-tab"));
+                let bm_label = if self.sidebar.is_bookmarked(&selected[0].path) {
+                    "Remove Bookmark"
+                } else {
+                    "Add Bookmark"
+                };
+                open_sec.append(Some(bm_label), Some("win.bookmark"));
+            }
+            if selected.len() == 1 && !selected[0].is_dir {
+                open_sec.append(Some("Open With…"), Some("win.open-with"));
+            }
+            if selected.len() == 1 {
+                open_sec.append(Some("Quick Look"), Some("win.quicklook"));
+                if !selected[0].is_dir && ops::is_supported_archive(&selected[0].name) {
+                    open_sec.append(Some("Extract Here"), Some("win.extract"));
                 }
             }
-            if selected.is_empty() || selected.first().is_some_and(model::is_dir) {
-                menu.append(Some("Terminal in This Folder"), Some("win.dock"));
-                menu.append(Some("Terminal in New Window"), Some("win.terminal"));
+            if selected.first().is_some_and(|e| e.is_dir) {
+                open_sec.append(Some("Terminal in This Folder"), Some("win.dock-here"));
+                open_sec.append(Some("Terminal in New Window"), Some("win.terminal"));
             }
-            let edit = gio::Menu::new();
-            if !selected.is_empty() {
-                edit.append(Some("Cut"), Some("win.cut"));
-                edit.append(Some("Copy"), Some("win.copy"));
-            }
-            edit.append(Some("Paste"), Some("win.paste"));
+            menu.append_section(None, &open_sec);
+
+            let edit_sec = gio::Menu::new();
+            edit_sec.append(Some("Cut"), Some("win.cut"));
+            edit_sec.append(Some("Copy"), Some("win.copy"));
+            edit_sec.append(Some("Duplicate"), Some("win.duplicate"));
             if selected.len() == 1 {
-                edit.append(Some("Rename"), Some("win.rename"));
+                edit_sec.append(Some("Rename"), Some("win.rename"));
             }
-            if !selected.is_empty() {
-                edit.append(Some("Move to Trash"), Some("win.trash"));
-            } else {
-                edit.append(Some("New Folder…"), Some("win.new-folder"));
+            edit_sec.append(Some("Compress…"), Some("win.compress"));
+            edit_sec.append(Some("Copy Path"), Some("win.copy-path"));
+            menu.append_section(None, &edit_sec);
+
+            let del_sec = gio::Menu::new();
+            del_sec.append(Some("Move to Trash"), Some("win.trash"));
+            del_sec.append(Some("Delete Permanently…"), Some("win.delete-permanently"));
+            if selected.len() == 1 {
+                del_sec.append(Some("Properties"), Some("win.properties"));
             }
-            menu.append_section(None, &edit);
+            menu.append_section(None, &del_sec);
         }
-        if selected.len() == 1 {
-            menu.append(Some("Properties"), Some("win.properties"));
-        }
+
         let popover = gtk::PopoverMenu::from_model(Some(&menu));
         popover.set_parent(&self.views.stack);
         popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
-        popover.connect_closed(|p| p.unparent());
-        popover.popup();
-    }
-    fn dnd(self: &Rc<Self>) {
-        let source = gtk::DragSource::new();
-        source.set_actions(gdk::DragAction::COPY | gdk::DragAction::MOVE);
-        source.connect_prepare(glib::clone!(
-            #[weak(rename_to=this)]
-            self,
-            #[upgrade_or]
-            None,
-            move |_, _, _| {
-                if this.is_trash() {
-                    return None;
-                }
-                let uris = this
-                    .views
-                    .selected()
-                    .iter()
-                    .map(|i| model::file(i).uri().to_string())
-                    .collect::<Vec<_>>();
-                if uris.is_empty() {
-                    None
-                } else {
-                    Some(clipboard::Files { cut: false, uris }.provider())
-                }
-            }
-        ));
-        self.views.stack.add_controller(source);
-        let target = gtk::DropTargetAsync::new(
-            Some(gdk::ContentFormats::new(&[clipboard::URI_LIST])),
-            gdk::DragAction::COPY | gdk::DragAction::MOVE,
-        );
-        target.connect_drop(glib::clone!(
-            #[weak(rename_to=this)]
-            self,
-            #[upgrade_or]
-            false,
-            move |controller, drop, x, y| {
-                if this.is_trash() {
-                    return false;
-                }
-                let mut destination = this.current.borrow().clone();
-                if let Some(widget) = this.views.stack.pick(x, y, gtk::PickFlags::DEFAULT) {
-                    let mut current = Some(widget);
-                    while let Some(widget) = current {
-                        if let Some(row) = widget.downcast_ref::<gtk::Box>() {
-                            if let Some(label) =
-                                row.last_child().and_downcast::<gtk::EditableLabel>()
-                            {
-                                let uri = label.widget_name();
-                                for index in 0..this.views.selection.n_items() {
-                                    if let Some(info) = this
-                                        .views
-                                        .selection
-                                        .item(index)
-                                        .and_downcast::<gio::FileInfo>()
-                                    {
-                                        if model::file(&info).uri() == uri && model::is_dir(&info) {
-                                            destination = model::file(&info);
-                                            break;
-                                        }
-                                    }
-                                }
-                                break;
-                            }
-                        }
-                        current = widget.parent();
-                    }
-                }
-                let state = controller.current_event_state();
-                let moving = state.contains(gdk::ModifierType::SHIFT_MASK)
-                    || (!state.contains(gdk::ModifierType::CONTROL_MASK)
-                        && drop
-                            .drag()
-                            .is_some_and(|d| d.selected_action() == gdk::DragAction::MOVE));
-                let drop = drop.clone();
-                glib::spawn_future_local(glib::clone!(
-                    #[weak]
-                    this,
-                    async move {
-                        let result = async {
-                            let (stream, _) = drop
-                                .read_future(&[clipboard::URI_LIST], glib::Priority::DEFAULT)
-                                .await
-                                .map_err(|e| e.to_string())?;
-                            let mut bytes = Vec::new();
-                            loop {
-                                let chunk = stream
-                                    .read_bytes_future(8192, glib::Priority::DEFAULT)
-                                    .await
-                                    .map_err(|e| e.to_string())?;
-                                if chunk.is_empty() {
-                                    break;
-                                }
-                                bytes.extend_from_slice(&chunk);
-                                if bytes.len() > 8 * 1024 * 1024 {
-                                    return Err("Dropped URI list is too large".into());
-                                }
-                            }
-                            stream
-                                .close_future(glib::Priority::DEFAULT)
-                                .await
-                                .map_err(|e| e.to_string())?;
-                            let text = String::from_utf8(bytes).map_err(|e| e.to_string())?;
-                            clipboard::Files::parse(&text, false)
-                        }
-                        .await;
-                        match result {
-                            Ok(mut files) => {
-                                files.cut = moving;
-                                this.transfer(files, destination, false, Some(drop));
-                            }
-                            Err(e) => {
-                                this.notify(&e);
-                                drop.finish(gdk::DragAction::empty());
-                            }
-                        }
-                    }
-                ));
-                true
-            }
-        ));
-        self.views.stack.add_controller(target);
+        self.track_and_popup(popover.upcast());
     }
 }
+
+fn next_copy_name(
+    name: &str,
+    is_dir: bool,
+    force_suffix: bool,
+    taken: &mut HashSet<String>,
+) -> String {
+    if !force_suffix && !taken.contains(name) {
+        taken.insert(name.to_owned());
+        return name.to_owned();
+    }
+    let (stem, ext) = if !is_dir {
+        match name.rsplit_once('.') {
+            Some((s, e)) if !s.is_empty() => (s, Some(e)),
+            _ => (name, None),
+        }
+    } else {
+        (name, None)
+    };
+    let candidate = |n: usize| -> String {
+        let suffix = if n == 1 {
+            " (copy)".to_owned()
+        } else {
+            format!(" (copy {n})")
+        };
+        match ext {
+            Some(e) => format!("{stem}{suffix}.{e}"),
+            None => format!("{stem}{suffix}"),
+        }
+    };
+    let mut n = 1usize;
+    loop {
+        let cand = candidate(n);
+        if !taken.contains(&cand) {
+            taken.insert(cand.clone());
+            return cand;
+        }
+        n += 1;
+    }
+}
+
 fn icon_button(icon: &str, tooltip: &str) -> gtk::Button {
     let button = gtk::Button::from_icon_name(icon);
     button.set_tooltip_text(Some(tooltip));
@@ -2222,281 +3846,36 @@ fn icon_button(icon: &str, tooltip: &str) -> gtk::Button {
 }
 
 #[cfg(test)]
-mod integration_tests {
+mod tests {
     use super::*;
-    use std::{
-        path::PathBuf,
-        time::{Duration, Instant},
-    };
 
-    async fn until(condition: impl Fn() -> bool) {
-        let deadline = Instant::now() + Duration::from_secs(30);
-        while !condition() {
-            assert!(Instant::now() < deadline, "Timed out waiting for GTK/GIO");
-            glib::timeout_future(Duration::from_millis(10)).await;
-        }
-    }
-    async fn settled(state: &FileWindow) {
-        until(|| !state.loading.get() && state.views.sorted.pending() == 0).await;
-    }
-    fn info_named(state: &FileWindow, name: &str) -> gio::FileInfo {
-        (0..state.views.selection.n_items())
-            .filter_map(|i| {
-                state
-                    .views
-                    .selection
-                    .item(i)
-                    .and_downcast::<gio::FileInfo>()
-            })
-            .find(|i| i.display_name() == name)
-            .expect("file in model")
+    #[test]
+    fn tab_state_lifecycle() {
+        let mut tab = TabState::new(1, Location::Local(PathBuf::from("/tmp")), Vec::new());
+        assert!(!tab.load_cancel.load(Ordering::Relaxed));
+        tab.cancel_async();
+        assert!(tab.load_cancel.load(Ordering::Relaxed));
+        assert!(tab.search_cancel.load(Ordering::Relaxed));
     }
 
     #[test]
-    #[ignore = "Requires a Wayland display; creates and removes an isolated 20,000-file fixture"]
-    fn gtk_large_folder_and_actions() {
-        let root = std::env::temp_dir().join(format!(
-            "gavno-files-ui-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        ));
-        struct Fixture(PathBuf);
-        impl Drop for Fixture {
-            fn drop(&mut self) {
-                let _ = std::fs::remove_dir_all(&self.0);
-            }
-        }
-        let _fixture = Fixture(root.clone());
-        std::fs::create_dir_all(root.join("source/nested")).expect("fixture");
-        std::fs::create_dir_all(root.join("destination")).expect("fixture");
-        std::fs::write(
-            root.join("source/nested/nested-needle.txt"),
-            "preview contents",
-        )
-        .expect("fixture");
-        std::fs::write(root.join(".hidden"), "hidden").expect("fixture");
-        for n in 0..20000 {
-            std::fs::write(root.join(format!("file{n}.txt")), "content").expect("fixture");
-        }
-        adw::init().expect("GTK display");
-        let app = adw::Application::builder()
-            .application_id("org.gavno.Files.Smoke")
-            .flags(gio::ApplicationFlags::NON_UNIQUE)
-            .build();
-        app.register(gio::Cancellable::NONE)
-            .expect("register application");
-        adw::StyleManager::default().set_color_scheme(adw::ColorScheme::PreferDark);
-        let provider = gtk::CssProvider::new();
-        provider.load_from_string(include_str!("style.css"));
-        gtk::style_context_add_provider_for_display(
-            &gtk::gdk::Display::default().expect("display"),
-            &provider,
-            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    fn next_copy_name_handles_files_dirs_and_collisions() {
+        let mut taken = HashSet::from(["note.txt".to_owned(), "note (copy).txt".to_owned()]);
+        assert_eq!(
+            next_copy_name("note.txt", false, false, &mut taken),
+            "note (copy 2).txt"
         );
-        let context = glib::MainContext::default();
-        context.block_on(async {
-            let ticks = Rc::new(Cell::new(0u64));
-            let max_gap = Rc::new(Cell::new(Duration::ZERO));
-            let mut last = Instant::now();
-            let heartbeat = glib::timeout_add_local(
-                Duration::from_millis(10),
-                glib::clone!(
-                    #[strong]
-                    ticks,
-                    #[strong]
-                    max_gap,
-                    move || {
-                        let now = Instant::now();
-                        max_gap.set(max_gap.get().max(now.duration_since(last)));
-                        last = now;
-                        ticks.set(ticks.get() + 1);
-                        glib::ControlFlow::Continue
-                    }
-                ),
-            );
-            let started = Instant::now();
-            let state = open(&app, gio::File::for_path(&root), Vec::new());
-            settled(&state).await;
-            assert_eq!(state.views.selection.n_items(), 20002);
-            assert!(
-                ticks.get() > 5,
-                "Main loop heartbeat ran during progressive loading"
-            );
-            assert!(
-                max_gap.get() < Duration::from_secs(1),
-                "Main loop stalled: {:?}",
-                max_gap.get()
-            );
-            eprintln!(
-                "20,000-file folder: {:?}; heartbeats: {}; maximum gap: {:?}",
-                started.elapsed(),
-                ticks.get(),
-                max_gap.get()
-            );
-            heartbeat.remove();
-            assert!(model::is_dir(
-                &state
-                    .views
-                    .selection
-                    .item(0)
-                    .and_downcast::<gio::FileInfo>()
-                    .expect("first item")
-            ));
-            state.set_view(ViewMode::List);
-            let name = state
-                .views
-                .list
-                .columns()
-                .item(0)
-                .and_downcast::<gtk::ColumnViewColumn>()
-                .expect("name column");
-            state
-                .views
-                .list
-                .sort_by_column(Some(&name), gtk::SortType::Descending);
-            settled(&state).await;
-            assert!(model::is_dir(
-                &state
-                    .views
-                    .selection
-                    .item(0)
-                    .and_downcast::<gio::FileInfo>()
-                    .expect("folder first descending")
-            ));
-            state
-                .views
-                .list
-                .sort_by_column(Some(&name), gtk::SortType::Ascending);
-            settled(&state).await;
-            let info = info_named(&state, "file2.txt");
-            state
-                .pending_selection
-                .replace(vec![model::file(&info).uri().to_string()]);
-            state.select_pending();
-            state.copy(true);
-            let files = clipboard::read(&state.window.clipboard())
-                .await
-                .expect("clipboard");
-            assert!(files.cut);
-            assert_eq!(files.uris, vec![model::file(&info).uri().to_string()]);
-            state.rename(info, "renamed.txt".into());
-            until(|| {
-                state
-                    .views
-                    .selected()
-                    .first()
-                    .is_some_and(|i| i.display_name() == "renamed.txt")
-            })
-            .await;
-            until(|| state.monitor.borrow().is_some()).await;
-            glib::timeout_future(Duration::from_millis(250)).await;
-            let path = root.join("watched.txt");
-            gio::spawn_blocking(move || std::fs::write(path, "watch"))
-                .await
-                .expect("worker")
-                .expect("watch fixture");
-            until(|| {
-                state.views.selection.n_items() == 20003
-                    && !state.loading.get()
-                    && state
-                        .views
-                        .selected()
-                        .first()
-                        .is_some_and(|i| i.display_name() == "renamed.txt")
-            })
-            .await;
-            eprintln!("Rename, clipboard, and live monitor passed");
-            gio::prelude::ActionGroupExt::activate_action(&state.window, "hidden", None);
-            until(|| state.views.selection.n_items() == 20004).await;
-            state.recursive.set(true);
-            state.search.set_text("nested-needle");
-            until(|| {
-                !state.loading.get()
-                    && state.store.n_items() == 1
-                    && state.views.selection.n_items() == 1
-            })
-            .await;
-            assert_eq!(
-                info_named(&state, "nested-needle.txt").display_name(),
-                "nested-needle.txt"
-            );
-            state.clear_search();
-            settled(&state).await;
-            let source = gio::File::for_path(root.join("source"));
-            let dest = gio::File::for_path(root.join("destination"));
-            let op = state.operations.start("Smoke copy");
-            assert!(ops::transfer(
-                &state.window,
-                vec![source.clone()],
-                dest.clone(),
-                false,
-                &op
-            )
-            .await
-            .expect("recursive copy"));
-            op.finish();
-            let copied = root.join("destination/source/nested/nested-needle.txt");
-            assert_eq!(
-                std::fs::read_to_string(copied).expect("copied text"),
-                "preview contents"
-            );
-            let moved = gio::File::for_path(root.join("renamed.txt"));
-            let op = state.operations.start("Smoke move");
-            assert!(
-                ops::transfer(&state.window, vec![moved.clone()], dest.clone(), true, &op)
-                    .await
-                    .expect("move")
-            );
-            op.finish();
-            assert!(!moved.query_exists(gio::Cancellable::NONE));
-            // Resolve a real conflict through the same dialog used by paste.
-            glib::timeout_add_local_once(
-                Duration::from_millis(100),
-                glib::clone!(
-                    #[weak]
-                    state,
-                    move || {
-                        let dialog = state
-                            .window
-                            .visible_dialog()
-                            .and_downcast::<adw::AlertDialog>()
-                            .expect("conflict dialog");
-                        dialog.emit_by_name::<()>("response", &[&"both"]);
-                        dialog.force_close();
-                    }
-                ),
-            );
-            let op = state.operations.start("Smoke keep both");
-            assert!(ops::transfer(&state.window, vec![source], dest, false, &op)
-                .await
-                .expect("conflict copy"));
-            op.finish();
-            assert!(root
-                .join("destination/source (copy)/nested/nested-needle.txt")
-                .exists());
-            let cancel = gio::Cancellable::new();
-            cancel.cancel();
-            assert!(ops::query(&gio::File::for_path(&root), &cancel)
-                .await
-                .is_err());
-            let image_path=root.join("destination/wallpaper.svg");
-            gio::spawn_blocking(move||std::fs::write(image_path,r##"<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600"><defs><linearGradient id="d"><stop stop-color="#7f8be6"/><stop offset="1" stop-color="#f2a46a"/></linearGradient></defs><rect width="800" height="600" fill="url(#d)"/></svg>"##)).await.expect("image worker").expect("SVG fixture");
-            state.navigate(gio::File::for_path(root.join("destination")),true);settled(&state).await;
-            state.set_view(ViewMode::Grid);glib::timeout_future(Duration::from_millis(400)).await;
-            let svg=info_named(&state,"wallpaper.svg");let thumbnail=state.thumbs.get(&svg).await.expect("thumbnail generation").expect("image texture");
-            assert_eq!((thumbnail.width(),thumbnail.height()),(256,192));
-            assert!(crate::thumbs::cache_path(&glib::user_cache_dir(),model::file(&svg).uri().as_str(),true).exists());
-            let texture=gtk::WidgetPaintable::new(Some(&state.toast));let snapshot=gtk::Snapshot::new();
-            texture.snapshot(&snapshot,state.toast.width() as f64,state.toast.height() as f64);
-            let node=snapshot.to_node().expect("rendered window contents");let surface=state.window.surface().expect("window surface");
-            let renderer=gtk::gsk::Renderer::for_surface(&surface).expect("renderer");let image=renderer.render_texture(&node,None);
-            let path=std::env::var_os("GAVNO_FILES_SCREENSHOT").map(PathBuf::from).unwrap_or_else(||root.join("smoke.png"));image.save_to_png(path).expect("screenshot");renderer.unrealize();
-            state.window.close();
-            glib::timeout_future(Duration::from_millis(100)).await;
-        });
-        std::fs::remove_dir_all(root).expect("remove fixture");
+        assert_eq!(
+            next_copy_name("fresh.txt", false, true, &mut taken),
+            "fresh (copy).txt"
+        );
+        assert_eq!(
+            next_copy_name("dir.v1", true, true, &mut taken),
+            "dir.v1 (copy)"
+        );
+        assert_eq!(
+            next_copy_name(".env", false, true, &mut taken),
+            ".env (copy)"
+        );
     }
 }

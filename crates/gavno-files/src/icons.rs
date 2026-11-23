@@ -1,7 +1,7 @@
-//! Folder and file icons drawn with cairo, following design/files-mockup.html.
-//! Geometry is authored on a 48x48 grid and scaled to the widget size.
-use gtk::{cairo, prelude::*};
-use std::{f64::consts::PI, path::Path};
+//! Folder and file icons rendered once to cached 2x HiDPI textures.
+//! Geometry is authored on a 48x48 grid and scaled to the target pixel size.
+use gtk::{cairo, gdk, prelude::*};
+use std::{cell::RefCell, collections::HashMap, f64::consts::PI, path::Path, rc::Rc};
 
 const FOLDER: Rgb = rgb(0x7f8be6);
 const FOLDER_BACK: Rgb = rgb(0x5d68c8);
@@ -19,7 +19,7 @@ const fn rgb(v: u32) -> Rgb {
     )
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Glyph {
     None,
     Home,
@@ -31,30 +31,37 @@ pub enum Glyph {
     Config,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Kind {
     Code,
     Text,
     Image,
+    Audio,
+    Video,
     Archive,
     Disc,
     Web,
+    Pdf,
     Binary,
 }
+
 impl Kind {
     fn color(self) -> Rgb {
         match self {
             Kind::Code => rgb(0x7b5ce0),
             Kind::Text | Kind::Binary => rgb(0x5d6680),
             Kind::Image => rgb(0xd4517a),
+            Kind::Audio => rgb(0x329f7b),
+            Kind::Video => rgb(0xb84fd4),
             Kind::Archive => rgb(0xc98a1c),
             Kind::Disc => rgb(0x1f9a8a),
             Kind::Web => rgb(0x3d7be0),
+            Kind::Pdf => rgb(0xd94b4b),
         }
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Icon {
     Folder(Glyph),
     File { label: String, kind: Kind },
@@ -79,8 +86,7 @@ pub fn folder_glyph(path: &Path, home: &Path) -> Glyph {
 }
 
 /// Badge label and colour for a file name; `text` says whether the content
-/// type is textual, which decides between TXT and BIN when there is no
-/// extension.
+/// type is textual, which decides between TXT and BIN when there is no extension.
 pub fn file_icon(name: &str, text: bool) -> Icon {
     let ext = Path::new(name)
         .extension()
@@ -89,18 +95,24 @@ pub fn file_icon(name: &str, text: bool) -> Icon {
         .map(str::to_ascii_lowercase)
         .unwrap_or_default();
     let kind = match ext.as_str() {
-        "rs" | "c" | "h" | "cc" | "cpp" | "hpp" | "py" | "js" | "ts" | "go" | "java" | "kt"
-        | "sh" | "fish" | "toml" | "kdl" | "conf" | "json" | "yaml" | "yml" | "ini" | "frag"
-        | "vert" | "glsl" | "wgsl" | "lua" | "nix" | "zig" | "rb" | "pl" | "mk" | "cmake" => {
-            Kind::Code
-        }
-        "md" | "txt" | "log" | "gen" | "pdf" | "rst" | "org" | "csv" | "tex" => Kind::Text,
+        "rs" | "c" | "h" | "cc" | "cpp" | "cxx" | "hpp" | "hh" | "py" | "js" | "mjs" | "ts"
+        | "tsx" | "jsx" | "go" | "java" | "kt" | "kts" | "sh" | "bash" | "zsh" | "fish"
+        | "toml" | "kdl" | "conf" | "json" | "jsonc" | "yaml" | "yml" | "ini" | "frag"
+        | "vert" | "glsl" | "wgsl" | "lua" | "nix" | "zig" | "rb" | "pl" | "mk" | "cmake"
+        | "sql" | "dart" | "swift" | "cs" | "php" | "vue" | "svelte" => Kind::Code,
+        "md" | "txt" | "log" | "gen" | "rst" | "org" | "csv" | "tsv" | "tex" | "doc"
+        | "docx" | "odt" | "rtf" | "xlsx" | "xls" | "pptx" | "ppt" => Kind::Text,
+        "pdf" | "djvu" | "epub" => Kind::Pdf,
         "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "bmp" | "avif" | "heic" | "ico"
-        | "tiff" => Kind::Image,
+        | "tiff" | "tif" | "jxl" | "psd" | "kra" => Kind::Image,
+        "mp3" | "flac" | "ogg" | "opus" | "wav" | "aac" | "m4a" | "wma" | "mid" | "midi" => {
+            Kind::Audio
+        }
+        "mp4" | "mkv" | "webm" | "avi" | "mov" | "flv" | "wmv" | "m4v" => Kind::Video,
         "zip" | "xz" | "zst" | "gz" | "tar" | "7z" | "rar" | "bz2" | "tgz" | "lz4" | "deb"
-        | "rpm" => Kind::Archive,
+        | "rpm" | "jar" | "apk" | "flatpak" | "appimage" => Kind::Archive,
         "img" | "iso" | "qcow2" | "raw" => Kind::Disc,
-        "html" | "htm" | "css" | "xml" => Kind::Web,
+        "html" | "htm" | "css" | "scss" | "xml" => Kind::Web,
         "" if text => Kind::Text,
         "" => Kind::Binary,
         _ if text => Kind::Text,
@@ -109,75 +121,69 @@ pub fn file_icon(name: &str, text: bool) -> Icon {
     let label = if ext.is_empty() {
         if kind == Kind::Binary { "BIN" } else { "TXT" }.to_owned()
     } else {
-        ext.chars().take(4).collect::<String>().to_uppercase()
+        ext.to_uppercase().chars().take(4).collect()
     };
     Icon::File { label, kind }
 }
 
-impl Icon {
-    /// A compact text form stored as the drawing area's widget name, so list
-    /// item binds can update the icon without extra per-item state.
-    fn encode(&self) -> String {
-        match self {
-            Icon::Folder(glyph) => format!("d{}", *glyph as u8),
-            Icon::File { label, kind } => format!("f{}{label}", *kind as u8),
-        }
-    }
-    fn decode(text: &str) -> Self {
-        const GLYPHS: [Glyph; 8] = [
-            Glyph::None,
-            Glyph::Home,
-            Glyph::Documents,
-            Glyph::Downloads,
-            Glyph::Pictures,
-            Glyph::Music,
-            Glyph::Code,
-            Glyph::Config,
-        ];
-        const KINDS: [Kind; 7] = [
-            Kind::Code,
-            Kind::Text,
-            Kind::Image,
-            Kind::Archive,
-            Kind::Disc,
-            Kind::Web,
-            Kind::Binary,
-        ];
-        let mut chars = text.chars();
-        let tag = chars.next();
-        let index = chars.next().and_then(|c| c.to_digit(10)).unwrap_or(0) as usize;
-        match tag {
-            Some('f') => Icon::File {
-                label: chars.collect(),
-                kind: KINDS.get(index).copied().unwrap_or(Kind::Binary),
-            },
-            _ => Icon::Folder(GLYPHS.get(index).copied().unwrap_or(Glyph::None)),
-        }
+/// Caches 2x supersampled icon textures keyed by `(Icon, logical_size)`.
+#[derive(Clone)]
+pub struct IconCache {
+    textures: Rc<RefCell<HashMap<(Icon, i32), gdk::Texture>>>,
+}
+
+impl Default for IconCache {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
-/// A square drawing area that paints an [`Icon`]; see [`set_icon`].
-pub fn icon_area(size: i32) -> gtk::DrawingArea {
-    let area = gtk::DrawingArea::new();
-    area.set_content_width(size);
-    area.set_content_height(size);
-    area.set_can_target(false);
-    area.add_css_class("file-icon");
-    area.set_draw_func(|area, cr, w, h| {
-        let side = f64::from(w.min(h));
-        cr.translate((f64::from(w) - side) / 2., (f64::from(h) - side) / 2.);
-        cr.scale(side / 48., side / 48.);
-        let _ = draw(cr, &Icon::decode(area.widget_name().as_str()));
+impl IconCache {
+    pub fn new() -> Self {
+        Self {
+            textures: Rc::new(RefCell::new(HashMap::with_capacity(64))),
+        }
+    }
+
+    pub fn texture(&self, icon: &Icon, logical_size: i32) -> gdk::Texture {
+        let key = (icon.clone(), logical_size);
+        if let Some(tex) = self.textures.borrow().get(&key) {
+            return tex.clone();
+        }
+        let tex = rasterize(icon, logical_size);
+        let mut map = self.textures.borrow_mut();
+        if map.len() >= 512 {
+            map.clear();
+        }
+        map.insert(key, tex.clone());
+        tex
+    }
+}
+
+fn rasterize(icon: &Icon, logical_size: i32) -> gdk::Texture {
+    let px = (logical_size * 2).max(16);
+    let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, px, px)
+        .expect("cairo icon surface");
+    {
+        let cr = cairo::Context::new(&surface).expect("cairo icon context");
+        cr.scale(f64::from(px) / 48., f64::from(px) / 48.);
+        let _ = draw(&cr, icon);
+    }
+    surface.flush();
+    let stride = surface.stride() as usize;
+    let mut bytes = None;
+    let _ = surface.with_data(|slice| {
+        bytes = Some(glib::Bytes::from(slice));
     });
-    area
-}
-
-pub fn set_icon(area: &gtk::DrawingArea, icon: &Icon) {
-    let name = icon.encode();
-    if area.widget_name() != name.as_str() {
-        area.set_widget_name(&name);
-        area.queue_draw();
-    }
+    let bytes = bytes.unwrap_or_else(|| glib::Bytes::from_owned(vec![0u8; stride * px as usize]));
+    gdk::MemoryTexture::new(
+        px,
+        px,
+        gdk::MemoryFormat::B8g8r8a8Premultiplied,
+        &bytes,
+        stride,
+    )
+    .upcast()
 }
 
 fn draw(cr: &cairo::Context, icon: &Icon) -> Result<(), cairo::Error> {
@@ -201,7 +207,6 @@ fn rounded(cr: &cairo::Context, x: f64, y: f64, w: f64, h: f64, r: f64) {
 }
 
 fn draw_folder(cr: &cairo::Context, glyph: Glyph) -> Result<(), cairo::Error> {
-    // Back sheet with the tab.
     cr.new_path();
     cr.move_to(8., 8.);
     cr.line_to(19., 8.);
@@ -348,49 +353,82 @@ fn draw_file(cr: &cairo::Context, label: &str, kind: Kind) -> Result<(), cairo::
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn badges_follow_extensions() {
         assert_eq!(
             file_icon("Cargo.toml", true),
-            Icon::File { label: "TOML".into(), kind: Kind::Code }
+            Icon::File {
+                label: "TOML".into(),
+                kind: Kind::Code
+            }
         );
         assert_eq!(
             file_icon("archive.tar.zst", false),
-            Icon::File { label: "ZST".into(), kind: Kind::Archive }
+            Icon::File {
+                label: "ZST".into(),
+                kind: Kind::Archive
+            }
         );
         assert_eq!(
             file_icon("Makefile", true),
-            Icon::File { label: "TXT".into(), kind: Kind::Text }
+            Icon::File {
+                label: "TXT".into(),
+                kind: Kind::Text
+            }
         );
         assert_eq!(
             file_icon(".bashrc", true),
-            Icon::File { label: "TXT".into(), kind: Kind::Text }
+            Icon::File {
+                label: "TXT".into(),
+                kind: Kind::Text
+            }
         );
         assert_eq!(
             file_icon("firmware", false),
-            Icon::File { label: "BIN".into(), kind: Kind::Binary }
+            Icon::File {
+                label: "BIN".into(),
+                kind: Kind::Binary
+            }
         );
         assert_eq!(
             file_icon("photo.JPEG", false),
-            Icon::File { label: "JPEG".into(), kind: Kind::Image }
+            Icon::File {
+                label: "JPEG".into(),
+                kind: Kind::Image
+            }
+        );
+        assert_eq!(
+            file_icon("track.flac", false),
+            Icon::File {
+                label: "FLAC".into(),
+                kind: Kind::Audio
+            }
+        );
+        assert_eq!(
+            file_icon("clip.mkv", false),
+            Icon::File {
+                label: "MKV".into(),
+                kind: Kind::Video
+            }
+        );
+        assert_eq!(
+            file_icon("spec.pdf", false),
+            Icon::File {
+                label: "PDF".into(),
+                kind: Kind::Pdf
+            }
         );
     }
-    #[test]
-    fn icons_round_trip_through_widget_names() {
-        for icon in [
-            Icon::Folder(Glyph::Config),
-            Icon::Folder(Glyph::None),
-            file_icon("a.webp", false),
-            file_icon("blob", false),
-        ] {
-            assert_eq!(Icon::decode(&icon.encode()), icon);
-        }
-    }
+
     #[test]
     fn well_known_folders_get_glyphs() {
         let home = Path::new("/home/u");
         assert_eq!(folder_glyph(home, home), Glyph::Home);
-        assert_eq!(folder_glyph(&home.join("Downloads"), home), Glyph::Downloads);
+        assert_eq!(
+            folder_glyph(&home.join("Downloads"), home),
+            Glyph::Downloads
+        );
         assert_eq!(folder_glyph(&home.join(".config"), home), Glyph::Config);
         assert_eq!(folder_glyph(Path::new("/etc"), home), Glyph::Config);
         assert_eq!(folder_glyph(&home.join("src"), home), Glyph::None);

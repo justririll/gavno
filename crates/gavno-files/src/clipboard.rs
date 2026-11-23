@@ -20,6 +20,7 @@ fn valid_uri(uri: &str) -> bool {
                     .all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c))
         })
 }
+
 impl Files {
     pub fn parse(text: &str, gnome: bool) -> Result<Self, String> {
         let mut lines = text.lines();
@@ -47,6 +48,7 @@ impl Files {
         }
         Ok(Self { cut, uris })
     }
+
     pub fn gnome(&self) -> String {
         format!(
             "{}\n{}\n",
@@ -54,9 +56,11 @@ impl Files {
             self.uris.join("\n")
         )
     }
+
     pub fn uri_list(&self) -> String {
         format!("{}\r\n", self.uris.join("\r\n"))
     }
+
     pub fn provider(&self) -> gdk::ContentProvider {
         gdk::ContentProvider::new_union(&[
             gdk::ContentProvider::for_bytes(
@@ -70,11 +74,28 @@ impl Files {
         ])
     }
 }
+
+pub fn copy_text(clipboard: &gdk::Clipboard, text: &str) {
+    clipboard.set_text(text);
+}
+
 pub async fn read(clipboard: &gdk::Clipboard) -> Result<Files, String> {
     let (stream, mime) = clipboard
         .read_future(&[GNOME, URI_LIST], glib::Priority::DEFAULT)
         .await
         .map_err(|e| e.to_string())?;
+    read_stream(&stream, mime == GNOME).await
+}
+
+pub async fn read_drop(drop: &gdk::Drop) -> Result<Vec<String>, String> {
+    let (stream, _) = drop
+        .read_future(&[URI_LIST], glib::Priority::DEFAULT)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(read_stream(&stream, false).await?.uris)
+}
+
+async fn read_stream(stream: &gio::InputStream, gnome: bool) -> Result<Files, String> {
     let mut bytes = Vec::new();
     loop {
         let part = stream
@@ -86,7 +107,7 @@ pub async fn read(clipboard: &gdk::Clipboard) -> Result<Files, String> {
         }
         bytes.extend_from_slice(&part);
         if bytes.len() > 8 * 1024 * 1024 {
-            return Err("Clipboard file list is too large".into());
+            return Err("File list is too large".into());
         }
     }
     stream
@@ -94,12 +115,13 @@ pub async fn read(clipboard: &gdk::Clipboard) -> Result<Files, String> {
         .await
         .map_err(|e| e.to_string())?;
     let text = String::from_utf8(bytes).map_err(|e| e.to_string())?;
-    Files::parse(&text, mime == GNOME)
+    Files::parse(&text, gnome)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn clipboard_roundtrip() {
         for cut in [false, true] {
@@ -116,6 +138,7 @@ mod tests {
             );
         }
     }
+
     #[test]
     fn clipboard_validation() {
         assert!(Files::parse("move\nfile:///a", true).is_err());

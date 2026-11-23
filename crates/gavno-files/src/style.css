@@ -42,6 +42,7 @@ window {
   box-shadow: none;
 }
 .files-header button,
+.files-header togglebutton,
 .files-header menubutton > button {
   min-width: 32px;
   min-height: 32px;
@@ -53,9 +54,12 @@ window {
   border: none;
 }
 .files-header button:hover,
+.files-header togglebutton:hover,
 .files-header menubutton > button:hover {
   background: @surface3;
 }
+.files-header button.on,
+.files-header togglebutton:checked,
 .files-header button:checked {
   background: @accent_soft;
   color: @accent;
@@ -122,6 +126,58 @@ window {
   margin: 0 1px;
 }
 
+/* ---------- tabs ---------- */
+.tab-strip {
+  background: @surface2;
+  border-bottom: 1px solid @line;
+  padding: 4px 8px;
+}
+.tab-pill {
+  border-radius: 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  padding: 0 2px;
+}
+.tab-pill:hover {
+  background: @surface3;
+}
+.tab-pill.active {
+  background: @surface;
+  border-color: @line;
+}
+.tab-pill button.tab-label {
+  min-height: 26px;
+  padding: 2px 8px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: @muted;
+  background: none;
+  box-shadow: none;
+}
+.tab-pill.active button.tab-label {
+  color: @fg;
+  font-weight: 600;
+}
+.tab-pill button.tab-close {
+  min-width: 20px;
+  min-height: 20px;
+  padding: 0;
+  border-radius: 6px;
+  color: @muted;
+  background: none;
+  box-shadow: none;
+}
+.tab-pill button.tab-close:hover {
+  background: @surface3;
+  color: @fg;
+}
+.tab-add {
+  min-width: 26px;
+  min-height: 26px;
+  padding: 0;
+  border-radius: 7px;
+}
+
 /* ---------- sidebar ---------- */
 .places {
   background: @surface2;
@@ -159,6 +215,10 @@ paned > separator {
 .places button.place.on image {
   color: @accent;
 }
+.places button.place.drop-target {
+  box-shadow: inset 0 0 0 2px @accent;
+  background: @accent_soft;
+}
 .capacity {
   font-family: "Geist Mono", monospace;
   font-size: 10.5px;
@@ -192,8 +252,9 @@ paned > separator {
 }
 .files-grid .file-tile {
   padding: 10px 6px 8px;
+  border-radius: 10px;
 }
-.files-grid .file-tile editablelabel {
+.files-grid .file-tile label {
   font-size: 12.5px;
 }
 .files-list {
@@ -214,9 +275,10 @@ paned > separator {
   background: @surface2;
 }
 .files-list .file-tile {
-  padding: 3px 8px;
+  padding: 4px 8px;
+  border-radius: 7px;
 }
-.files-list .file-tile editablelabel {
+.files-list .file-tile label {
   font-size: 13px;
 }
 .files-list .dim-label {
@@ -225,6 +287,28 @@ paned > separator {
 }
 .thumb {
   border-radius: 6px;
+}
+.badge-icon {
+  background: @surface;
+  border-radius: 999px;
+  padding: 2px;
+  border: 1px solid @line;
+  color: @fg;
+}
+.cut-file {
+  opacity: 0.45;
+}
+.drop-target {
+  outline: 2px solid @accent;
+  outline-offset: -2px;
+  background: @accent_soft;
+}
+.file-tile label.hidden-file {
+  color: @muted;
+}
+.search-sub {
+  font-size: 11px;
+  font-family: "Geist Mono", monospace;
 }
 
 /* ---------- footer ---------- */
@@ -260,7 +344,7 @@ paned > separator {
   opacity: 1;
 }
 
-/* ---------- menus ---------- */
+/* ---------- menus & popovers ---------- */
 popover > contents {
   border-radius: 12px;
   padding: 5px;
@@ -272,6 +356,9 @@ popover modelbutton {
 }
 popover modelbutton:hover {
   background: @accent_soft;
+}
+.rename-popover entry {
+  border-radius: 8px;
 }
 
 /* ---------- docked terminal ---------- */
@@ -309,11 +396,8 @@ popover modelbutton:hover {
 .dock-terminal {
   padding: 6px 12px 10px;
 }
-.file-tile editablelabel.hidden-file {
-  color: @muted;
-}
 
-/* ---------- root mode ---------- */
+/* ---------- root & access banners ---------- */
 .root-button {
   padding: 0 10px;
   border-radius: 9px;
@@ -366,8 +450,15 @@ window.is-root {
   border-bottom: 1px solid alpha(@root, 0.4);
   font-size: 13px;
 }
+.access-banner.readonly-banner {
+  background: @surface2;
+  border-bottom: 1px solid @line;
+}
 .access-banner image {
   color: @root;
+}
+.access-banner.readonly-banner image {
+  color: @muted;
 }
 button.root {
   background: @root;

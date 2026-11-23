@@ -1,22 +1,26 @@
 mod clipboard;
 mod config;
+mod dbus;
 mod dock;
 mod icons;
-mod dbus;
 mod model;
+mod open;
+mod ops;
 mod polkit;
+mod preview;
 mod root;
 // The helper binary uses the server half; the UI only the types.
 #[allow(dead_code)]
 mod root_proto;
-mod ops;
-mod preview;
 mod search;
 mod sidebar;
 mod thumbs;
+mod trash;
 mod views;
 mod window;
+
 use adw::prelude::*;
+use model::Location;
 
 /// Cap glibc malloc at two arenas. Every helper thread (Mesa shader queues,
 /// D-Bus workers) otherwise gets its own arena; in the compositor that was
@@ -33,15 +37,26 @@ fn limit_malloc_arenas() {
 
 fn main() -> glib::ExitCode {
     limit_malloc_arenas();
-    // `--daemon` keeps a windowless instance resident so later launches only
-    // ask it over D-Bus for a window instead of starting GTK again.
-    let mut args: Vec<String> = std::env::args().collect();
-    let daemon = args.iter().any(|a| a == "--daemon");
-    args.retain(|a| a != "--daemon");
+    let raw_args: Vec<String> = std::env::args().collect();
+    let mut args = Vec::with_capacity(raw_args.len());
+    let mut daemon = false;
+    let mut after_sep = false;
+    for (idx, arg) in raw_args.into_iter().enumerate() {
+        if idx > 0 && !after_sep && arg == "--" {
+            after_sep = true;
+            args.push(arg);
+        } else if idx > 0 && !after_sep && arg == "--daemon" {
+            daemon = true;
+        } else {
+            args.push(arg);
+        }
+    }
+
     let app = adw::Application::builder()
         .application_id("org.gavno.Files")
         .flags(gio::ApplicationFlags::HANDLES_OPEN | gio::ApplicationFlags::CAN_OVERRIDE_APP_ID)
         .build();
+
     app.connect_startup(|app| {
         gtk::Window::set_default_icon_name("org.gavno.Files");
         adw::StyleManager::default().set_color_scheme(adw::ColorScheme::PreferDark);
@@ -56,44 +71,62 @@ fn main() -> glib::ExitCode {
         }
         dbus::install(app);
     });
-    let skip_first = std::cell::Cell::new(daemon);
-    let resident = std::cell::RefCell::new(None);
-    app.connect_activate(move |app| {
-        if skip_first.replace(false) {
+
+    let skip_first = std::rc::Rc::new(std::cell::Cell::new(daemon));
+    let resident = std::rc::Rc::new(std::cell::RefCell::new(None));
+    {
+        let skip_first = skip_first.clone();
+        let resident = resident.clone();
+        app.connect_activate(move |app| {
+            if skip_first.replace(false) {
+                resident.replace(Some(app.hold()));
+                return;
+            }
+            window::open(app, Location::Local(glib::home_dir()), Vec::new());
+        });
+    }
+
+    app.connect_open(move |app, files, _| {
+        if skip_first.replace(false) && resident.borrow().is_none() {
             resident.replace(Some(app.hold()));
-            return;
         }
-        window::open(app, gio::File::for_path(glib::home_dir()), Vec::new());
-    });
-    app.connect_open(|app, files, _| {
         for file in files {
-            let app = app.clone();
-            let file = file.clone();
-            let hold = app.hold();
-            glib::spawn_future_local(async move {
-                let _hold = hold;
-                match file
-                    .query_info_future(
-                        model::ATTRIBUTES,
-                        gio::FileQueryInfoFlags::NONE,
-                        glib::Priority::DEFAULT,
-                    )
-                    .await
-                {
-                    Ok(info) if model::is_dir(&info) => {
-                        window::open(&app, file, Vec::new());
-                    }
-                    Ok(_) => {
-                        if let Some(parent) = file.parent() {
-                            window::open(&app, parent, vec![file.uri().to_string()]);
-                        }
-                    }
-                    Err(e) => {
-                        window::open(&app, file, Vec::new()).notify(&e.to_string());
-                    }
+            match Location::from_gio_file(file) {
+                Ok(Location::Trash) => {
+                    window::open(app, Location::Trash, Vec::new());
                 }
-            });
+                Ok(Location::Local(path)) => {
+                    let app = app.clone();
+                    let hold = app.hold();
+                    glib::spawn_future_local(async move {
+                        let _hold = hold;
+                        let p = path.clone();
+                        let is_item = gio::spawn_blocking(move || {
+                            std::fs::metadata(&p)
+                                .map(|m| !m.is_dir())
+                                .unwrap_or_else(|_| std::fs::symlink_metadata(&p).is_ok())
+                        })
+                        .await
+                        .unwrap_or(false);
+                        if is_item {
+                            if let Some(parent) = path.parent() {
+                                window::open(
+                                    &app,
+                                    Location::Local(parent.to_path_buf()),
+                                    vec![model::file_uri_from_path(&path)],
+                                );
+                                return;
+                            }
+                        }
+                        window::open(&app, Location::Local(path), Vec::new());
+                    });
+                }
+                Err(e) => {
+                    window::open(app, Location::Local(glib::home_dir()), Vec::new()).notify(&e);
+                }
+            }
         }
     });
+
     app.run_with_args(&args)
 }
